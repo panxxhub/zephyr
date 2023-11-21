@@ -1,0 +1,5 @@
+config XLNX_ZYNQ_SDHC
+    bool "XLNX Zynq SDHC Driver"
+    depends on DT_HAS_XLNX_ZYNQ_SDHC_ENABLED
+    help
+	Enable the XLNX Zynq SDHC Host Controller Driver.

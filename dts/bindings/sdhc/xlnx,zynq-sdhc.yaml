@@ -1,0 +1,18 @@
+# Copyright (c) 2023, iCNC Precision Metal
+# SPDX-License-Identifier: Apache-2.0
+
+description: XLNX Zynq SDHC Controller
+
+compatible: "xlnx,zynq-sdhc"
+
+include: [sdhc.yaml]
+
+properties:
+  reg:
+    required: true
+
+  no-1-8-v:
+    type: boolean
+    description: |
+      When the external SD card circuit does not support 1.8V, add this
+      property to disable 1.8v card voltage of SD card controller.
