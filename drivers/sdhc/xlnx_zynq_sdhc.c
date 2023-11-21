@@ -15,25 +15,13 @@ LOG_MODULE_REGISTER(sdhc, CONFIG_SDHC_LOG_LEVEL);
  * @param dev
  * @return int
  */
+
+/*
 static int zynq_sdhc_reset(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 	return 0;
 }
-
-// int (*request)(const struct device *dev,
-// 	       struct sdhc_command *cmd,
-// 	       struct sdhc_data *data);
-// int (*set_io)(const struct device *dev, struct sdhc_io *ios);
-// int (*get_card_present)(const struct device *dev);
-// int (*execute_tuning)(const struct device *dev);
-// int (*card_busy)(const struct device *dev);
-// int (*get_host_props)(const struct device *dev,
-// 		      struct sdhc_host_props *props);
-// int (*enable_interrupt)(const struct device *dev,
-// 			sdhc_interrupt_cb_t callback,
-// 			int sources, void *user_data);
-// int (*disable_interrupt)(const struct device *dev, int sources);
 
 static int zynq_sdhc_request(const struct device *dev, struct sdhc_command *cmd, struct sdhc_data *data)
 {
@@ -92,6 +80,7 @@ static int zynq_sdhc_disable_interrupt(const struct device *dev, int sources)
 	return 0;
 }
 
+
 static const struct sdhc_driver_api zynq_sdhc_api = {
 	.reset = zynq_sdhc_reset,
 	.request = zynq_sdhc_request,
@@ -104,7 +93,6 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 	.disable_interrupt = zynq_sdhc_disable_interrupt,
 };
 
-/*
 #define ZYNQ_SDHC_INIT(n)                                                                                              \
 	static int zynq_sdhc_##n##_init(const struct device *dev)                                                      \
 	{                                                                                                              \
