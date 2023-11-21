@@ -2,4 +2,11 @@ config XLNX_ZYNQ_SDHC
     bool "XLNX Zynq SDHC Driver"
     depends on DT_HAS_XLNX_ZYNQ_SDHC_ENABLED
     help
-	Enable the XLNX Zynq SDHC Host Controller Driver.
+	    Enable the XLNX Zynq SDHC Host Controller Driver.
+
+config ZYNQ_SDHC_ADMA2_DESC_COUNT
+    int "Zynq SDHC ADMA2 Descriptor Count"
+    depends on XLNX_ZYNQ_SDHC
+    default 32
+    help
+        Number of ADMA2 descriptors to be allocated for the Zynq SDHC
