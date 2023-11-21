@@ -104,13 +104,13 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 	.disable_interrupt = zynq_sdhc_disable_interrupt,
 };
 
-#define ZYNQ_SDHC_INIT(n)                                                                                              \
-	static int zynq_sdhc_##n##_init(const struct device *dev)                                                      \
-	{                                                                                                              \
-		ARG_UNUSED(dev);                                                                                       \
-		return 0;                                                                                              \
-	}                                                                                                              \
-	DEVICE_DT_DEFINE(DT_NODELABEL(sdhc##n), zynq_sdhc_##n##_init, NULL, NULL, NULL, POST_KERNEL,                   \
-			 CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &zynq_sdhc_api);
+// #define ZYNQ_SDHC_INIT(n)                                                                                              \
+// 	static int zynq_sdhc_##n##_init(const struct device *dev)                                                      \
+// 	{                                                                                                              \
+// 		ARG_UNUSED(dev);                                                                                       \
+// 		return 0;                                                                                              \
+// 	}                                                                                                              \
+// 	DEVICE_DT_DEFINE(DT_NODELABEL(sdhc##n), zynq_sdhc_##n##_init, NULL, NULL, NULL, POST_KERNEL,                   \
+// 			 CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &zynq_sdhc_api);
 
-DT_INST_FOREACH_STATUS_OKAY(ZYNQ_SDHC_INIT)
+// DT_INST_FOREACH_STATUS_OKAY(ZYNQ_SDHC_INIT)
