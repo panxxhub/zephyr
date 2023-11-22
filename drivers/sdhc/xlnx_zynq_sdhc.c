@@ -100,7 +100,7 @@ static int zynq_sdhc_set_io(const struct device *dev, struct sdhc_io *ios);
 #if defined(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)
 static int wait_for_cmd_complete(struct zynq_sdhc_data *sdhc_data, uint32_t time_out);
 #else
-static int poll_cmd_complete(const struct device *dev, uint32_t time_out)
+static int poll_cmd_complete(const struct device *dev, uint32_t time_out);
 #endif
 
 /*----------------------------------------------------------------------------------------*/
