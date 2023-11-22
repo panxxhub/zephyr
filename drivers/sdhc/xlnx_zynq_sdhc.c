@@ -1235,32 +1235,44 @@ static void zynq_sdhc_isr(const struct device *dev)
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_CMD_COMPLETE) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_CMD_COMPLETE;
-		k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_CMD_COMPLETE);
+		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_CMD_COMPLETE);
+		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_XFER_COMPLETE) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_XFER_COMPLETE;
-		k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_XFER_COMPLETE);
+		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_XFER_COMPLETE);
+		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_DMA_INTR) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_DMA_INTR;
-		k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_DMA_INTR);
+		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_DMA_INTR);
+		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_BUF_WR_READY) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_BUF_WR_READY;
-		k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_WR_READY);
+		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_WR_READY);
+		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_BUF_RD_READY) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_BUF_RD_READY;
-		k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_RD_READY);
+		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_RD_READY);
+		}
 	}
 
 	if (regs->err_int_stat) {
 		LOG_ERR("err int:%x", regs->err_int_stat);
-		k_event_post(&emmc->irq_event, ERR_INTR_STATUS_EVENT(regs->err_int_stat));
+		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+			k_event_post(&emmc->irq_event, ERR_INTR_STATUS_EVENT(regs->err_int_stat));
+		}
 		if (regs->err_int_stat & ZYNQ_SDHC_HOST_DMA_TXFR_ERR) {
 			regs->err_int_stat |= ZYNQ_SDHC_HOST_DMA_TXFR_ERR;
 		} else {
@@ -1269,7 +1281,9 @@ static void zynq_sdhc_isr(const struct device *dev)
 	}
 
 	if (regs->normal_int_stat) {
-		k_event_post(&emmc->irq_event, regs->normal_int_stat);
+		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+			k_event_post(&emmc->irq_event, regs->normal_int_stat);
+		}
 		regs->normal_int_stat |= regs->normal_int_stat;
 	}
 
