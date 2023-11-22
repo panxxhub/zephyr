@@ -6,28 +6,34 @@ config XLNX_ZYNQ_SDHC
 
 if XLNX_ZYNQ_SDHC
 config XLNX_ZYNQ_SDHC_HOST_INTR
-	bool "EMMC host controller interrupt mode"
+	bool "Xlnx Zynq SDHC host controller interrupt mode"
 	default y
 	help
-	  EMMC host controller interrupt mode support.
+	  Xlnx Zynq SDHC host controller interrupt mode support.
 
 config XLNX_ZYNQ_SDHC_HOST_DMA
-	bool "EMMC host controller DMA mode"
+	bool "Xlnx Zynq SDHC host controller DMA mode"
 	help
-	  EMMC host controller DMA mode support.
+	  Xlnx Zynq SDHC host controller DMA mode support.
 
 config XLNX_ZYNQ_SDHC_HOST_ADMA
-	bool "EMMC host controller ADMA mode"
+	bool "Xlnx Zynq SDHC host controller ADMA mode"
 	depends on XLNX_ZYNQ_SDHC_HOST_DMA
 	help
-	  EMMC host controller ADMA mode support.
+	  Xlnx Zynq SDHC host controller ADMA mode support.
 
 config XLNX_ZYNQ_SDHC_HOST_ADMA_DESC_SIZE
-	int "EMMC host controller ADMA Descriptor size"
+	int "Xlnx Zynq SDHC host controller ADMA Descriptor size"
 	depends on XLNX_ZYNQ_SDHC_HOST_ADMA
 	default 32
 	help
-	  EMMC host controller ADMA Descriptor size.
+	  Xlnx Zynq SDHC host controller ADMA Descriptor size.
+
+config XLNX_ZYNQ_SDHC_HOST_BLOCK_GAP
+	bool "Block gap mode"
+	depends on XLNX_ZYNQ_SDHC_HOST_DMA
+	help
+	  Block gap mode support.
 
 config XLNX_ZYNQ_SDHC_HOST_AUTO_STOP
 	bool "auto stop command mode"
