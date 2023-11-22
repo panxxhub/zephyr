@@ -29,38 +29,9 @@ config XLNX_ZYNQ_SDHC_HOST_ADMA_DESC_SIZE
 	help
 	  EMMC host controller ADMA Descriptor size.
 
+config XLNX_ZYNQ_SDHC_HOST_TUNING
+	bool "Host tuning"
+	help
+	  Host tuning support.
+
 endif
-
-# # Copyright (c) 2023 Intel Corporation
-# # SPDX-License-Identifier: Apache-2.0
-
-# config INTEL_EMMC_HOST
-# 	bool "EMMC driver"
-# 	select SDHC_SUPPORTS_NATIVE_MODE
-# 	select EVENTS
-# 	default y
-# 	depends on DT_HAS_INTEL_EMMC_HOST_ENABLED
-# 	help
-# 	  EMMC driver support. Though this driver can be easily port to
-# 	  any HW which is complaint to eMMC spec, currently it is only
-# 	  validated using intel's EMMC host controller.
-
-# if INTEL_EMMC_HOST
-# config INTEL_EMMC_HOST_AUTO_STOP
-# 	bool "auto stop command mode"
-# 	default y
-# 	help
-# 	  Auto stop command mode support.
-
-# config INTEL_EMMC_HOST_BLOCK_GAP
-# 	bool "Block gap mode"
-# 	depends on INTEL_EMMC_HOST_DMA
-# 	help
-# 	  Block gap mode support.
-
-# config INTEL_EMMC_HOST_TUNING
-# 	bool "Host tuning"
-# 	help
-# 	  Host tuning support.
-
-# endif
