@@ -13,7 +13,6 @@ config XLNX_ZYNQ_SDHC_HOST_INTR
 
 config XLNX_ZYNQ_SDHC_HOST_DMA
 	bool "EMMC host controller DMA mode"
-	select DCACHE
 	help
 	  EMMC host controller DMA mode support.
 
