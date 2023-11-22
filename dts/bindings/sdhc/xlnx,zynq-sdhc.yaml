@@ -12,7 +12,10 @@ properties:
     required: true
   
   bus-width:
-    enum: [4, 8]
+    type: int
+    enum:
+      - 4
+      - 8
     description: |
       The bus width of the SDHC controller. 4 for 4-bit bus, 8 for 8-bit bus.
       If not specified, the default value is 4.
