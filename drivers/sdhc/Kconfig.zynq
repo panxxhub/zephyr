@@ -29,6 +29,12 @@ config XLNX_ZYNQ_SDHC_HOST_ADMA_DESC_SIZE
 	help
 	  EMMC host controller ADMA Descriptor size.
 
+config XLNX_ZYNQ_SDHC_HOST_AUTO_STOP
+	bool "auto stop command mode"
+	default y
+	help
+	  Auto stop command mode support.
+
 config XLNX_ZYNQ_SDHC_HOST_TUNING
 	bool "Host tuning"
 	help
