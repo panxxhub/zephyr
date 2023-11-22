@@ -5,27 +5,27 @@ config XLNX_ZYNQ_SDHC
 	    Enable the XLNX Zynq SDHC Host Controller Driver.
 
 if XLNX_ZYNQ_SDHC
-config ZYNQ_SDHC_HOST_INTR
+config XLNX_ZYNQ_SDHC_HOST_INTR
 	bool "EMMC host controller interrupt mode"
 	default y
 	help
 	  EMMC host controller interrupt mode support.
 
-config ZYNQ_SDHC_HOST_DMA
+config XLNX_ZYNQ_SDHC_HOST_DMA
 	bool "EMMC host controller DMA mode"
 	select DCACHE
 	help
 	  EMMC host controller DMA mode support.
 
-config ZYNQ_SDHC_HOST_ADMA
+config XLNX_ZYNQ_SDHC_HOST_ADMA
 	bool "EMMC host controller ADMA mode"
-	depends on ZYNQ_SDHC_HOST_DMA
+	depends on XLNX_ZYNQ_SDHC_HOST_DMA
 	help
 	  EMMC host controller ADMA mode support.
 
-config ZYNQ_SDHC_HOST_ADMA_DESC_SIZE
+config XLNX_ZYNQ_SDHC_HOST_ADMA_DESC_SIZE
 	int "EMMC host controller ADMA Descriptor size"
-	depends on ZYNQ_SDHC_HOST_ADMA
+	depends on XLNX_ZYNQ_SDHC_HOST_ADMA
 	default 32
 	help
 	  EMMC host controller ADMA Descriptor size.
