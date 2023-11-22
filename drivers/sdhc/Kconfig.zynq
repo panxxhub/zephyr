@@ -8,6 +8,7 @@ if XLNX_ZYNQ_SDHC
 config XLNX_ZYNQ_SDHC_HOST_INTR
 	bool "Xlnx Zynq SDHC host controller interrupt mode"
 	default y
+    select EVENTS
 	help
 	  Xlnx Zynq SDHC host controller interrupt mode support.
 
