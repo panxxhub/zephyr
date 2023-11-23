@@ -1343,7 +1343,7 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 	static struct zynq_sdhc_data zynq_sdhc_##n##_data = {                                                          \
 		.card_present = false,                                                                                 \
 	};                                                                                                             \
-	DEVICE_DT_INST_DEFINE(n, zynq_sdhc_init, NULL, &zynq_sdhc_##n##_data, &zynq_sdhc_##n##_config, POST_KERNEL,    \
+	DEVICE_DT_INST_DEFINE(n, &zynq_sdhc_init, NULL, &zynq_sdhc_##n##_data, &zynq_sdhc_##n##_config, POST_KERNEL,    \
 			      CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &zynq_sdhc_api);
 
 DT_INST_FOREACH_STATUS_OKAY(ZYNQ_SDHC_INIT)
