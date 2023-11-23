@@ -1295,8 +1295,13 @@ static void zynq_sdhc_isr(const struct device *dev)
 static int zynq_sdhc_init(const struct device *dev)
 {
 	struct zynq_sdhc_data *data = dev->data;
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
 	const struct zynq_sdhc_config *config = dev->config;
+
+#define XSDPS_HOST_CTRL_VER_OFFSET 0xFC
+#define XSDPS_CAPS_OFFSET          0x40U /**< Capabilities Register */
+	data->hc_ver = sys_read16(config->base + XSDPS_HOST_CTRL_VER_OFFSET) & 0xFFU;
+	data->caps = sys_read64(config->base + XSDPS_CAPS_OFFSET);
+	data->dev = dev;
 
 	k_sem_init(&data->lock, 1, 1);
 
@@ -1304,9 +1309,6 @@ static int zynq_sdhc_init(const struct device *dev)
 		k_event_init(&data->irq_event);
 		config->config_func(dev);
 	}
-	data->hc_ver = (regs->host_cntrl_version & 0xFFU);
-	data->caps = regs->capabilities;
-
 	return zynq_sdhc_reset(dev);
 }
 
