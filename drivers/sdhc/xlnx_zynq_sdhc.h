@@ -139,13 +139,6 @@
 #define ZYNQ_SDHC_HOST_INTERNAL_CLOCK_STABLE BIT(1)
 #define ZYNQ_SDHC_HOST_SD_CLOCK_EN           BIT(2)
 
-/** Clock frequency */
-#define ZYNQ_SDHC_HOST_CLK_FREQ_400K 0.4
-#define ZYNQ_SDHC_HOST_CLK_FREQ_25M  25
-#define ZYNQ_SDHC_HOST_CLK_FREQ_50M  50
-#define ZYNQ_SDHC_HOST_CLK_FREQ_100M 100
-#define ZYNQ_SDHC_HOST_CLK_FREQ_200M 200
-
 #define ZYNQ_SDHC_HOST_TUNING_SUCCESS BIT(7)
 #define ZYNQ_SDHC_HOST_START_TUNING   BIT(6)
 
@@ -170,11 +163,237 @@
 
 #define GET_BITS(reg_name, start, width) ((reg_name) & (((1 << (width)) - 1) << (start)))
 
-#define SET_BITS(reg, pos, bit_width, val)                                                                             \
-	reg &= ~((bit_width) << (pos));                                                                                \
+#define SET_BITS(reg, pos, bit_width, val)                                                         \
+	reg &= ~((bit_width) << (pos));                                                            \
 	reg |= (((val) & (bit_width)) << (pos))
 
 #define ADDRESS_32BIT_MASK 0xFFFFFFFF
+
+#define XSDPS_HC_VENDOR_VER    0xFF00U /**< Vendor Specification version mask */
+#define XSDPS_HC_SPEC_VER_MASK 0x00FFU /**< Host Specification version mask */
+
+#define XSDPS_SDMA_SYS_ADDR_OFFSET 0x00U /**< SDMA System Address Register */
+#define XSDPS_SDMA_SYS_ADDR_LO_OFFSET                                                              \
+	XSDPS_SDMA_SYS_ADDR_OFFSET          /**< SDMA System Address Low Register */
+#define XSDPS_ARGMT2_LO_OFFSET        0x00U /**< Argument2 Low Register */
+#define XSDPS_SDMA_SYS_ADDR_HI_OFFSET 0x02U /**< SDMA System Address High Register */
+#define XSDPS_ARGMT2_HI_OFFSET        0x02U /**< Argument2 High Register */
+
+#define XSDPS_BLK_SIZE_OFFSET  0x04U              /**< Block Size Register */
+#define XSDPS_BLK_CNT_OFFSET   0x06U              /**< Block Count Register */
+#define XSDPS_ARGMT_OFFSET     0x08U              /**< Argument Register */
+#define XSDPS_ARGMT1_LO_OFFSET XSDPS_ARGMT_OFFSET /**< Argument1 Register */
+#define XSDPS_ARGMT1_HI_OFFSET 0x0AU              /**< Argument1 Register */
+
+#define XSDPS_XFER_MODE_OFFSET        0x0CU /**< Transfer Mode Register */
+#define XSDPS_CMD_OFFSET              0x0EU /**< Command Register */
+#define XSDPS_RESP0_OFFSET            0x10U /**< Response0 Register */
+#define XSDPS_RESP1_OFFSET            0x14U /**< Response1 Register */
+#define XSDPS_RESP2_OFFSET            0x18U /**< Response2 Register */
+#define XSDPS_RESP3_OFFSET            0x1CU /**< Response3 Register */
+#define XSDPS_BUF_DAT_PORT_OFFSET     0x20U /**< Buffer Data Port */
+#define XSDPS_PRES_STATE_OFFSET       0x24U /**< Present State */
+#define XSDPS_HOST_CTRL1_OFFSET       0x28U /**< Host Control 1 */
+#define XSDPS_POWER_CTRL_OFFSET       0x29U /**< Power Control */
+#define XSDPS_BLK_GAP_CTRL_OFFSET     0x2AU /**< Block Gap Control */
+#define XSDPS_WAKE_UP_CTRL_OFFSET     0x2BU /**< Wake Up Control */
+#define XSDPS_CLK_CTRL_OFFSET         0x2CU /**< Clock Control */
+#define XSDPS_TIMEOUT_CTRL_OFFSET     0x2EU /**< Timeout Control */
+#define XSDPS_SW_RST_OFFSET           0x2FU /**< Software Reset */
+#define XSDPS_NORM_INTR_STS_OFFSET    0x30U /**< Normal Interrupt Status Register */
+#define XSDPS_ERR_INTR_STS_OFFSET     0x32U /**< Error Interrupt Status Register */
+#define XSDPS_NORM_INTR_STS_EN_OFFSET 0x34U /**< Normal Interrupt Status Enable Register */
+#define XSDPS_ERR_INTR_STS_EN_OFFSET  0x36U /**< Error Interrupt Status Enable Register */
+#define XSDPS_NORM_INTR_SIG_EN_OFFSET 0x38U /**< Normal Interrupt Signal Enable Register */
+#define XSDPS_ERR_INTR_SIG_EN_OFFSET  0x3AU /**< Error Interrupt Signal Enable Register */
+
+#define XSDPS_AUTO_CMD12_ERR_STS_OFFSET 0x3CU /**< Auto CMD12 Error Status Register */
+#define XSDPS_HOST_CTRL2_OFFSET         0x3EU /**< Host Control2 Register */
+#define XSDPS_CAPS_OFFSET               0x40U /**< Capabilities Register */
+#define XSDPS_CAPS_EXT_OFFSET           0x44U /**< Capabilities Extended */
+#define XSDPS_MAX_CURR_CAPS_OFFSET      0x48U /**< Maximum Current Capabilities Register */
+#define XSDPS_MAX_CURR_CAPS_EXT_OFFSET  0x4CU /**< Maximum Current Capabilities Ext Register */
+#define XSDPS_FE_ERR_INT_STS_OFFSET     0x52U /**< Force Event for Error Interrupt Status */
+#define XSDPS_FE_AUTO_CMD12_EIS_OFFSET  0x50U /**< Auto CM12 Error Interrupt Status Register */
+#define XSDPS_ADMA_ERR_STS_OFFSET       0x54U /**< ADMA Error Status Register */
+#define XSDPS_ADMA_SAR_OFFSET           0x58U /**< ADMA System Address Register */
+#define XSDPS_ADMA_SAR_EXT_OFFSET       0x5CU /**< ADMA System Address Extended Register */
+#define XSDPS_PRE_VAL_1_OFFSET          0x60U /**< Preset Value Register */
+#define XSDPS_PRE_VAL_2_OFFSET          0x64U /**< Preset Value Register */
+#define XSDPS_PRE_VAL_3_OFFSET          0x68U /**< Preset Value Register */
+#define XSDPS_PRE_VAL_4_OFFSET          0x6CU /**< Preset Value Register */
+#define XSDPS_BOOT_TOUT_CTRL_OFFSET     0x70U /**< Boot timeout control register */
+
+#define XSDPS_SHARED_BUS_CTRL_OFFSET 0xE0U /**< Shared Bus Control Register */
+#define XSDPS_SLOT_INTR_STS_OFFSET   0xFCU /**< Slot Interrupt Status Register */
+#define XSDPS_HOST_CTRL_VER_OFFSET   0xFEU /**< Host Controller Version Register */
+
+/** @} */
+
+/** @name Control Register - Host control, Power control,
+ * 			Block Gap control and Wakeup control
+ *
+ * This register contains bits for various configuration options of
+ * the SD host controller. Read/Write apart from the reserved bits.
+ * @{
+ */
+
+#define XSDPS_HC_LED_MASK          0x00000001U /**< LED Control */
+#define XSDPS_HC_WIDTH_MASK        0x00000002U /**< Bus width */
+#define XSDPS_HC_BUS_WIDTH_4       0x00000002U
+#define XSDPS_HC_SPEED_MASK        0x00000004U /**< High Speed */
+#define XSDPS_HC_DMA_MASK          0x00000018U /**< DMA Mode Select */
+#define XSDPS_HC_DMA_SDMA_MASK     0x00000000U /**< SDMA Mode */
+#define XSDPS_HC_DMA_ADMA1_MASK    0x00000008U /**< ADMA1 Mode */
+#define XSDPS_HC_DMA_ADMA2_32_MASK 0x00000010U /**< ADMA2 Mode - 32 bit */
+#define XSDPS_HC_DMA_ADMA2_64_MASK 0x00000018U /**< ADMA2 Mode - 64 bit */
+#define XSDPS_HC_EXT_BUS_WIDTH     0x00000020U /**< Bus width - 8 bit */
+#define XSDPS_HC_CARD_DET_TL_MASK  0x00000040U /**< Card Detect Tst Lvl */
+#define XSDPS_HC_CARD_DET_SD_MASK  0x00000080U /**< Card Detect Sig Det */
+
+#define XSDPS_PC_BUS_PWR_MASK      0x00000001U /**< Bus Power Control */
+#define XSDPS_PC_BUS_VSEL_MASK     0x0000000EU /**< Bus Voltage Select */
+#define XSDPS_PC_BUS_VSEL_3V3_MASK 0x0000000EU /**< Bus Voltage 3.3V */
+#define XSDPS_PC_BUS_VSEL_3V0_MASK 0x0000000CU /**< Bus Voltage 3.0V */
+#define XSDPS_PC_BUS_VSEL_1V8_MASK 0x0000000AU /**< Bus Voltage 1.8V */
+#define XSDPS_PC_EMMC_HW_RST_MASK  0x00000010U /**< HW reset for eMMC */
+
+#define XSDPS_BGC_STP_REQ_MASK     0x00000001U /**< Block Gap Stop Req */
+#define XSDPS_BGC_CNT_REQ_MASK     0x00000002U /**< Block Gap Cont Req */
+#define XSDPS_BGC_RWC_MASK         0x00000004U /**< Block Gap Rd Wait */
+#define XSDPS_BGC_INTR_MASK        0x00000008U /**< Block Gap Intr */
+#define XSDPS_BGC_SPI_MODE_MASK    0x00000010U /**< Block Gap SPI Mode */
+#define XSDPS_BGC_BOOT_EN_MASK     0x00000020U /**< Block Gap Boot Enb */
+#define XSDPS_BGC_ALT_BOOT_EN_MASK 0x00000040U /**< Block Gap Alt BootEn */
+#define XSDPS_BGC_BOOT_ACK_MASK    0x00000080U /**< Block Gap Boot Ack */
+
+#define XSDPS_WC_WUP_ON_INTR_MASK  0x00000001U /**< Wakeup Card Intr */
+#define XSDPS_WC_WUP_ON_INSRT_MASK 0x00000002U /**< Wakeup Card Insert */
+#define XSDPS_WC_WUP_ON_REM_MASK   0x00000004U /**< Wakeup Card Removal */
+
+/** @} */
+
+/** @name Control Register - Clock control, Timeout control & Software reset
+ *
+ * This register contains bits for configuration options of clock, timeout and
+ * software reset.
+ * Read/Write except for Inter_Clock_Stable bit (read only) and reserved bits.
+ * @{
+ */
+
+#define XSDPS_CC_INT_CLK_EN_MASK         0x00000001U /**< INT clk enable */
+#define XSDPS_CC_INT_CLK_STABLE_MASK     0x00000002U /**< INT clk stable */
+#define XSDPS_CC_SD_CLK_EN_MASK          0x00000004U /**< SD clk enable */
+#define XSDPS_CC_SD_CLK_GEN_SEL_MASK     0x00000020U /**< SD clk gen selection */
+#define XSDPS_CC_SDCLK_FREQ_SEL_EXT_MASK 0x00000003U /**< SD clk freq sel upper */
+#define XSDPS_CC_SDCLK_FREQ_SEL_MASK     0x000000FFU /**< SD clk freq sel */
+#define XSDPS_CC_SDCLK_FREQ_D256_MASK    0x00008000U /**< Divider 256 */
+#define XSDPS_CC_SDCLK_FREQ_D128_MASK    0x00004000U /**< Divider 128 */
+#define XSDPS_CC_SDCLK_FREQ_D64_MASK     0x00002000U /**< Divider 64 */
+#define XSDPS_CC_SDCLK_FREQ_D32_MASK     0x00001000U /**< Divider 32 */
+#define XSDPS_CC_SDCLK_FREQ_D16_MASK     0x00000800U /**< Divider 16 */
+#define XSDPS_CC_SDCLK_FREQ_D8_MASK      0x00000400U /**< Divider 8 */
+#define XSDPS_CC_SDCLK_FREQ_D4_MASK      0x00000200U /**< Divider 4 */
+#define XSDPS_CC_SDCLK_FREQ_D2_MASK      0x00000100U /**< Divider 2 */
+#define XSDPS_CC_SDCLK_FREQ_BASE_MASK    0x00000000U /**< Base clock */
+#define XSDPS_CC_MAX_DIV_CNT             256U        /**< Max divider count */
+#define XSDPS_CC_EXT_MAX_DIV_CNT         2046U       /**< Max extended divider count */
+#define XSDPS_CC_EXT_DIV_SHIFT           6U          /**< Ext divider shift */
+
+#define XSDPS_TC_CNTR_VAL_MASK 0x0000000FU /**< Data timeout counter */
+
+#define XSDPS_SWRST_ALL_MASK      0x00000001U /**< Software Reset All */
+#define XSDPS_SWRST_CMD_LINE_MASK 0x00000002U /**< Software reset for CMD line */
+#define XSDPS_SWRST_DAT_LINE_MASK 0x00000004U /**< Software reset for DAT line */
+
+#define XSDPS_CC_MAX_NUM_OF_DIV 9U /**< Max number of Clock dividers */
+#define XSDPS_CC_DIV_SHIFT      8U /**< Clock Divider shift */
+
+/** @} */
+
+/** @name SD Interrupt Registers
+ *
+ * <b> Normal and Error Interrupt Status Register </b>
+ * This register shows the normal and error interrupt status.
+ * Status enable register affects reads of this register.
+ * If Signal enable register is set and the corresponding status bit is set,
+ * interrupt is generated.
+ * Write to clear except
+ * Error_interrupt and Card_Interrupt bits - Read only
+ *
+ * <b> Normal and Error Interrupt Status Enable Register </b>
+ * Setting this register bits enables Interrupt status.
+ * Read/Write except Fixed_to_0 bit (Read only)
+ *
+ * <b> Normal and Error Interrupt Signal Enable Register </b>
+ * This register is used to select which interrupt status is
+ * indicated to the Host System as the interrupt.
+ * Read/Write except Fixed_to_0 bit (Read only)
+ *
+ * All three registers have same bit definitions
+ * @{
+ */
+
+#define XSDPS_INTR_CC_MASK            0x00000001U /**< Command Complete */
+#define XSDPS_INTR_TC_MASK            0x00000002U /**< Transfer Complete */
+#define XSDPS_INTR_BGE_MASK           0x00000004U /**< Block Gap Event */
+#define XSDPS_INTR_DMA_MASK           0x00000008U /**< DMA Interrupt */
+#define XSDPS_INTR_BWR_MASK           0x00000010U /**< Buffer Write Ready */
+#define XSDPS_INTR_BRR_MASK           0x00000020U /**< Buffer Read Ready */
+#define XSDPS_INTR_CARD_INSRT_MASK    0x00000040U /**< Card Insert */
+#define XSDPS_INTR_CARD_REM_MASK      0x00000080U /**< Card Remove */
+#define XSDPS_INTR_CARD_MASK          0x00000100U /**< Card Interrupt */
+#define XSDPS_INTR_INT_A_MASK         0x00000200U /**< INT A Interrupt */
+#define XSDPS_INTR_INT_B_MASK         0x00000400U /**< INT B Interrupt */
+#define XSDPS_INTR_INT_C_MASK         0x00000800U /**< INT C Interrupt */
+#define XSDPS_INTR_RE_TUNING_MASK     0x00001000U /**< Re-Tuning Interrupt */
+#define XSDPS_INTR_BOOT_ACK_RECV_MASK 0x00002000U /**< Boot Ack Recv Interrupt */
+#define XSDPS_INTR_BOOT_TERM_MASK     0x00004000U /**< Boot Terminate Interrupt */
+#define XSDPS_INTR_ERR_MASK           0x00008000U /**< Error Interrupt */
+#define XSDPS_NORM_INTR_ALL_MASK      0x0000FFFFU
+
+#define XSDPS_INTR_ERR_CT_MASK         0x00000001U /**< Command Timeout Error */
+#define XSDPS_INTR_ERR_CCRC_MASK       0x00000002U /**< Command CRC Error */
+#define XSDPS_INTR_ERR_CEB_MASK        0x00000004U /**< Command End Bit Error */
+#define XSDPS_INTR_ERR_CI_MASK         0x00000008U /**< Command Index Error */
+#define XSDPS_INTR_ERR_DT_MASK         0x00000010U /**< Data Timeout Error */
+#define XSDPS_INTR_ERR_DCRC_MASK       0x00000020U /**< Data CRC Error */
+#define XSDPS_INTR_ERR_DEB_MASK        0x00000040U /**< Data End Bit Error */
+#define XSDPS_INTR_ERR_CUR_LMT_MASK    0x00000080U /**< Current Limit Error */
+#define XSDPS_INTR_ERR_AUTO_CMD12_MASK 0x00000100U /**< Auto CMD12 Error */
+#define XSDPS_INTR_ERR_ADMA_MASK       0x00000200U /**< ADMA Error */
+#define XSDPS_INTR_ERR_TR_MASK         0x00001000U /**< Tuning Error */
+#define XSDPS_INTR_VEND_SPF_ERR_MASK   0x0000E000U /**< Vendor Specific Error */
+#define XSDPS_ERROR_INTR_ALL_MASK      0x0000F3FFU /**< Mask for error bits */
+
+#define XSDPS_TM_DMA_EN_MASK          0x00000001U /**< DMA Enable */
+#define XSDPS_TM_BLK_CNT_EN_MASK      0x00000002U /**< Block Count Enable */
+#define XSDPS_TM_AUTO_CMD12_EN_MASK   0x00000004U /**< Auto CMD12 Enable */
+#define XSDPS_TM_DAT_DIR_SEL_MASK     0x00000010U /**< Data Transfer Direction Select */
+#define XSDPS_TM_MUL_SIN_BLK_SEL_MASK 0x00000020U /**< Multi/Single Block Select */
+
+/* Spec 3.0 */
+#define XSDPS_CAPS_ASYNC_INTR_MASK 0x20000000U /**< Async Interrupt support */
+#define XSDPS_CAPS_SLOT_TYPE_MASK  0xC0000000U /**< Slot Type */
+#define XSDPS_CAPS_REM_CARD        0x00000000U /**< Removable Slot */
+#define XSDPS_CAPS_EMB_SLOT        0x40000000U /**< Embedded Slot */
+#define XSDPS_CAPS_SHR_BUS         0x80000000U /**< Shared Bus Slot */
+
+#define XSDPS_ECAPS_SDR50_MASK         0x00000001U /**< SDR50 Mode support */
+#define XSDPS_ECAPS_SDR104_MASK        0x00000002U /**< SDR104 Mode support */
+#define XSDPS_ECAPS_DDR50_MASK         0x00000004U /**< DDR50 Mode support */
+#define XSDPS_ECAPS_DRV_TYPE_A_MASK    0x00000010U /**< DriverType A support */
+#define XSDPS_ECAPS_DRV_TYPE_C_MASK    0x00000020U /**< DriverType C support */
+#define XSDPS_ECAPS_DRV_TYPE_D_MASK    0x00000040U /**< DriverType D support */
+#define XSDPS_ECAPS_TMR_CNT_MASK       0x00000F00U /**< Timer Count for Re-tuning */
+#define XSDPS_ECAPS_USE_TNG_SDR50_MASK 0x00002000U /**< SDR50 Mode needs tuning */
+#define XSDPS_ECAPS_RE_TNG_MODES_MASK  0x0000C000U /**< Re-tuning modes support */
+#define XSDPS_ECAPS_RE_TNG_MODE1_MASK  0x00000000U /**< Re-tuning mode 1 */
+#define XSDPS_ECAPS_RE_TNG_MODE2_MASK  0x00004000U /**< Re-tuning mode 2 */
+#define XSDPS_ECAPS_RE_TNG_MODE3_MASK  0x00008000U /**< Re-tuning mode 3 */
+#define XSDPS_ECAPS_CLK_MULT_MASK      0x00FF0000U /**< Clock Multiplier Programmable clock mode*/
+#define XSDPS_ECAPS_SPI_MODE_MASK      0x01000000U /**< SPI mode */
+#define XSDPS_ECAPS_SPI_BLK_MODE_MASK  0x02000000U /**< SPI block mode */
 
 struct __packed zynq_sdhc_reg {
 	volatile uint32_t sdma_sysaddr;           /**< SDMA System Address */
@@ -215,48 +434,18 @@ struct __packed zynq_sdhc_reg {
 	volatile uint8_t reserved[3];
 	volatile uint32_t adma_sys_addr1; /**< ADMA System Address1 */
 	volatile uint32_t adma_sys_addr2; /**< ADMA System Address2 */
-	volatile uint16_t preset_val_0;   /**< Preset Value 0 */
-	volatile uint16_t preset_val_1;   /**< Preset Value 1 */
-	volatile uint16_t preset_val_2;   /**< Preset Value 2 */
-	volatile uint16_t preset_val_3;   /**< Preset Value 3 */
-	volatile uint16_t preset_val_4;   /**< Preset Value 4 */
-	volatile uint16_t preset_val_5;   /**< Preset Value 5 */
-	volatile uint16_t preset_val_6;   /**< Preset Value 6 */
-	volatile uint16_t preset_val_7;   /**< Preset Value 7 */
+	volatile uint32_t preset_val_1;   /**< Preset Value 1 */
+	volatile uint32_t preset_val_2;   /**< Preset Value 2 */
+	volatile uint32_t preset_val_3;   /**< Preset Value 3 */
+	volatile uint32_t preset_val_4;   /**< Preset Value 4 */
 	volatile uint32_t boot_timeout;   /**< Boot Timeout */
 	volatile uint16_t preset_val_8;   /**< Preset Value 8 */
 	volatile uint16_t reserved3;
 	volatile uint16_t vendor_reg; /**< Vendor Enhanced strobe */
-	volatile uint16_t reserved4[56];
+	volatile uint16_t reserved4[57];
 	volatile uint32_t reserved5[4];
 	volatile uint16_t slot_intr_stat;     /**< Slot Interrupt Status */
 	volatile uint16_t host_cntrl_version; /**< Host Controller Version */
-	volatile uint32_t reserved6[64];
-	volatile uint32_t cq_ver;            /**< Command Queue Version */
-	volatile uint32_t cq_cap;            /**< Command Queue Capabilities */
-	volatile uint32_t cq_cfg;            /**< Command Queue Configuration */
-	volatile uint32_t cq_ctrl;           /**< Command Queue Control */
-	volatile uint32_t cq_intr_stat;      /**< Command Queue Interrupt Status */
-	volatile uint32_t cq_intr_stat_en;   /**< Command Queue Interrupt Status Enable */
-	volatile uint32_t cq_intr_sig_en;    /**< Command Queue Interrupt Signal Enable */
-	volatile uint32_t cq_intr_coalesc;   /**< Command Queue Interrupt Coalescing */
-	volatile uint32_t cq_tdlba;          /**< Command Queue Task Desc List Base Addr */
-	volatile uint32_t cq_tdlba_upr;      /**< Command Queue Task Desc List Base Addr Upr */
-	volatile uint32_t cq_task_db;        /**< Command Queue Task DoorBell */
-	volatile uint32_t cq_task_db_notify; /**< Command Queue Task DoorBell Notify */
-	volatile uint32_t cq_dev_qstat;      /**< Command Queue Device queue status */
-	volatile uint32_t cq_dev_pend_task;  /**< Command Queue Device pending tasks */
-	volatile uint32_t cq_task_clr;       /**< Command Queue Task Clr */
-	volatile uint32_t reserved7;
-	volatile uint32_t cq_ssc1;  /**< Command Queue Send Status Configuration 1 */
-	volatile uint32_t cq_ssc2;  /**< Command Queue Send Status Configuration 2 */
-	volatile uint32_t cq_crdct; /**< Command response for direct command */
-	volatile uint32_t reserved8;
-	volatile uint32_t cq_rmem;  /**< Command response mode error mask */
-	volatile uint32_t cq_terri; /**< Command Queue Task Error Information */
-	volatile uint32_t cq_cri;   /**< Command Queue Command response index */
-	volatile uint32_t cq_cra;   /**< Command Queue Command response argument */
-	volatile uint32_t reserved9[425];
 } zynq_sdhc_reg_t;
 
 struct adma_desc {
@@ -285,5 +474,45 @@ enum zynq_sdhc_resp_type {
 	ZYNQ_SDHC_HOST_RESP_LEN_48_BUSY,
 	ZYNQ_SDHC_HOST_INVAL_HOST_RESP
 };
+
+enum zynq_sdhc_slot_type {
+	ZYNQ_SDHC_SLOT_SD = 1,
+	ZYNQ_SDHC_SLOT_MMC,
+	ZYNQ_SDHC_SLOT_SDIO,
+	ZYNQ_SDHC_SLOT_SD_COMBO,
+	ZYNQ_SDHC_SLOT_EMMC
+};
+
+static ALWAYS_INLINE void zynq_sdhc_write8(const struct device *dev, uint32_t offset, uint8_t val)
+{
+	sys_write8(val, DEVICE_MMIO_GET(dev) + offset);
+}
+static ALWAYS_INLINE void zynq_sdhc_write16(const struct device *dev, uint32_t offset, uint16_t val)
+{
+	sys_write16(val, DEVICE_MMIO_GET(dev) + offset);
+}
+static ALWAYS_INLINE void zynq_sdhc_write32(const struct device *dev, uint32_t offset, uint32_t val)
+{
+	sys_write32(val, DEVICE_MMIO_GET(dev) + offset);
+}
+
+static ALWAYS_INLINE uint8_t zynq_sdhc_read8(const struct device *dev, uint32_t offset)
+{
+	// assert offset is 32-bit aligned
+	return sys_read8(DEVICE_MMIO_GET(dev) + offset);
+}
+static ALWAYS_INLINE uint16_t zynq_sdhc_read16(const struct device *dev, uint32_t offset)
+{
+	// assert offset is 32-bit aligned
+	return sys_read16(DEVICE_MMIO_GET(dev) + offset);
+}
+static ALWAYS_INLINE uint32_t zynq_sdhc_read32(const struct device *dev, uint32_t offset)
+{
+	return sys_read32(DEVICE_MMIO_GET(dev) + offset);
+}
+static ALWAYS_INLINE uint64_t zynq_sdhc_read64(const struct device *dev, uint32_t offset)
+{
+	return sys_read64(DEVICE_MMIO_GET(dev) + offset);
+}
 
 #endif

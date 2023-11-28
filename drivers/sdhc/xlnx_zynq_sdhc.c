@@ -1,17 +1,20 @@
-#include "zephyr/cache.h"
-#include "zephyr/device.h"
-#include "zephyr/drivers/sdhc.h"
-#include "xlnx_zynq_sdhc.h"
-#include "zephyr/sys/util_macro.h"
-#include <sys/errno.h>
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/sdhc.h>
 #include <zephyr/sd/sd_spec.h>
-#include <zephyr/logging/log.h>
-#include <soc.h>
-#include <zephyr/irq.h>
+#include <zephyr/sys/device_mmio.h>
+
+#include "xlnx_zynq_sdhc.h"
+#include "zephyr/cache.h"
+#include <zephyr/device.h>
+
+#ifdef CONFIG_PINCTRL
+#include <zephyr/drivers/pinctrl.h>
+#endif
 
 #define DT_DRV_COMPAT xlnx_zynq_sdhc
+
+#include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(sdhc, CONFIG_SDHC_LOG_LEVEL);
 
@@ -24,13 +27,19 @@ LOG_MODULE_REGISTER(sdhc, CONFIG_SDHC_LOG_LEVEL);
 			STRUCTURE DEFINITIONS
 ----------------------------------------------------------------------------------------*/
 #define DEV_CFG(dev) ((const struct zynq_sdhc_config *const)((dev)->config))
-#define DEV_REG(dev) ((volatile struct zynq_sdhc_reg *)(DEV_CFG(dev))->base)
+#define DEV_REG(dev) ((volatile struct zynq_sdhc_reg *)((uintptr_t)DEVICE_MMIO_GET(dev)))
 
 typedef void (*zynq_sdhc_isr_cb_t)(const struct device *dev);
 
 struct zynq_sdhc_config {
-	intptr_t base;
+	// mm_reg_t base;
+	DEVICE_MMIO_ROM;
+#ifdef CONFIG_PINCTRL
+	const struct pinctrl_dev_config *pincfg;
+#endif
+
 	zynq_sdhc_isr_cb_t config_func;
+	uint32_t clock_freq;
 	uint32_t max_bus_freq;
 	uint32_t min_bus_freq;
 	uint32_t power_delay_ms;
@@ -50,32 +59,30 @@ struct zynq_sdhc_cmd_config {
 };
 
 struct zynq_sdhc_data {
-	const struct device *dev;
-	struct zynq_sdhc_config config;
+	DEVICE_MMIO_RAM;
 	struct sdhc_host_props props;
-
-	uint8_t cart_type;
-	uint8_t card_ver;
-	uint8_t hc_ver;
-	uint64_t caps;
-	uint8_t bus_width;
 	uint32_t rca;
-
 	struct sdhc_io host_io;
 	struct k_sem lock;
 	struct k_event irq_event;
 
 	bool card_present;
-
 	struct adma_desc adma_desc_tbl[ADMA_DESC_SIZE] __aligned((32));
+
+	enum sd_spec_version hc_ver;
+	enum sdhc_bus_width bus_width;
+	enum zynq_sdhc_slot_type slot_type;
+	uint64_t host_caps;
 };
 
 /*----------------------------------------------------------------------------------------
 			PROTOTYPES
 ----------------------------------------------------------------------------------------*/
 
-static void enable_interrupts(const struct device *dev);
-static void disable_interrupts(const struct device *dev);
+// static const struct device *const slcr = DEVICE_DT_GET(DT_INST_PHANDLE(0, syscon));
+
+static void configure_status_interrupts_enable_signals(const struct device *dev);
+static void configure_status_interrupts_disable_signals(const struct device *dev);
 static void clear_interrupts(const struct device *dev);
 
 static int zynq_sdhc_host_sw_reset(const struct device *dev, enum zynq_sdhc_swrst sr);
@@ -92,7 +99,8 @@ static int zynq_sdhc_set_power(const struct device *dev, enum sdhc_power state);
 static bool zynq_sdhc_clock_set(const struct device *dev, enum sdhc_clock_speed speed);
 static bool zynq_sdhc_enable_clock(const struct device *dev);
 static bool zynq_sdhc_disable_clock(const struct device *dev);
-static bool zynq_sdhc_clock_set(const struct device *dev, enum sdhc_clock_speed speed);
+static uint16_t zynq_sdhc_calc_clock(const struct device *dev, uint32_t tgt_freq);
+
 static int set_timing(const struct device *dev, enum sdhc_timing_mode timing);
 
 static int zynq_sdhc_set_io(const struct device *dev, struct sdhc_io *ios);
@@ -103,13 +111,24 @@ static int wait_for_cmd_complete(struct zynq_sdhc_data *sdhc_data, uint32_t time
 static int poll_cmd_complete(const struct device *dev, uint32_t time_out);
 #endif
 
+static int zynq_sdhc_host_send_cmd(const struct device *dev,
+				   const struct zynq_sdhc_cmd_config *config);
+static int zynq_sdhc_send_cmd_no_data(const struct device *dev, struct sdhc_command *cmd);
+static int zynq_sdhc_send_cmd_data(const struct device *dev, uint32_t cmd_idx,
+				   struct sdhc_command *cmd, struct sdhc_data *data, bool read);
+
+static int zynq_sdhc_send_cmd0(const struct device *dev);
+
 /*----------------------------------------------------------------------------------------*/
 
 static int zynq_sdhc_set_voltage(const struct device *dev, enum sd_voltage signal_voltage)
 {
 	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
+	struct zynq_sdhc_data *sdhc = dev->data;
 	bool power_state = regs->power_ctrl & ZYNQ_SDHC_HOST_POWER_CTRL_SD_BUS_POWER ? true : false;
+	uint64_t host_caps = sdhc->host_caps;
 	int ret = 0;
+	uint8_t power_level = 0;
 
 	if (power_state) {
 		/* Turn OFF Bus Power before config clock */
@@ -118,11 +137,13 @@ static int zynq_sdhc_set_voltage(const struct device *dev, enum sd_voltage signa
 
 	switch (signal_voltage) {
 	case SD_VOL_3_3_V:
-		if (regs->capabilities & ZYNQ_SDHC_HOST_VOL_3_3_V_SUPPORT) {
-			regs->host_ctrl2 &= ~(ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC);
-
+		if (host_caps & ZYNQ_SDHC_HOST_VOL_3_3_V_SUPPORT) {
+			if (sdhc->hc_ver == SD_SPEC_VER3_0) {
+				regs->host_ctrl2 &= ~(ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN
+						      << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC);
+			}
 			/* 3.3v voltage select */
-			regs->power_ctrl = ZYNQ_SDHC_HOST_VOL_3_3_V_SELECT;
+			power_level = ZYNQ_SDHC_HOST_VOL_3_3_V_SELECT;
 			LOG_DBG("3.3V Selected for MMC Card");
 		} else {
 			LOG_ERR("3.3V not supported by MMC Host");
@@ -131,11 +152,13 @@ static int zynq_sdhc_set_voltage(const struct device *dev, enum sd_voltage signa
 		break;
 
 	case SD_VOL_3_0_V:
-		if (regs->capabilities & ZYNQ_SDHC_HOST_VOL_3_0_V_SUPPORT) {
-			regs->host_ctrl2 &= ~(ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC);
-
+		if (host_caps & ZYNQ_SDHC_HOST_VOL_3_0_V_SUPPORT) {
+			if (sdhc->hc_ver == SD_SPEC_VER3_0) {
+				regs->host_ctrl2 &= ~(ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN
+						      << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC);
+			}
 			/* 3.0v voltage select */
-			regs->power_ctrl = ZYNQ_SDHC_HOST_VOL_3_0_V_SELECT;
+			power_level = ZYNQ_SDHC_HOST_VOL_3_0_V_SELECT;
 			LOG_DBG("3.0V Selected for MMC Card");
 		} else {
 			LOG_ERR("3.0V not supported by MMC Host");
@@ -144,11 +167,13 @@ static int zynq_sdhc_set_voltage(const struct device *dev, enum sd_voltage signa
 		break;
 
 	case SD_VOL_1_8_V:
-		if (regs->capabilities & ZYNQ_SDHC_HOST_VOL_1_8_V_SUPPORT) {
-			regs->host_ctrl2 |= ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC;
-
+		if (host_caps & ZYNQ_SDHC_HOST_VOL_1_8_V_SUPPORT) {
+			if (sdhc->hc_ver == SD_SPEC_VER3_0) {
+				regs->host_ctrl2 |= ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN
+						    << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC;
+			}
 			/* 1.8v voltage select */
-			regs->power_ctrl = ZYNQ_SDHC_HOST_VOL_1_8_V_SELECT;
+			power_level = ZYNQ_SDHC_HOST_VOL_1_8_V_SELECT;
 			LOG_DBG("1.8V Selected for MMC Card");
 		} else {
 			LOG_ERR("1.8V not supported by MMC Host");
@@ -160,49 +185,66 @@ static int zynq_sdhc_set_voltage(const struct device *dev, enum sd_voltage signa
 		ret = -EINVAL;
 	}
 
-	if (power_state) {
-		/* Turn ON Bus Power */
-		regs->power_ctrl |= ZYNQ_SDHC_HOST_POWER_CTRL_SD_BUS_POWER;
-	}
+	/* Turn ON Bus Power */
+	regs->power_ctrl = power_state ? (power_level | ZYNQ_SDHC_HOST_POWER_CTRL_SD_BUS_POWER)
+				       : (power_level);
 
 	return ret;
 }
 
 static int zynq_sdhc_set_power(const struct device *dev, enum sdhc_power state)
 {
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
+	struct zynq_sdhc_data *sdhc = dev->data;
 
 	if (state == SDHC_POWER_ON) {
 		/* Turn ON Bus Power */
-		regs->power_ctrl |= ZYNQ_SDHC_HOST_POWER_CTRL_SD_BUS_POWER;
+		if (sdhc->hc_ver == SD_SPEC_VER3_0) {
+			const uint8_t write_val =
+				(XSDPS_PC_BUS_VSEL_3V3_MASK | XSDPS_PC_BUS_PWR_MASK) &
+				~XSDPS_PC_EMMC_HW_RST_MASK;
+			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, write_val);
+		} else {
+			const uint8_t write_val =
+				(XSDPS_PC_BUS_VSEL_3V3_MASK | XSDPS_PC_BUS_PWR_MASK);
+			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, write_val);
+		}
 	} else {
 		/* Turn OFF Bus Power */
-		regs->power_ctrl &= ~ZYNQ_SDHC_HOST_POWER_CTRL_SD_BUS_POWER;
+		if (sdhc->hc_ver == SD_SPEC_VER3_0) {
+			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, XSDPS_PC_EMMC_HW_RST_MASK);
+		} else {
+			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, 0x0);
+		}
 	}
 
-	k_msleep(10u);
+	k_msleep(1u);
 
 	return 0;
 }
 
 static bool zynq_sdhc_disable_clock(const struct device *dev)
 {
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
+	uint32_t present_state = zynq_sdhc_read32(dev, XSDPS_PRES_STATE_OFFSET);
+	uint16_t clk_reg = zynq_sdhc_read16(dev, XSDPS_CLK_CTRL_OFFSET);
 
-	if (regs->present_state & ZYNQ_SDHC_HOST_PSTATE_CMD_INHIBIT) {
-		LOG_ERR("present_state:%x", regs->present_state);
+	if (present_state & ZYNQ_SDHC_HOST_PSTATE_CMD_INHIBIT) {
+		LOG_ERR("present_state:%x", present_state);
 		return false;
 	}
-	if (regs->present_state & ZYNQ_SDHC_HOST_PSTATE_DAT_INHIBIT) {
-		LOG_ERR("present_state:%x", regs->present_state);
+	if (present_state & ZYNQ_SDHC_HOST_PSTATE_DAT_INHIBIT) {
+		LOG_ERR("present_state:%x", present_state);
 		return false;
 	}
 
-	regs->clock_ctrl &= ~ZYNQ_SDHC_HOST_INTERNAL_CLOCK_EN;
-	regs->clock_ctrl &= ~ZYNQ_SDHC_HOST_SD_CLOCK_EN;
+	clk_reg &= ~ZYNQ_SDHC_HOST_INTERNAL_CLOCK_EN;
+	zynq_sdhc_write16(dev, XSDPS_CLK_CTRL_OFFSET, clk_reg);
 
-	while ((regs->clock_ctrl & ZYNQ_SDHC_HOST_SD_CLOCK_EN) != 0) {
-		;
+	clk_reg &= ~ZYNQ_SDHC_HOST_SD_CLOCK_EN;
+	zynq_sdhc_write16(dev, XSDPS_CLK_CTRL_OFFSET, clk_reg);
+
+	while ((zynq_sdhc_read16(dev, XSDPS_CLK_CTRL_OFFSET) & ZYNQ_SDHC_HOST_SD_CLOCK_EN) != 0) {
+		// k_usleep(10);
+		k_busy_wait(10);
 	}
 
 	return true;
@@ -215,70 +257,84 @@ static bool zynq_sdhc_enable_clock(const struct device *dev)
 	regs->clock_ctrl |= ZYNQ_SDHC_HOST_INTERNAL_CLOCK_EN;
 	/* Wait for the stable Internal Clock */
 	while ((regs->clock_ctrl & ZYNQ_SDHC_HOST_INTERNAL_CLOCK_STABLE) == 0) {
-		;
+		k_busy_wait(10);
 	}
 
 	/* Enable SD Clock */
 	regs->clock_ctrl |= ZYNQ_SDHC_HOST_SD_CLOCK_EN;
 	while ((regs->clock_ctrl & ZYNQ_SDHC_HOST_SD_CLOCK_EN) == 0) {
-		;
+		k_busy_wait(10);
 	}
 
 	return true;
 }
 
+static uint16_t zynq_sdhc_calc_clock(const struct device *dev, uint32_t tgt_freq)
+{
+	uint16_t clock_val = 0U;
+	uint16_t div_cnt = 0;
+	uint16_t divisor = 0U;
+	struct zynq_sdhc_data *sdhc = dev->data;
+	const struct zynq_sdhc_config *cfg = DEV_CFG(dev);
+	const uint32_t base_freq = cfg->clock_freq;
+	if (sdhc->hc_ver == SD_SPEC_VER3_0) {
+		if (base_freq <= tgt_freq) {
+			divisor = 0;
+		} else {
+			for (div_cnt = 2U; div_cnt <= XSDPS_CC_EXT_MAX_DIV_CNT; div_cnt += 2U) {
+				if (((base_freq) / div_cnt) <= tgt_freq) {
+					divisor = div_cnt >> 1;
+					break;
+				}
+			}
+		}
+	} else {
+		for (div_cnt = 1U; div_cnt <= XSDPS_CC_MAX_DIV_CNT; div_cnt <<= 1U) {
+			if (((base_freq) / div_cnt) <= tgt_freq) {
+				divisor = div_cnt >> 1;
+				break;
+			}
+		}
+	}
+
+	clock_val |= ((divisor & XSDPS_CC_SDCLK_FREQ_SEL_MASK) << XSDPS_CC_DIV_SHIFT);
+	clock_val |=
+		(((divisor >> 8U) & XSDPS_CC_SDCLK_FREQ_SEL_EXT_MASK) << XSDPS_CC_EXT_DIV_SHIFT);
+
+	return clock_val;
+}
+
 static bool zynq_sdhc_clock_set(const struct device *dev, enum sdhc_clock_speed speed)
 {
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
-	uint8_t base_freq;
-	uint32_t clock_divider;
-	float freq;
-	bool ret;
-
-	switch (speed) {
-	case SDMMC_CLOCK_400KHZ:
-		freq = ZYNQ_SDHC_HOST_CLK_FREQ_400K;
-		break;
-
-	case SD_CLOCK_25MHZ:
-	case MMC_CLOCK_26MHZ:
-		freq = ZYNQ_SDHC_HOST_CLK_FREQ_25M;
-		break;
-
-	case SD_CLOCK_50MHZ:
-	case MMC_CLOCK_52MHZ:
-		freq = ZYNQ_SDHC_HOST_CLK_FREQ_50M;
-		break;
-
-	case SD_CLOCK_100MHZ:
-		freq = ZYNQ_SDHC_HOST_CLK_FREQ_100M;
-		break;
-
-	case MMC_CLOCK_HS200:
-		freq = ZYNQ_SDHC_HOST_CLK_FREQ_200M;
-		break;
-
-	case SD_CLOCK_208MHZ:
-	default:
-		return false;
-	}
+	// uint32_t clock_val = 0U;
+	uint16_t clk_reg = 0;
+	bool ret = false;
 
 	ret = zynq_sdhc_disable_clock(dev);
 	if (!ret) {
 		return false;
 	}
 
-	base_freq = regs->capabilities >> 8;
-	clock_divider = (int)((float)base_freq / (freq * 2));
+	/* calc clock */
+	clk_reg = zynq_sdhc_calc_clock(dev, (uint32_t)speed);
+	LOG_DBG("Clock divider for MMC Clk: %d Hz is %d", speed, clk_reg);
 
-	LOG_DBG("Clock divider for MMC Clk: %d Hz is %d", speed, clock_divider);
+	clk_reg |= ZYNQ_SDHC_HOST_INTERNAL_CLOCK_EN;
+	zynq_sdhc_write16(dev, XSDPS_CLK_CTRL_OFFSET, clk_reg);
 
-	SET_BITS(regs->clock_ctrl, ZYNQ_SDHC_HOST_CLK_SDCLCK_FREQ_SEL_LOC, ZYNQ_SDHC_HOST_CLK_SDCLCK_FREQ_SEL_MASK,
-		 clock_divider);
-	SET_BITS(regs->clock_ctrl, ZYNQ_SDHC_HOST_CLK_SDCLCK_FREQ_SEL_UPPER_LOC,
-		 ZYNQ_SDHC_HOST_CLK_SDCLCK_FREQ_SEL_UPPER_MASK, clock_divider >> 8);
+	/* Wait for the stable Internal Clock */
+	while ((zynq_sdhc_read16(dev, XSDPS_CLK_CTRL_OFFSET) &
+		ZYNQ_SDHC_HOST_INTERNAL_CLOCK_STABLE) == 0) {
+		k_busy_wait(10);
+	}
 
-	zynq_sdhc_enable_clock(dev);
+	/* Enable SD Clock */
+	clk_reg |= ZYNQ_SDHC_HOST_SD_CLOCK_EN;
+	zynq_sdhc_write16(dev, XSDPS_CLK_CTRL_OFFSET, clk_reg);
+	// while ((zynq_sdhc_read16(dev, XSDPS_CLK_CTRL_OFFSET) & ZYNQ_SDHC_HOST_SD_CLOCK_EN) == 0)
+	// { 	k_busy_wait(10);
+	// }
+	k_msleep(1);
 
 	return true;
 }
@@ -329,7 +385,8 @@ static int set_timing(const struct device *dev, enum sdhc_timing_mode timing)
 			LOG_ERR("Disable clk failed");
 			return -EIO;
 		}
-		regs->host_ctrl2 |= ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC;
+		regs->host_ctrl2 |= ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_EN
+				    << ZYNQ_SDHC_HOST_CTRL2_1P8V_SIG_LOC;
 		SET_BITS(regs->host_ctrl2, ZYNQ_SDHC_HOST_CTRL2_UHS_MODE_SEL_LOC,
 			 ZYNQ_SDHC_HOST_CTRL2_UHS_MODE_SEL_MASK, mode);
 
@@ -339,25 +396,39 @@ static int set_timing(const struct device *dev, enum sdhc_timing_mode timing)
 	return ret;
 }
 
-static void enable_interrupts(const struct device *dev)
+static void configure_status_interrupts_enable_signals(const struct device *dev)
 {
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
-	regs->normal_int_stat_en = ZYNQ_SDHC_HOST_NORMAL_INTR_MASK;
-	regs->err_int_stat_en = ZYNQ_SDHC_HOST_ERROR_INTR_MASK;
-	regs->normal_int_signal_en = ZYNQ_SDHC_HOST_NORMAL_INTR_MASK;
-	regs->err_int_signal_en = ZYNQ_SDHC_HOST_ERROR_INTR_MASK;
-	regs->timeout_ctrl = ZYNQ_SDHC_HOST_MAX_TIMEOUT;
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_OFFSET, XSDPS_NORM_INTR_ALL_MASK);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_OFFSET, XSDPS_ERROR_INTR_ALL_MASK);
+
+	// zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_EN_OFFSET,
+	// 		  XSDPS_NORM_INTR_ALL_MASK & (~XSDPS_INTR_CARD_MASK));
+	// zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_EN_OFFSET, XSDPS_ERROR_INTR_ALL_MASK);
+
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_EN_OFFSET, ZYNQ_SDHC_HOST_NORMAL_INTR_MASK);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_EN_OFFSET, ZYNQ_SDHC_HOST_ERROR_INTR_MASK);
+
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_SIG_EN_OFFSET, ZYNQ_SDHC_HOST_NORMAL_INTR_MASK);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_SIG_EN_OFFSET, ZYNQ_SDHC_HOST_ERROR_INTR_MASK);
+
+	zynq_sdhc_write16(dev, XSDPS_TIMEOUT_CTRL_OFFSET, ZYNQ_SDHC_HOST_MAX_TIMEOUT);
 }
 
-static void disable_interrupts(const struct device *dev)
+static void configure_status_interrupts_disable_signals(const struct device *dev)
 {
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
-	regs->normal_int_stat_en = ZYNQ_SDHC_HOST_NORMAL_INTR_MASK;
-	regs->err_int_stat_en = ZYNQ_SDHC_HOST_ERROR_INTR_MASK;
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_OFFSET, XSDPS_NORM_INTR_ALL_MASK);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_OFFSET, XSDPS_ERROR_INTR_ALL_MASK);
 
-	regs->normal_int_signal_en &= 0;
-	regs->err_int_signal_en &= 0;
-	regs->timeout_ctrl = ZYNQ_SDHC_HOST_MAX_TIMEOUT;
+	// regs->normal_int_stat_en = EMMC_HOST_NORMAL_INTR_MASK;
+	// regs->err_int_stat_en =
+
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_EN_OFFSET, ZYNQ_SDHC_HOST_NORMAL_INTR_MASK);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_EN_OFFSET, ZYNQ_SDHC_HOST_ERROR_INTR_MASK);
+
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_SIG_EN_OFFSET, 0);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_SIG_EN_OFFSET, 0);
+
+	zynq_sdhc_write16(dev, XSDPS_TIMEOUT_CTRL_OFFSET, ZYNQ_SDHC_HOST_MAX_TIMEOUT);
 }
 
 static void clear_interrupts(const struct device *dev)
@@ -370,22 +441,28 @@ static void clear_interrupts(const struct device *dev)
 static int zynq_sdhc_host_sw_reset(const struct device *dev, enum zynq_sdhc_swrst sr)
 {
 
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
+	/** Using XSDPS_CLK_CTRL_OFFSET(0x2C) in place of XSDPS_SW_RST_OFFSET(0x2F) for 32bit
+	 * address aligned reading */
 	uint32_t timeout = 100U;
+	uint8_t sr_reg_val = 0;
+	uint8_t write_val = 0;
 	switch (sr) {
 	case ZYNQ_SDHC_HOST_SWRST_ALL:
-		regs->sw_reset = ZYNQ_SDHC_HOST_SW_RESET_REG_ALL;
+		write_val = ZYNQ_SDHC_HOST_SW_RESET_REG_ALL;
 		break;
 	case ZYNQ_SDHC_HOST_SWRST_CMD_LINE:
-		regs->sw_reset = ZYNQ_SDHC_HOST_SW_RESET_REG_CMD;
+		write_val = ZYNQ_SDHC_HOST_SW_RESET_REG_CMD;
 		break;
 	case ZYNQ_SDHC_HOST_SWRST_DATA_LINE:
-		regs->sw_reset = ZYNQ_SDHC_HOST_SW_RESET_REG_DATA;
+		write_val = ZYNQ_SDHC_HOST_SW_RESET_REG_DATA;
 		break;
 	}
+	zynq_sdhc_write8(dev, XSDPS_SW_RST_OFFSET, write_val);
 
 	for (; timeout > 0; timeout--) {
-		if (regs->sw_reset == 0) {
+		sr_reg_val = zynq_sdhc_read8(dev, XSDPS_SW_RST_OFFSET);
+		bool is_reset_done = (sr_reg_val & write_val) == 0;
+		if (is_reset_done) {
 			break;
 		}
 		k_sleep(K_MSEC(1U));
@@ -403,8 +480,8 @@ static int zynq_sdhc_dma_init(const struct device *dev, struct sdhc_data *data, 
 	struct zynq_sdhc_data *sdhc_data = dev->data;
 	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
 
-	if (!read) {
-		sys_cache_data_flush_range(data->data, (data->blocks * data->block_size));
+	if (IS_ENABLED(CONFIG_DCACHE) && !read) {
+		sys_cache_data_flush_and_invd_range(data->data, (data->blocks * data->block_size));
 	}
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA)) {
@@ -424,20 +501,22 @@ static int zynq_sdhc_dma_init(const struct device *dev, struct sdhc_data *data, 
 				sdhc_data->adma_desc_tbl[i].attr |= ZYNQ_SDHC_HOST_ADMA_INTR_EN;
 				sdhc_data->adma_desc_tbl[i].attr |= ZYNQ_SDHC_HOST_ADMA_BUFF_LAST;
 			} else {
-				sdhc_data->adma_desc_tbl[i].attr |= ZYNQ_SDHC_HOST_ADMA_BUFF_LINK_NEXT;
+				sdhc_data->adma_desc_tbl[i].attr |=
+					ZYNQ_SDHC_HOST_ADMA_BUFF_LINK_NEXT;
 			}
 
 			sdhc_data->adma_desc_tbl[i].attr |= ZYNQ_SDHC_HOST_ADMA_BUFF_VALID;
 			buff += data->block_size;
-			LOG_DBG("adma_tbl entry: addr:%llx, attr:%u len:%u", sdhc_data->adma_desc_tbl[i].address,
+			LOG_DBG("adma_tbl entry: addr:%llx, attr:%u len:%u",
+				sdhc_data->adma_desc_tbl[i].address,
 				sdhc_data->adma_desc_tbl[i].attr, sdhc_data->adma_desc_tbl[i].len);
 		}
 		regs->adma_sys_addr1 = (uint32_t)(sdhc_data->adma_desc_tbl);
 #if defined(CONFIG_64BIT)
-
-		bool is_hc_v3 = (sdhc_data->hc_ver == ZYNQ_SDHC_HC_SPEC_V3);
+		bool is_hc_v3 = (regs->host_ctrl_version == ZYNQ_SDHC_HC_SPEC_V3);
 		if (is_hc_v3) {
-			regs->adma_sys_addr2 = (uint32_t)(((uint64_t)sdhc_data->adma_desc_tbl) >> 32U);
+			regs->adma_sys_addr2 =
+				(uint32_t)(((uint64_t)sdhc_data->adma_desc_tbl) >> 32U);
 		}
 #endif
 
@@ -464,21 +543,25 @@ static int zynq_sdhc_init_xfr(const struct device *dev, struct sdhc_data *data, 
 	}
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA)) {
-		SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_LOC, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 2U);
+		SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_LOC,
+			 ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 2U);
 	} else {
-		SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_LOC, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 0U);
+		SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_LOC,
+			 ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 0U);
 	}
 	/* set block size register */
-	SET_BITS(regs->block_size, ZYNQ_SDHC_HOST_DMA_BUF_SIZE_LOC, ZYNQ_SDHC_HOST_DMA_BUF_SIZE_MASK,
-		 ZYNQ_SDHC_HOST_SDMA_BOUNDARY);
-	SET_BITS(regs->block_size, ZYNQ_SDHC_HOST_BLOCK_SIZE_LOC, ZYNQ_SDHC_HOST_BLOCK_SIZE_MASK, data->block_size);
+	SET_BITS(regs->block_size, ZYNQ_SDHC_HOST_DMA_BUF_SIZE_LOC,
+		 ZYNQ_SDHC_HOST_DMA_BUF_SIZE_MASK, ZYNQ_SDHC_HOST_SDMA_BOUNDARY);
+	SET_BITS(regs->block_size, ZYNQ_SDHC_HOST_BLOCK_SIZE_LOC, ZYNQ_SDHC_HOST_BLOCK_SIZE_MASK,
+		 data->block_size);
 
 	if (data->blocks > 1) {
 		multi_block = 1u;
 	}
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_AUTO_STOP)) {
-		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA) && sdhc_data->host_io.timing == SDHC_TIMING_SDR104) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA) &&
+		    sdhc_data->host_io.timing == SDHC_TIMING_SDR104) {
 			/* Auto cmd23 only applicable for ADMA */
 			SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_AUTO_CMD_EN_LOC,
 				 ZYNQ_SDHC_HOST_XFER_AUTO_CMD_EN_MASK, multi_block ? 2 : 0);
@@ -487,8 +570,8 @@ static int zynq_sdhc_init_xfr(const struct device *dev, struct sdhc_data *data, 
 				 ZYNQ_SDHC_HOST_XFER_AUTO_CMD_EN_MASK, multi_block ? 1 : 0);
 		}
 	} else {
-		SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_AUTO_CMD_EN_LOC, ZYNQ_SDHC_HOST_XFER_AUTO_CMD_EN_MASK,
-			 0);
+		SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_AUTO_CMD_EN_LOC,
+			 ZYNQ_SDHC_HOST_XFER_AUTO_CMD_EN_MASK, 0);
 	}
 
 	if (!IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_AUTO_STOP)) {
@@ -503,25 +586,29 @@ static int zynq_sdhc_init_xfr(const struct device *dev, struct sdhc_data *data, 
 			 ZYNQ_SDHC_HOST_XFER_BLOCK_CNT_EN_MASK, multi_block ? 1 : 0);
 	}
 
-	SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_MULTI_BLOCK_SEL_LOC, ZYNQ_SDHC_HOST_XFER_MULTI_BLOCK_SEL_MASK,
-		 multi_block);
+	SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_MULTI_BLOCK_SEL_LOC,
+		 ZYNQ_SDHC_HOST_XFER_MULTI_BLOCK_SEL_MASK, multi_block);
 
 	/* Set data transfer direction, Read = 1, Write = 0 */
-	SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_DATA_DIR_LOC, ZYNQ_SDHC_HOST_XFER_DATA_DIR_MASK,
-		 read ? 1u : 0u);
+	SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_DATA_DIR_LOC,
+		 ZYNQ_SDHC_HOST_XFER_DATA_DIR_MASK, read ? 1u : 0u);
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_DMA)) {
 		/* Enable DMA or not */
-		SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_DMA_EN_LOC, ZYNQ_SDHC_HOST_XFER_DMA_EN_MASK, 1u);
+		SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_DMA_EN_LOC,
+			 ZYNQ_SDHC_HOST_XFER_DMA_EN_MASK, 1u);
 	} else {
-		SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_DMA_EN_LOC, ZYNQ_SDHC_HOST_XFER_DMA_EN_MASK, 0u);
+		SET_BITS(regs->transfer_mode, ZYNQ_SDHC_HOST_XFER_DMA_EN_LOC,
+			 ZYNQ_SDHC_HOST_XFER_DMA_EN_MASK, 0u);
 	}
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_BLOCK_GAP)) {
 		/* Set an interrupt at the block gap */
-		SET_BITS(regs->block_gap_ctrl, ZYNQ_SDHC_HOST_BLOCK_GAP_LOC, ZYNQ_SDHC_HOST_BLOCK_GAP_MASK, 1u);
+		SET_BITS(regs->block_gap_ctrl, ZYNQ_SDHC_HOST_BLOCK_GAP_LOC,
+			 ZYNQ_SDHC_HOST_BLOCK_GAP_MASK, 1u);
 	} else {
-		SET_BITS(regs->block_gap_ctrl, ZYNQ_SDHC_HOST_BLOCK_GAP_LOC, ZYNQ_SDHC_HOST_BLOCK_GAP_MASK, 0u);
+		SET_BITS(regs->block_gap_ctrl, ZYNQ_SDHC_HOST_BLOCK_GAP_LOC,
+			 ZYNQ_SDHC_HOST_BLOCK_GAP_MASK, 0u);
 	}
 
 	/* Set data timeout time */
@@ -532,7 +619,7 @@ static int zynq_sdhc_init_xfr(const struct device *dev, struct sdhc_data *data, 
 static int wait_xfr_intr_complete(const struct device *dev, uint32_t time_out)
 {
 	struct zynq_sdhc_data *emmc = dev->data;
-	uint32_t events;
+	uint32_t events = 0;
 	int ret;
 	k_timeout_t wait_time;
 
@@ -546,7 +633,8 @@ static int wait_xfr_intr_complete(const struct device *dev, uint32_t time_out)
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 		events = k_event_wait(&emmc->irq_event,
-				      ZYNQ_SDHC_HOST_XFER_COMPLETE | ERR_INTR_STATUS_EVENT(ZYNQ_SDHC_HOST_DMA_TXFR_ERR),
+				      ZYNQ_SDHC_HOST_XFER_COMPLETE |
+					      ERR_INTR_STATUS_EVENT(ZYNQ_SDHC_HOST_DMA_TXFR_ERR),
 				      false, wait_time);
 	}
 
@@ -642,8 +730,9 @@ static int wait_for_cmd_complete(struct zynq_sdhc_data *sdhc_data, uint32_t time
 	}
 
 	events = k_event_wait(&sdhc_data->irq_event,
-			      ZYNQ_SDHC_HOST_CMD_COMPLETE | ERR_INTR_STATUS_EVENT(ZYNQ_SDHC_HOST_ERR_STATUS), false,
-			      wait_time);
+			      ZYNQ_SDHC_HOST_CMD_COMPLETE |
+				      ERR_INTR_STATUS_EVENT(ZYNQ_SDHC_HOST_ERR_STATUS),
+			      false, wait_time);
 
 	if (events & ZYNQ_SDHC_HOST_CMD_COMPLETE) {
 		ret = 0;
@@ -663,10 +752,14 @@ static int poll_cmd_complete(const struct device *dev, uint32_t time_out)
 	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
 	int ret = -EAGAIN;
 	int32_t retry = time_out;
+	uint32_t norm_and_err_int_stat = 0;
 
 	while (retry > 0) {
-		if (regs->normal_int_stat & ZYNQ_SDHC_HOST_CMD_COMPLETE) {
-			regs->normal_int_stat = ZYNQ_SDHC_HOST_CMD_COMPLETE;
+		norm_and_err_int_stat = zynq_sdhc_read32(dev, XSDPS_NORM_INTR_STS_OFFSET);
+		uint16_t norm_int_stat = norm_and_err_int_stat & 0xFFFF;
+		if (norm_int_stat & ZYNQ_SDHC_HOST_CMD_COMPLETE) {
+			zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_OFFSET,
+					  ZYNQ_SDHC_HOST_CMD_COMPLETE);
 			ret = 0;
 			break;
 		}
@@ -675,9 +768,10 @@ static int poll_cmd_complete(const struct device *dev, uint32_t time_out)
 		retry--;
 	}
 
-	if (regs->err_int_stat) {
-		LOG_ERR("err_int_stat:%x", regs->err_int_stat);
-		regs->err_int_stat &= regs->err_int_stat;
+	uint16_t err_int_stat = norm_and_err_int_stat >> 16u;
+	if (err_int_stat) {
+		LOG_ERR("err_int_stat:%x", err_int_stat);
+		zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_OFFSET, err_int_stat);
 		ret = -EIO;
 	}
 
@@ -719,13 +813,17 @@ static void update_cmd_response(const struct device *dev, struct sdhc_command *s
 	}
 }
 
-static int zynq_sdhc_host_send_cmd(const struct device *dev, const struct zynq_sdhc_cmd_config *config)
+static int zynq_sdhc_host_send_cmd(const struct device *dev,
+				   const struct zynq_sdhc_cmd_config *config)
 {
-	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
-	struct zynq_sdhc_data *emmc = dev->data;
+
+	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
+	volatile struct zynq_sdhc_reg *regs = (volatile struct zynq_sdhc_reg *)reg_base;
+	struct zynq_sdhc_data *sdhc = dev->data;
 	struct sdhc_command *sdhc_cmd = config->sdhc_cmd;
-	enum zynq_sdhc_resp_type resp_type = zynq_sdhc_decode_resp_type(sdhc_cmd->response_type);
-	uint16_t cmd_reg;
+	enum zynq_sdhc_resp_type resp_type_select =
+		zynq_sdhc_decode_resp_type(sdhc_cmd->response_type);
+	uint32_t cmd_reg;
 	int ret;
 
 	LOG_DBG("");
@@ -741,23 +839,28 @@ static int zynq_sdhc_host_send_cmd(const struct device *dev, const struct zynq_s
 		return -EBUSY;
 	}
 
-	if (resp_type == ZYNQ_SDHC_HOST_INVAL_HOST_RESP) {
-		LOG_ERR("Invalid eMMC resp type:%d", resp_type);
+	if (resp_type_select == ZYNQ_SDHC_HOST_INVAL_HOST_RESP) {
+		LOG_ERR("Invalid eMMC resp type:%d", resp_type_select);
 		return -EINVAL;
 	}
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
-		k_event_clear(&emmc->irq_event, ZYNQ_SDHC_HOST_CMD_COMPLETE);
+		k_event_clear(&sdhc->irq_event, ZYNQ_SDHC_HOST_CMD_COMPLETE);
 	}
+	zynq_sdhc_write32(dev, XSDPS_ARGMT_OFFSET, sdhc_cmd->arg);
 
-	regs->argument = sdhc_cmd->arg;
+	cmd_reg = (config->cmd_idx << ZYNQ_SDHC_HOST_CMD_INDEX_LOC) |
+		  (config->cmd_type << ZYNQ_SDHC_HOST_CMD_TYPE_LOC) |
+		  (config->data_present << ZYNQ_SDHC_HOST_CMD_DATA_PRESENT_LOC) |
+		  (config->idx_check_en << ZYNQ_SDHC_HOST_CMD_IDX_CHECK_EN_LOC) |
+		  (config->crc_check_en << ZYNQ_SDHC_HOST_CMD_CRC_CHECK_EN_LOC) |
+		  (resp_type_select << ZYNQ_SDHC_HOST_CMD_RESP_TYPE_LOC);
+	// uint16_t trans_mode =
+	// 	XSDPS_TM_DMA_EN_MASK | XSDPS_TM_BLK_CNT_EN_MASK | XSDPS_TM_DAT_DIR_SEL_MASK;
+	zynq_sdhc_write16(dev, XSDPS_CMD_OFFSET, cmd_reg);
 
-	cmd_reg = config->cmd_idx << ZYNQ_SDHC_HOST_CMD_INDEX_LOC | config->cmd_type << ZYNQ_SDHC_HOST_CMD_TYPE_LOC |
-		  config->data_present << ZYNQ_SDHC_HOST_CMD_DATA_PRESENT_LOC |
-		  config->idx_check_en << ZYNQ_SDHC_HOST_CMD_IDX_CHECK_EN_LOC |
-		  config->crc_check_en << ZYNQ_SDHC_HOST_CMD_CRC_CHECK_EN_LOC |
-		  resp_type << ZYNQ_SDHC_HOST_CMD_RESP_TYPE_LOC;
-	regs->cmd = cmd_reg;
+	// zynq_sdhc_write32(dev, XSDPS_XFER_MODE_OFFSET, ((cmd_reg << 16U) | trans_mode));
+	// shall we write the transfer mode reg?
 
 	LOG_DBG("CMD REG:%x %x", cmd_reg, regs->cmd);
 
@@ -767,7 +870,8 @@ static int zynq_sdhc_host_send_cmd(const struct device *dev, const struct zynq_s
 	ret = poll_cmd_complete(dev, sdhc_cmd->timeout_ms);
 #endif
 	if (ret) {
-		LOG_ERR("Error on send cmd: %d, status:%d", config->cmd_idx, ret);
+		LOG_ERR("Error on send cmd: %d, status:%d, cmd_raw: 0x%02x", config->cmd_idx, ret,
+			cmd_reg);
 		return ret;
 	}
 
@@ -776,22 +880,22 @@ static int zynq_sdhc_host_send_cmd(const struct device *dev, const struct zynq_s
 	return 0;
 }
 
-static int zynq_sdhc_send_cmd_no_data(const struct device *dev, uint32_t cmd_idx, struct sdhc_command *cmd)
+static int zynq_sdhc_send_cmd_no_data(const struct device *dev, struct sdhc_command *cmd)
 {
-	struct zynq_sdhc_cmd_config emmc_cmd;
+	struct zynq_sdhc_cmd_config sdhc_cmd = {0};
 
-	emmc_cmd.sdhc_cmd = cmd;
-	emmc_cmd.cmd_idx = cmd_idx;
-	emmc_cmd.cmd_type = ZYNQ_SDHC_HOST_CMD_NORMAL;
-	emmc_cmd.data_present = false;
-	emmc_cmd.idx_check_en = false;
-	emmc_cmd.crc_check_en = false;
+	sdhc_cmd.sdhc_cmd = cmd;
+	sdhc_cmd.cmd_idx = cmd->opcode;
+	sdhc_cmd.cmd_type = ZYNQ_SDHC_HOST_CMD_NORMAL;
+	sdhc_cmd.data_present = false;
+	sdhc_cmd.idx_check_en = false;
+	sdhc_cmd.crc_check_en = false;
 
-	return zynq_sdhc_host_send_cmd(dev, &emmc_cmd);
+	return zynq_sdhc_host_send_cmd(dev, &sdhc_cmd);
 }
 
-static int zynq_sdhc_send_cmd_data(const struct device *dev, uint32_t cmd_idx, struct sdhc_command *cmd,
-				   struct sdhc_data *data, bool read)
+static int zynq_sdhc_send_cmd_data(const struct device *dev, uint32_t cmd_idx,
+				   struct sdhc_command *cmd, struct sdhc_data *data, bool read)
 {
 	struct zynq_sdhc_cmd_config emmc_cmd;
 	int ret;
@@ -848,10 +952,12 @@ static int read_data_port(const struct device *dev, struct sdhc_data *sdhc)
 		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			uint32_t events;
 
-			events = k_event_wait(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_RD_READY, false, wait_time);
+			events = k_event_wait(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_RD_READY, false,
+					      wait_time);
 			k_event_clear(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_RD_READY);
 			if (!(events & ZYNQ_SDHC_HOST_BUF_RD_READY)) {
-				LOG_ERR("time out on ZYNQ_SDHC_HOST_BUF_RD_READY:%d", (sdhc->blocks - block_cnt));
+				LOG_ERR("time out on ZYNQ_SDHC_HOST_BUF_RD_READY:%d",
+					(sdhc->blocks - block_cnt));
 				return -EIO;
 			}
 		} else {
@@ -912,7 +1018,8 @@ static int write_data_port(const struct device *dev, struct sdhc_data *sdhc)
 			break;
 		}
 		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
-			events = k_event_wait(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_WR_READY, false, wait_time);
+			events = k_event_wait(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_WR_READY, false,
+					      wait_time);
 			k_event_clear(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_WR_READY);
 
 			if (!(events & ZYNQ_SDHC_HOST_BUF_WR_READY)) {
@@ -949,7 +1056,8 @@ static int zynq_sdhc_stop_transfer(const struct device *dev)
 	return zynq_sdhc_host_send_cmd(dev, &cmd);
 }
 
-static int zynq_sdhc_xfr(const struct device *dev, struct sdhc_command *cmd, struct sdhc_data *data, bool read)
+static int zynq_sdhc_xfr(const struct device *dev, struct sdhc_command *cmd, struct sdhc_data *data,
+			 bool read)
 {
 	struct zynq_sdhc_data *sdhc_data = dev->data;
 	int ret = 0;
@@ -969,7 +1077,8 @@ static int zynq_sdhc_xfr(const struct device *dev, struct sdhc_command *cmd, str
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 		k_event_clear(&sdhc_data->irq_event, ZYNQ_SDHC_HOST_XFER_COMPLETE);
-		k_event_clear(&sdhc_data->irq_event, read ? ZYNQ_SDHC_HOST_BUF_RD_READY : ZYNQ_SDHC_HOST_BUF_WR_READY);
+		k_event_clear(&sdhc_data->irq_event,
+			      read ? ZYNQ_SDHC_HOST_BUF_RD_READY : ZYNQ_SDHC_HOST_BUF_WR_READY);
 	}
 
 	if (data->blocks > 1) {
@@ -1020,22 +1129,21 @@ static int zynq_sdhc_reset(const struct device *dev)
 	if (ret != 0) {
 		return ret;
 	}
+
 	clear_interrupts(dev);
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
-		enable_interrupts(dev);
+		configure_status_interrupts_enable_signals(dev);
 	} else {
-		disable_interrupts(dev);
+		configure_status_interrupts_disable_signals(dev);
 	}
 
 	return 0;
 }
 
-static int zynq_sdhc_request(const struct device *dev, struct sdhc_command *cmd, struct sdhc_data *data)
+static int zynq_sdhc_request(const struct device *dev, struct sdhc_command *cmd,
+			     struct sdhc_data *data)
 {
-	// ARG_UNUSED(dev);
-	// ARG_UNUSED(cmd);
-	// ARG_UNUSED(data);
 	int ret = 0;
 
 	if (data) {
@@ -1061,7 +1169,7 @@ static int zynq_sdhc_request(const struct device *dev, struct sdhc_command *cmd,
 			ret = zynq_sdhc_send_cmd_data(dev, cmd->opcode, cmd, data, true);
 		}
 	} else {
-		ret = zynq_sdhc_send_cmd_no_data(dev, cmd->opcode, cmd);
+		ret = zynq_sdhc_send_cmd_no_data(dev, cmd);
 	}
 
 	return ret;
@@ -1069,17 +1177,18 @@ static int zynq_sdhc_request(const struct device *dev, struct sdhc_command *cmd,
 
 static int zynq_sdhc_set_io(const struct device *dev, struct sdhc_io *ios)
 {
-	struct zynq_sdhc_data *emmc = dev->data;
+	struct zynq_sdhc_data *data = dev->data;
 	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
-	struct sdhc_io *host_io = &emmc->host_io;
-	int ret;
+	struct sdhc_io *host_io = &data->host_io;
+	int ret = 0;
 
-	LOG_DBG("emmc I/O: DW %d, Clk %d Hz, card power state %s, voltage %s", ios->bus_width, ios->clock,
-		ios->power_mode == SDHC_POWER_ON ? "ON" : "OFF", ios->signal_voltage == SD_VOL_1_8_V ? "1.8V" : "3.3V");
+	LOG_DBG("emmc I/O: DW %d, Clk %d Hz, card power state %s, voltage %s", ios->bus_width,
+		ios->clock, ios->power_mode == SDHC_POWER_ON ? "ON" : "OFF",
+		ios->signal_voltage == SD_VOL_1_8_V ? "1.8V" : "3.3V");
 
-	if (ios->clock && (ios->clock > emmc->props.f_max || ios->clock < emmc->props.f_min)) {
-		LOG_ERR("Invalid argument for clock freq: %d Support max:%d and Min:%d", ios->clock, emmc->props.f_max,
-			emmc->props.f_min);
+	if (ios->clock && (ios->clock > data->props.f_max || ios->clock < data->props.f_min)) {
+		LOG_ERR("Invalid argument for clock freq: %d Support max:%d and Min:%d", ios->clock,
+			data->props.f_max, data->props.f_min);
 		return -EINVAL;
 	}
 
@@ -1101,15 +1210,21 @@ static int zynq_sdhc_set_io(const struct device *dev, struct sdhc_io *ios)
 	/* Set data width */
 	if (host_io->bus_width != ios->bus_width) {
 		LOG_DBG("bus_width: %d", host_io->bus_width);
-
-		if (ios->bus_width == SDHC_BUS_WIDTH4BIT) {
-			SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_EXT_DAT_WIDTH_LOC,
-				 ZYNQ_SDHC_HOST_CTRL1_EXT_DAT_WIDTH_MASK, ios->bus_width == SDHC_BUS_WIDTH8BIT ? 1 : 0);
+		bool bus_width_gte = data->bus_width >= ios->bus_width;
+		if (bus_width_gte) {
+			if (ios->bus_width == SDHC_BUS_WIDTH8BIT) {
+				SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_EXT_DAT_WIDTH_LOC,
+					 ZYNQ_SDHC_HOST_CTRL1_EXT_DAT_WIDTH_MASK,
+					 ios->bus_width == SDHC_BUS_WIDTH8BIT ? 1 : 0);
+			} else {
+				SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DAT_WIDTH_LOC,
+					 ZYNQ_SDHC_HOST_CTRL1_DAT_WIDTH_MASK,
+					 ios->bus_width == SDHC_BUS_WIDTH4BIT ? 1 : 0);
+			}
+			host_io->bus_width = ios->bus_width;
 		} else {
-			SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DAT_WIDTH_LOC,
-				 ZYNQ_SDHC_HOST_CTRL1_DAT_WIDTH_MASK, ios->bus_width == SDHC_BUS_WIDTH4BIT ? 1 : 0);
+			return -ENOTSUP;
 		}
-		host_io->bus_width = ios->bus_width;
 	}
 
 	/* Set HC signal voltage */
@@ -1137,12 +1252,14 @@ static int zynq_sdhc_set_io(const struct device *dev, struct sdhc_io *ios)
 
 	/* Set I/O timing */
 	if (host_io->timing != ios->timing) {
-		LOG_DBG("timing: %d", ios->timing);
+		if (data->hc_ver == SD_SPEC_VER3_0) {
+			LOG_DBG("timing: %d", ios->timing);
 
-		ret = set_timing(dev, ios->timing);
-		if (ret) {
-			LOG_ERR("Set timing failed:%d", ret);
-			return ret;
+			ret = set_timing(dev, ios->timing);
+			if (ret) {
+				LOG_ERR("Set timing failed:%d", ret);
+				return ret;
+			}
 		}
 		host_io->timing = ios->timing;
 	}
@@ -1218,8 +1335,8 @@ static int zynq_sdhc_get_host_props(const struct device *dev, struct sdhc_host_p
 	props->host_caps.ddr50_support = (bool)(cap & BIT64(34U));
 	props->host_caps.sdr104_support = (bool)(cap & BIT64(33U));
 	props->host_caps.sdr50_support = (bool)(cap & BIT64(32U));
-	props->host_caps.bus_8_bit_support = true;
-	props->host_caps.bus_4_bit_support = true;
+	props->host_caps.bus_8_bit_support = data->bus_width == SDHC_BUS_WIDTH8BIT;
+	props->host_caps.bus_4_bit_support = data->bus_width == SDHC_BUS_WIDTH4BIT;
 	props->host_caps.hs200_support = (bool)(cfg->hs200_mode);
 	props->host_caps.hs400_support = (bool)(cfg->hs400_mode);
 
@@ -1235,42 +1352,42 @@ static void zynq_sdhc_isr(const struct device *dev)
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_CMD_COMPLETE) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_CMD_COMPLETE;
-		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_CMD_COMPLETE);
 		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_XFER_COMPLETE) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_XFER_COMPLETE;
-		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_XFER_COMPLETE);
 		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_DMA_INTR) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_DMA_INTR;
-		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_DMA_INTR);
 		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_BUF_WR_READY) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_BUF_WR_READY;
-		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_WR_READY);
 		}
 	}
 
 	if (regs->normal_int_stat & ZYNQ_SDHC_HOST_BUF_RD_READY) {
 		regs->normal_int_stat |= ZYNQ_SDHC_HOST_BUF_RD_READY;
-		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, ZYNQ_SDHC_HOST_BUF_RD_READY);
 		}
 	}
 
 	if (regs->err_int_stat) {
 		LOG_ERR("err int:%x", regs->err_int_stat);
-		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, ERR_INTR_STATUS_EVENT(regs->err_int_stat));
 		}
 		if (regs->err_int_stat & ZYNQ_SDHC_HOST_DMA_TXFR_ERR) {
@@ -1281,7 +1398,7 @@ static void zynq_sdhc_isr(const struct device *dev)
 	}
 
 	if (regs->normal_int_stat) {
-		if(IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
+		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, regs->normal_int_stat);
 		}
 		regs->normal_int_stat |= regs->normal_int_stat;
@@ -1294,14 +1411,40 @@ static void zynq_sdhc_isr(const struct device *dev)
 
 static int zynq_sdhc_init(const struct device *dev)
 {
-	struct zynq_sdhc_data *data = dev->data;
 	const struct zynq_sdhc_config *config = dev->config;
+	struct zynq_sdhc_data *data = dev->data;
+	int status = 0;
 
-#define XSDPS_HOST_CTRL_VER_OFFSET 0xFC
-#define XSDPS_CAPS_OFFSET          0x40U /**< Capabilities Register */
-	data->hc_ver = sys_read16(config->base + XSDPS_HOST_CTRL_VER_OFFSET) & 0xFFU;
-	data->caps = sys_read64(config->base + XSDPS_CAPS_OFFSET);
-	data->dev = dev;
+	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
+
+#ifdef CONFIG_PINCTRL
+	int err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
+	if (err < 0) {
+		LOG_ERR("Failed to apply pin state %d", err);
+		return err;
+	}
+#endif
+
+	uint16_t host_ctrl = zynq_sdhc_read16(dev, XSDPS_HOST_CTRL1_OFFSET);
+	uint64_t caps = zynq_sdhc_read32(dev, XSDPS_CAPS_OFFSET);
+	uint64_t caps_ext = zynq_sdhc_read32(dev, XSDPS_CAPS_EXT_OFFSET);
+
+	uint8_t spec_ver = host_ctrl & XSDPS_HC_SPEC_VER_MASK;
+	switch (spec_ver) {
+	case 0:
+		data->hc_ver = SD_SPEC_VER1_0;
+		break;
+	case 1:
+		data->hc_ver = SD_SPEC_VER2_0;
+		break;
+	case 2:
+		data->hc_ver = SD_SPEC_VER3_0;
+		break;
+	default:
+		data->hc_ver = SD_SPEC_VER1_0;
+		break;
+	}
+	data->host_caps = (caps_ext << 32U) | caps;
 
 	k_sem_init(&data->lock, 1, 1);
 
@@ -1309,7 +1452,143 @@ static int zynq_sdhc_init(const struct device *dev)
 		k_event_init(&data->irq_event);
 		config->config_func(dev);
 	}
-	return zynq_sdhc_reset(dev);
+	memset(&data->host_io, 0, sizeof(data->host_io));
+
+	status = zynq_sdhc_send_cmd0(dev);
+	if (status != 0) {
+		LOG_ERR("Error on identify card, %d", status);
+		goto RET;
+	}
+
+	status = zynq_sdhc_reset(dev);
+	if (status != 0) {
+		LOG_ERR("Error on reset, %d", status);
+	}
+
+RET:
+	return status;
+}
+
+static int zynq_sdhc_send_cmd0(const struct device *dev)
+{
+	int32_t status = -EIO;
+	struct sdhc_command cmd = {
+		.opcode = SD_GO_IDLE_STATE,
+		.response_type = SD_RSP_TYPE_NONE,
+		.arg = 0,
+		.timeout_ms = 1000,
+	};
+
+	struct zynq_sdhc_data *sdhc_data = dev->data;
+	if ((sdhc_data->hc_ver == SD_SPEC_VER3_0) &&
+	    (sdhc_data->host_caps & XSDPS_CAPS_SLOT_TYPE_MASK) == XSDPS_CAPS_EMB_SLOT) {
+		sdhc_data->slot_type = ZYNQ_SDHC_SLOT_EMMC;
+		status = 0;
+		goto RET;
+	}
+	// disable bus power
+	zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, 0x0);
+	k_usleep(1000U);
+
+	zynq_sdhc_write8(dev, XSDPS_SW_RST_OFFSET, XSDPS_SWRST_ALL_MASK);
+	while (zynq_sdhc_read32(dev, XSDPS_CLK_CTRL_OFFSET) & (BIT(24))) {
+		;
+	}
+	// enable bus power
+	zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, 0x1);
+
+	zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET,
+			 (XSDPS_PC_BUS_VSEL_3V3_MASK | XSDPS_PC_BUS_PWR_MASK));
+
+	zynq_sdhc_write8(dev, XSDPS_HOST_CTRL1_OFFSET, XSDPS_HC_DMA_ADMA2_32_MASK);
+
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_EN_OFFSET,
+			  XSDPS_NORM_INTR_ALL_MASK & (~XSDPS_INTR_CARD_MASK));
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_EN_OFFSET, XSDPS_ERROR_INTR_ALL_MASK);
+
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_SIG_EN_OFFSET, 0x0);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_SIG_EN_OFFSET, 0x0);
+
+#define XSDPS_BLK_SIZE_512_MASK 0x200U
+	zynq_sdhc_write16(dev, XSDPS_BLK_SIZE_OFFSET, XSDPS_BLK_SIZE_512_MASK);
+
+	// clock
+
+	// set clock 400khz
+	uint16_t clk_reg = 0;
+
+	// disable clock
+	zynq_sdhc_write16(dev, XSDPS_CLK_CTRL_OFFSET, 0);
+
+	/* calc clock */
+	clk_reg = zynq_sdhc_calc_clock(dev, 400000);
+	LOG_DBG("Clock divider for MMC Clk: %d Hz is 0x%02x", 400000, clk_reg);
+
+	clk_reg |= ZYNQ_SDHC_HOST_INTERNAL_CLOCK_EN;
+	zynq_sdhc_write16(dev, XSDPS_CLK_CTRL_OFFSET, clk_reg);
+
+	/* Wait for the stable Internal Clock */
+	while ((zynq_sdhc_read16(dev, XSDPS_CLK_CTRL_OFFSET) &
+		ZYNQ_SDHC_HOST_INTERNAL_CLOCK_STABLE) == 0) {
+		k_busy_wait(10);
+	}
+
+	/* Enable SD Clock */
+	clk_reg |= ZYNQ_SDHC_HOST_SD_CLOCK_EN;
+	zynq_sdhc_write16(dev, XSDPS_CLK_CTRL_OFFSET, clk_reg);
+	// while ((zynq_sdhc_read16(dev, XSDPS_CLK_CTRL_OFFSET) & ZYNQ_SDHC_HOST_SD_CLOCK_EN) == 0)
+	// { 	k_busy_wait(10);
+	// }
+	k_msleep(4);
+
+	// /* Write block count register */
+	// XSdPs_WriteReg16(InstancePtr->Config.BaseAddress,
+	// 		 XSDPS_BLK_CNT_OFFSET, (u16)BlkCnt);
+	zynq_sdhc_write16(dev, XSDPS_BLK_CNT_OFFSET, 0);
+
+	// XSdPs_WriteReg8(InstancePtr->Config.BaseAddress,
+	// 		XSDPS_TIMEOUT_CTRL_OFFSET, 0xEU);
+	zynq_sdhc_write8(dev, XSDPS_TIMEOUT_CTRL_OFFSET, 0xEU);
+
+	// /* Write argument register */
+	zynq_sdhc_write32(dev, XSDPS_ARGMT_OFFSET, cmd.arg);
+
+	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_OFFSET, XSDPS_NORM_INTR_ALL_MASK);
+	zynq_sdhc_write16(dev, XSDPS_ERR_INTR_STS_OFFSET, XSDPS_ERROR_INTR_ALL_MASK);
+
+	/* 74 CLK delay after card is powered up, before the first command. */
+	k_msleep(12);
+	const uint16_t xfer_mode =
+		XSDPS_TM_DMA_EN_MASK | XSDPS_TM_BLK_CNT_EN_MASK | XSDPS_TM_DAT_DIR_SEL_MASK;
+	zynq_sdhc_write32(dev, XSDPS_XFER_MODE_OFFSET, xfer_mode);
+
+	// status = zynq_sdhc_send_cmd_no_data(dev, &cmd);
+	// if (status != 0) {
+	// 	LOG_ERR("Error on send cmd: %d, status:%d, clk_ctrl: 0x%02x, norm_sts: 0x%02x",
+	// 		SD_GO_IDLE_STATE, status, clk_ctrl, regs->normal_int_stat);
+	// 	goto RET;
+	// }
+	const uint32_t mask = (XSDPS_INTR_ERR_MASK | XSDPS_INTR_CC_MASK);
+	uint32_t retry = 1000;
+
+	while ((retry--) > 0) {
+		uint32_t sts = zynq_sdhc_read32(dev, XSDPS_NORM_INTR_STS_OFFSET);
+		if (sts & mask) {
+			if (sts & XSDPS_INTR_ERR_MASK) {
+				LOG_ERR("Error on send cmd: %d, status:%d, norm_sts: 0x%02x",
+					SD_GO_IDLE_STATE, status, sts);
+				status = -EIO;
+			} else {
+				LOG_DBG("CMD0 sent");
+				status = 0;
+			}
+			break;
+		}
+		k_msleep(1);
+	}
+
+RET:
+	return status;
 }
 
 static const struct sdhc_driver_api zynq_sdhc_api = {
@@ -1322,28 +1601,42 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 	.get_host_props = zynq_sdhc_get_host_props,
 };
 
-#define ZYNQ_SDHC_INIT(n)                                                                                              \
-	static void zynq_sdhc_##n##_irq_config_func(const struct device *dev)                                          \
-	{                                                                                                              \
-		ARG_UNUSED(dev);                                                                                       \
-		IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority), zynq_sdhc_isr, DEVICE_DT_INST_GET(n), 0);       \
-		irq_enable(DT_INST_IRQN(n));                                                                           \
-	}                                                                                                              \
-	static const struct zynq_sdhc_config zynq_sdhc_##n##_config = {                                                \
-		.base = DT_INST_REG_ADDR(n),                                                                           \
-		.config_func = zynq_sdhc_##n##_irq_config_func,                                                        \
-		.min_bus_freq = DT_INST_PROP(n, min_bus_freq),                                                         \
-		.max_bus_freq = DT_INST_PROP(n, max_bus_freq),                                                         \
-		.power_delay_ms = DT_INST_PROP(n, power_delay_ms),                                                     \
-		.dw_4bit = DT_INST_ENUM_HAS_VALUE(n, bus_width, 4),                                                    \
-		.dw_8bit = DT_INST_ENUM_HAS_VALUE(n, bus_width, 8),                                                    \
-		.hs200_mode = DT_INST_PROP(n, mmc_hs200_1_8v),                                                         \
-		.hs400_mode = DT_INST_PROP(n, mmc_hs400_1_8v),                                                         \
-	};                                                                                                             \
-	static struct zynq_sdhc_data zynq_sdhc_##n##_data = {                                                          \
-		.card_present = false,                                                                                 \
-	};                                                                                                             \
-	DEVICE_DT_INST_DEFINE(n, &zynq_sdhc_init, NULL, &zynq_sdhc_##n##_data, &zynq_sdhc_##n##_config, POST_KERNEL,    \
+#if CONFIG_PINCTRL
+#define XLNX_SDHC_PINCTRL_DEFINE(port) PINCTRL_DT_INST_DEFINE(port);
+#define XLNX_SDHC_PINCTRL_INIT(port)   .pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(port),
+#else
+#define XLNX_SDHC_PINCTRL_DEFINE(port)
+#define XLNX_SDHC_PINCTRL_INIT(port)
+#endif /* CONFIG_PINCTRL */
+
+#define ZYNQ_SDHC_INIT(n)                                                                          \
+	XLNX_SDHC_PINCTRL_DEFINE(n)                                                                \
+	static void zynq_sdhc_##n##_irq_config_func(const struct device *dev)                      \
+	{                                                                                          \
+		ARG_UNUSED(dev);                                                                   \
+		IRQ_CONNECT(DT_INST_IRQN(n), DT_INST_IRQ(n, priority), zynq_sdhc_isr,              \
+			    DEVICE_DT_INST_GET(n), 0);                                             \
+		irq_enable(DT_INST_IRQN(n));                                                       \
+	}                                                                                          \
+	static const struct zynq_sdhc_config zynq_sdhc_##n##_config = {                            \
+		DEVICE_MMIO_ROM_INIT(DT_DRV_INST(n)),                                              \
+		XLNX_SDHC_PINCTRL_INIT(n).config_func = zynq_sdhc_##n##_irq_config_func,           \
+		.clock_freq = DT_INST_PROP(n, clock_frequency),                                    \
+		.min_bus_freq = DT_INST_PROP(n, min_bus_freq),                                     \
+		.max_bus_freq = DT_INST_PROP(n, max_bus_freq),                                     \
+		.power_delay_ms = DT_INST_PROP(n, power_delay_ms),                                 \
+		.dw_4bit = DT_INST_ENUM_HAS_VALUE(n, bus_width, 4),                                \
+		.dw_8bit = DT_INST_ENUM_HAS_VALUE(n, bus_width, 8),                                \
+		.hs200_mode = DT_INST_PROP(n, mmc_hs200_1_8v),                                     \
+		.hs400_mode = DT_INST_PROP(n, mmc_hs400_1_8v),                                     \
+	};                                                                                         \
+	static struct zynq_sdhc_data zynq_sdhc_##n##_data = {                                      \
+		.card_present = false,                                                             \
+		.bus_width = DT_INST_PROP(n, bus_width),                                           \
+		.slot_type = DT_INST_PROP(n, slot_type),                                           \
+	};                                                                                         \
+	DEVICE_DT_INST_DEFINE(n, &zynq_sdhc_init, NULL, &zynq_sdhc_##n##_data,                     \
+			      &zynq_sdhc_##n##_config, POST_KERNEL,                                \
 			      CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &zynq_sdhc_api);
 
 DT_INST_FOREACH_STATUS_OKAY(ZYNQ_SDHC_INIT)
