@@ -1,5 +1,6 @@
 config XLNX_ZYNQ_SDHC
     bool "XLNX Zynq SDHC Driver"
+    select SDHC_SUPPORTS_NATIVE_MODE
     depends on DT_HAS_XLNX_ZYNQ_SDHC_ENABLED
     help
 	    Enable the XLNX Zynq SDHC Host Controller Driver.
@@ -26,13 +27,14 @@ config XLNX_ZYNQ_SDHC_HOST_ADMA
 config XLNX_ZYNQ_SDHC_HOST_ADMA_DESC_SIZE
 	int "Xlnx Zynq SDHC host controller ADMA Descriptor size"
 	depends on XLNX_ZYNQ_SDHC_HOST_ADMA
-	default 32
+	default 32 
 	help
 	  Xlnx Zynq SDHC host controller ADMA Descriptor size.
 
 config XLNX_ZYNQ_SDHC_HOST_BLOCK_GAP
 	bool "Block gap mode"
 	depends on XLNX_ZYNQ_SDHC_HOST_DMA
+	default y
 	help
 	  Block gap mode support.
 

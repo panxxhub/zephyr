@@ -366,6 +366,12 @@
 #define XSDPS_INTR_VEND_SPF_ERR_MASK   0x0000E000U /**< Vendor Specific Error */
 #define XSDPS_ERROR_INTR_ALL_MASK      0x0000F3FFU /**< Mask for error bits */
 
+#define XSDPS_BLK_SIZE_MASK       0x00000FFFU /**< Transfer Block Size */
+#define XSDPS_SDMA_BUFF_SIZE_MASK 0x00007000U /**< Host SDMA Buffer Size */
+#define XSDPS_BLK_SIZE_1024       0x400U
+#define XSDPS_BLK_SIZE_2048       0x800U
+#define XSDPS_BLK_CNT_MASK        0x0000FFFFU
+
 #define XSDPS_TM_DMA_EN_MASK          0x00000001U /**< DMA Enable */
 #define XSDPS_TM_BLK_CNT_EN_MASK      0x00000002U /**< Block Count Enable */
 #define XSDPS_TM_AUTO_CMD12_EN_MASK   0x00000004U /**< Auto CMD12 Enable */
@@ -394,6 +400,8 @@
 #define XSDPS_ECAPS_CLK_MULT_MASK      0x00FF0000U /**< Clock Multiplier Programmable clock mode*/
 #define XSDPS_ECAPS_SPI_MODE_MASK      0x01000000U /**< SPI mode */
 #define XSDPS_ECAPS_SPI_BLK_MODE_MASK  0x02000000U /**< SPI block mode */
+
+#define ZYNQ_SDHC_HOST_ADMA_ERR_MASK 0x03U /**< ADMA Error Status Mask */
 
 struct __packed zynq_sdhc_reg {
 	volatile uint32_t sdma_sysaddr;           /**< SDMA System Address */
@@ -448,10 +456,27 @@ struct __packed zynq_sdhc_reg {
 	volatile uint16_t host_cntrl_version; /**< Host Controller Version */
 } zynq_sdhc_reg_t;
 
-struct adma_desc {
-	uint16_t attr;
+typedef struct adma_attr {
+	uint8_t valid: 1;
+	uint8_t end: 1;
+	uint8_t int_en: 1;
+	uint8_t r0: 1;
+	uint8_t act: 2;
+	uint16_t r1: 10;
+} adma_attr_t;
+typedef union {
+	uint16_t val;
+	adma_attr_t attr_bits;
+} adma_attr_u;
+
+typedef struct adma_desc {
+	adma_attr_u attr;
 	uint16_t len;
+#if defined(CONFIG_64BIT)
 	uint64_t address;
+#else
+	uint32_t address;
+#endif
 } __packed adma_desc_t;
 
 enum zynq_sdhc_swrst {
