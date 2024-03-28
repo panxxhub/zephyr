@@ -7,6 +7,7 @@
 #include "xlnx_zynq_sdhc.h"
 #include "zephyr/cache.h"
 #include <zephyr/device.h>
+#include <sys/cdefs.h>
 
 #ifdef CONFIG_PINCTRL
 #include <zephyr/drivers/pinctrl.h>
@@ -75,7 +76,7 @@ struct zynq_sdhc_data {
 #if defined(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA)
 	uint8_t xfer_flag;
 #endif
-	adma_desc_t adma_desc_tbl[ADMA_DESC_SIZE] __aligned(32);
+	adma_desc_t *const adma_desc_tbl;
 };
 
 /*----------------------------------------------------------------------------------------
@@ -539,6 +540,7 @@ static int zynq_sdhc_dma_init(const struct device *dev, struct sdhc_data *data,
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA)) {
 		// uint8_t *buff = data->data;
 		uintptr_t buff_base = (uintptr_t)data->data;
+		uintptr_t desc_base = (uintptr_t)sdhc_data->adma_desc_tbl;
 
 		memset(sdhc_data->adma_desc_tbl, 0, sizeof(adma_desc_t) * (data->blocks + 1));
 		for (int i = 0; i < data->blocks; i++) {
@@ -562,7 +564,7 @@ static int zynq_sdhc_dma_init(const struct device *dev, struct sdhc_data *data,
 				desc->address, desc->attr.val, desc->len);
 		}
 		LOG_DBG("adma_desc_tbl: 0x%04lx", (uintptr_t)sdhc_data->adma_desc_tbl);
-		regs->adma_sys_addr1 = (uintptr_t)sdhc_data->adma_desc_tbl;
+		regs->adma_sys_addr1 = desc_base; //(uintptr_t)sdhc_data->adma_desc_tbl;
 #if defined(CONFIG_64BIT)
 		bool is_hc_v3 = (regs->host_ctrl_version == ZYNQ_SDHC_HC_SPEC_V3);
 		if (is_hc_v3) {
@@ -570,10 +572,8 @@ static int zynq_sdhc_dma_init(const struct device *dev, struct sdhc_data *data,
 				(uint32_t)(((uint64_t)sdhc_data->adma_desc_tbl) >> 32U);
 		}
 #endif
-
 		sys_cache_data_flush_range(sdhc_data->adma_desc_tbl,
-					   sizeof(sdhc_data->adma_desc_tbl));
-
+					   sizeof(adma_desc_t) * (data->blocks + 1));
 	} else {
 		/* Setup DMA transfer using SDMA */
 		// regs->sdma_sysaddr = (uint32_t)((uint64_t)data->data);
@@ -1550,7 +1550,7 @@ static int zynq_sdhc_init(const struct device *dev)
 		config->config_func(dev);
 	}
 	memset(&data->host_io, 0, sizeof(data->host_io));
-	// memset(adma_desc_tbl, 0, sizeof(adma_desc_tbl));
+	memset(data->adma_desc_tbl, 0, sizeof(adma_desc_t) * ADMA_DESC_SIZE);
 
 	return zynq_sdhc_reset(dev);
 }
@@ -1573,8 +1573,21 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 #define XLNX_SDHC_PINCTRL_INIT(port)
 #endif /* CONFIG_PINCTRL */
 
+/* TODO(pan), assert the mem addr is above 0x8000(according to ug585-zynq-7000-trm), 0-0x7FFFF is
+ * not accessable by other masters  */
+#if CONFIG_XLNX_ZYNQ_DESC_ALIGN_OCM
+BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_NODELABEL(ocm_high), okay));
+#define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
+	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32)                      \
+		__attribute__((section("OCM_HIGH")));
+#else
+#define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
+	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32);
+#endif
+
 #define ZYNQ_SDHC_INIT(n)                                                                          \
 	XLNX_SDHC_PINCTRL_DEFINE(n)                                                                \
+	XLNX_SDHC_ADMA_DESC_DEFINE(n)                                                              \
 	static void zynq_sdhc_##n##_irq_config_func(const struct device *dev)                      \
 	{                                                                                          \
 		ARG_UNUSED(dev);                                                                   \
@@ -1584,7 +1597,7 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 	}                                                                                          \
 	static const struct zynq_sdhc_config zynq_sdhc_##n##_config = {                            \
 		DEVICE_MMIO_ROM_INIT(DT_DRV_INST(n)),                                              \
-		XLNX_SDHC_PINCTRL_INIT(n).config_func = zynq_sdhc_##n##_irq_config_func,           \
+		.config_func = zynq_sdhc_##n##_irq_config_func,                                    \
 		.clock_freq = DT_INST_PROP(n, clock_frequency),                                    \
 		.min_bus_freq = DT_INST_PROP(n, min_bus_freq),                                     \
 		.max_bus_freq = DT_INST_PROP(n, max_bus_freq),                                     \
@@ -1593,11 +1606,12 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 		.dw_8bit = DT_INST_ENUM_HAS_VALUE(n, bus_width, 8),                                \
 		.hs200_mode = DT_INST_PROP(n, mmc_hs200_1_8v),                                     \
 		.hs400_mode = DT_INST_PROP(n, mmc_hs400_1_8v),                                     \
-	};                                                                                         \
+		XLNX_SDHC_PINCTRL_INIT(n)};                                                        \
 	static struct zynq_sdhc_data zynq_sdhc_##n##_data = {                                      \
 		.card_present = false,                                                             \
 		.bus_width = DT_INST_PROP(n, bus_width),                                           \
 		.slot_type = DT_INST_PROP(n, slot_type),                                           \
+		.adma_desc_tbl = adma_desc_tbl_##n,                                                \
 	};                                                                                         \
 	DEVICE_DT_INST_DEFINE(n, &zynq_sdhc_init, NULL, &zynq_sdhc_##n##_data,                     \
 			      &zynq_sdhc_##n##_config, POST_KERNEL,                                \

@@ -74,7 +74,6 @@ int pinctrl_configure_pins(const pinctrl_soc_pin_t *pins, uint8_t pin_cnt, uintp
 
 	/* unlock slcr, if locked */
 	if (slcr_locked_val == 1) {
-		slcr_unlock();
 		err = slcr_unlock();
 		if (err != 0) {
 			LOG_ERR("failed to unlock SLCR (err %d)", err);
