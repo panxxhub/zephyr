@@ -49,4 +49,10 @@ config XLNX_ZYNQ_SDHC_HOST_TUNING
 	help
 	  Host tuning support.
 
+config XLNX_ZYNQ_DESC_ALIGN_OCM
+	bool "Align descriptor in OCM"
+	depends on XLNX_ZYNQ_SDHC_HOST_ADMA
+	default n
+	help
+	  Align descriptor in OCM support.
 endif
