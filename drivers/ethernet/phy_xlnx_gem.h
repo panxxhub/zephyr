@@ -122,6 +122,43 @@
 #define PHY_TI_PHY_STATUS_LINK_BIT			(1 << 0)
 #define PHY_TI_PHY_STATUS_SPEED_BIT			(1 << 1)
 
+
+/* MicroChip KSZ9031 */
+
+/* MicroChip PHY ID bits [3..0] = reversion -> discard during ID check */
+/* 24 bit org, 6 bit model */
+#define PHY_MC_KSZ_PHY_ID_MODEL_MASK    0xFFFFFFF0
+#define PHY_MC_KSZ_PHY_ID_MODEL_KSZ9031 0x00221620
+
+#define PHY_MC_KSZ_BASIC_CONTROL_REGISTER        0x00
+#define PHY_MC_KSZ_BASIC_STATUS_REGISTER         0x01
+#define PHY_MC_KSZ_AUTONEG_ADV_REGISTER          0x04
+#define PHY_MC_KSZ_LINK_PARTNER_ABILITY_REGISTER 0x05
+#define PHY_MC_KSZ_1000BASET_CONTROL_REGISTER    0x09
+#define PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER   0x1B
+#define PHY_MC_KSZ_AUTO_MDIX_CONTROL_REGISTER    0x1C
+#define PHY_MC_KSZ_VS_CONTROL_REGISTER           0x1F // the vendor specific control register
+
+#define PHY_MC_KSZ_BASIC_CONTROL_RESET_BIT            BIT(15)
+#define PHY_MC_KSZ_BASIC_CONTROL_AUTONEG_ENABLE_BIT   BIT(12)
+#define PHY_MC_KSZ_BASIC_STATUS_LINK_STATUS_BIT       BIT(2)
+#define PHY_MC_KSZ_BASIC_STATUS_AUTO_NEG_COMPLETE_BIT BIT(5)
+#define PHY_MC_KSZ_LINK_DOWN_INT_ENABLE_BIT           BIT(10)
+#define PHY_MC_KSZ_LINK_UP_INT_ENABLE_BIT             BIT(10)
+#define PHY_MC_KSZ_LINK_DOWN_BIT                      BIT(2)
+#define PHY_MC_KSZ_LINK_UP_BIT                        BIT(0)
+#define PHY_MC_KSZ_FINAL_SPEED_1000BASET              BIT(6)
+#define PHY_MC_KSZ_FINAL_SPEED_100BASET               BIT(5)
+#define PHY_MC_KSZ_FINAL_SPEED_10BASET                BIT(4)
+#define PHY_MC_KSZ_FINAL_DUPLEX_FULL                  BIT(3)
+#define PHY_MC_KSZ_AUTO_MDIX_SWAP_OFF                 BIT(6)
+#define PHY_MC_KSZ_ADV_1000BASET_FDX_BIT              BIT(9)
+#define PHY_MC_KSZ_ADV_1000BASET_HDX_BIT              BIT(8)
+#define PHY_MC_KSZ_ADV_100BASET_FDX_BIT               BIT(8)
+#define PHY_MC_KSZ_ADV_100BASET_HDX_BIT               BIT(7)
+#define PHY_MC_KSZ_ADV_10BASET_FDX_BIT                BIT(6)
+#define PHY_MC_KSZ_ADV_10BASET_HDX_BIT                BIT(5)
+
 /**
  * @brief Vendor-specific PHY management function pointer table struct
  *
