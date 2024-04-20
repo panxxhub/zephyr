@@ -87,6 +87,10 @@ Drivers and Sensors
   * Deprecated the :c:func:`can_calc_prescaler` API function, as it allows for bitrate
     errors. Bitrate errors between nodes on the same network leads to them drifting apart after the
     start-of-frame (SOF) synchronization has taken place, leading to bus errors.
+  * Added :c:func:`can_get_bitrate_min` and :c:func:`can_get_bitrate_max` for retrieving the minimum
+    and maximum supported bitrate for a given CAN controller/CAN transceiver combination, reflecting
+    that retrieving the bitrate limits can no longer fail. Deprecated the existing
+    :c:func:`can_get_min_bitrate` and :c:func:`can_get_max_bitrate` API functions.
   * Extended support for automatic sample point location to also cover :c:func:`can_calc_timing` and
     :c:func:`can_calc_timing_data`.
   * Added optional ``min-bitrate`` devicetree property for CAN transceivers.
@@ -121,6 +125,11 @@ Drivers and Sensors
 * Entropy
 
 * Ethernet
+
+  * Deperecated eth_mcux driver in favor of the reworked nxp_enet driver.
+  * Driver nxp_enet is no longer experimental.
+  * All boards and SOCs with :dtcompatible:`nxp,kinetis-ethernet` compatible nodes
+    reworked to use the new :dtcompatible:`nxp,enet` binding.
 
 * Flash
 
@@ -178,6 +187,9 @@ Drivers and Sensors
 
 * Wi-Fi
 
+  * Added support for configuring RTS threshold. With this, users can set the RTS threshold value or
+    disable the RTS mechanism.
+
 Networking
 **********
 
@@ -201,6 +213,10 @@ Networking
 
     * :c:func:`lwm2m_set_bulk`
 
+* IPSP:
+
+  * Removed IPSP support. ``CONFIG_NET_L2_BT`` does not exist anymore.
+
 USB
 ***
 
@@ -211,6 +227,16 @@ Libraries / Subsystems
 **********************
 
 * Management
+
+  * hawkBit
+
+    * The hawkBit subsystem has been reworked to use the settings subsystem to store the hawkBit
+      configuration.
+
+    * By enabling :kconfig:option:`CONFIG_HAWKBIT_SET_SETTINGS_RUNTIME`, the hawkBit settings can
+      be configured at runtime. Use the :c:func:`hawkbit_set_config` function to set the hawkBit
+      configuration. It can also be set via the hawkBit shell, by using the ``hawkbit set``
+      command.
 
 * Logging
 
@@ -224,6 +250,12 @@ Libraries / Subsystems
 * Power management
 
 * Crypto
+
+* Random
+
+  * Besides the existing :c:func:`sys_rand32_get` function, :c:func:`sys_rand8_get`,
+    :c:func:`sys_rand16_get` and :c:func:`sys_rand64_get` are now also available.
+    These functions are all implemented on top of :c:func:`sys_rand_get`.
 
 * Retention
 
