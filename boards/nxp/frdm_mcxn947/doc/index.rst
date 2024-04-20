@@ -38,6 +38,7 @@ For more information about the MCX-N947 SoC and FRDM-MCXN947 board, see:
 - `MCX-N947 Reference Manual`_
 - `FRDM-MCXN947 Website`_
 - `FRDM-MCXN947 User Guide`_
+- `FRDM-MCXN947 Board User Manual`_
 - `FRDM-MCXN947 Schematics`_
 
 Supported Features
@@ -63,11 +64,19 @@ The FRDM-MCXN947 board configuration supports the following hardware features:
 +-----------+------------+-------------------------------------+
 | DMA       | on-chip    | dma                                 |
 +-----------+------------+-------------------------------------+
+| I2C       | on-chip    | i2c                                 |
++-----------+------------+-------------------------------------+
 | CLOCK     | on-chip    | clock_control                       |
 +-----------+------------+-------------------------------------+
 | FLASH     | on-chip    | soc flash                           |
 +-----------+------------+-------------------------------------+
 | FLEXSPI   | on-chip    | flash programming                   |
++-----------+------------+-------------------------------------+
+| DAC       | on-chip    | dac                                 |
++-----------+------------+-------------------------------------+
+| ENET QOS  | on-chip    | ethernet                            |
++-----------+------------+-------------------------------------+
+| WATCHDOG  | on-chip    | watchdog                            |
 +-----------+------------+-------------------------------------+
 
 Targets available
@@ -133,11 +142,12 @@ Using J-Link
 There are two options. The onboard debug circuit can be updated with Segger
 J-Link firmware by following the instructions in
 :ref:`mcu-link-jlink-onboard-debug-probe`.
-To put the board in ``DFU mode`` to program the firmware, short jumper J21.
-The second option is to attach :ref:`jlink-external-debug-probe` to the
-board.
-
-Use the ``-r jlink`` option with west to use the jlink runner.
+To be able to program the firmware, you need to put the board in ``DFU mode``
+by shortening the jumper J21.
+The second option is to attach a :ref:`jlink-external-debug-probe` to the
+10-pin SWD connector (J23) of the board. Additionally, the jumper J19 must
+be shortened.
+For both options use the ``-r jlink`` option with west to use the jlink runner.
 
 .. code-block:: console
 
@@ -205,8 +215,8 @@ should see the following message in the terminal:
 .. _FRDM-MCXN947 User Guide:
    https://www.nxp.com/document/guide/getting-started-with-frdm-mcxn947:GS-FRDM-MCXNXX
 
-.. _FRDM-MCXN947 Debug Firmware:
-   https://www.nxp.com/docs/en/application-note/AN13206.pdf
+.. _FRDM-MCXN947 Board User Manual:
+   https://www.nxp.com/webapp/Download?colCode=UM12018
 
 .. _FRDM-MCXN947 Schematics:
-   https://www.nxp.com/webapp/Download?colCode=LPC55S69-SCH
+   https://www.nxp.com/webapp/Download?colCode=90818-MCXN947SH

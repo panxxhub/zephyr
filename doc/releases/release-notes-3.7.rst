@@ -25,6 +25,9 @@ The following CVEs are addressed by this release:
 More detailed information can be found in:
 https://docs.zephyrproject.org/latest/security/vulnerabilities.html
 
+* CVE-2024-3077 `Zephyr project bug tracker GHSA-gmfv-4vfh-2mh8
+  <https://github.com/zephyrproject-rtos/zephyr/security/advisories/GHSA-gmfv-4vfh-2mh8>`_
+
 Architectures
 *************
 
@@ -37,7 +40,7 @@ Architectures
 Bluetooth
 *********
 
-  * Added Nordic UART Service (NUS), enabled by the :kconfig:option:`CONFIG_BT_NUS`.
+  * Added Nordic UART Service (NUS), enabled by the :kconfig:option:`CONFIG_BT_ZEPHYR_NUS`.
     This Service exposes the ability to declare multiple instances of the GATT service,
     allowing multiple serial endpoints to be used for different purposes.
 
@@ -178,6 +181,20 @@ Drivers and Sensors
 Networking
 **********
 
+* DHCPv4:
+
+  * Added support for encapsulated vendor specific options. By enabling
+    :kconfig:option:`CONFIG_NET_DHCPV4_OPTION_CALLBACKS_VENDOR_SPECIFIC` callbacks can be
+    registered with :c:func:`net_dhcpv4_add_option_vendor_callback` to handle these options after
+    being initialised with :c:func:`net_dhcpv4_init_option_vendor_callback`.
+
+  * Added support for the "Vendor class identifier" option. Use the
+    :kconfig:option:`CONFIG_NET_DHCPV4_VENDOR_CLASS_IDENTIFIER` to enable it and
+    :kconfig:option:`CONFIG_NET_DHCPV4_VENDOR_CLASS_IDENTIFIER_STRING` to set it.
+
+  * The NTP server from the DHCPv4 option can now be used to set the system time. This is done by
+    default, if :kconfig:option:`CONFIG_NET_CONFIG_CLOCK_SNTP_INIT` is enabled.
+
 * LwM2M:
 
   * Added new API function:
@@ -197,6 +214,9 @@ Libraries / Subsystems
 
 * Logging
 
+  * By enabling :kconfig:option:`CONFIG_LOG_BACKEND_NET_USE_DHCPV4_OPTION`, the IP address of the
+    syslog server for the networking backend is set by the DHCPv4 Log Server Option (7).
+
 * Modem modules
 
 * Picolibc
@@ -210,6 +230,11 @@ Libraries / Subsystems
 * SD
 
 * Storage
+
+  * FAT FS: It is now possible to expose file system formatting functionality for FAT without also
+    enabling automatic formatting on mount failure by setting the
+    :kconfig:option:`CONFIG_FS_FATFS_MKFS` Kconfig option. This option is enabled by default if
+    :kconfig:option:`CONFIG_FILE_SYSTEM_MKFS` is set.
 
 * POSIX API
 
@@ -235,6 +260,6 @@ Tests and Samples
 *****************
 
   * Added snippet for easily enabling UART over Bluetooth LE by passing ``-S nus-console`` during
-    ``west build``. This snippet sets the :kconfig:option:`CONFIG_BT_NUS_AUTO_START_BLUETOOTH`
+    ``west build``. This snippet sets the :kconfig:option:`CONFIG_BT_ZEPHYR_NUS_AUTO_START_BLUETOOTH`
     which allows non-Bluetooth samples that use the UART APIs to run without modifications
     (e.g: Console and Logging examples).

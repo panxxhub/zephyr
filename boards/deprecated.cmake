@@ -384,7 +384,7 @@ set(mimxrt595_evk_cm33_DEPRECATED
     mimxrt595_evk/mimxrt595s/cm33
 )
 set(mimxrt685_evk_cm33_DEPRECATED
-    mimxrt685_evk
+    mimxrt685_evk/mimxrt685s/cm33
 )
 set(mps2_an385_DEPRECATED
     mps2/an385
@@ -588,7 +588,7 @@ set(nxp_adsp_imx8m_DEPRECATED
     imx8mp_evk/mimx8ml8/adsp
 )
 set(nxp_adsp_imx8ulp_DEPRECATED
-    imx8ulp_evk/imx8ulp/adsp
+    imx8ulp_evk/mimx8ud7/adsp
 )
 set(nxp_adsp_imx8x_DEPRECATED
     imx8qxp_mek/mimx8qx6/adsp

@@ -53,6 +53,7 @@
 			status = "disabled";
 			reg = <0xe000b000 0x1000>,
 				<0xf8000140 0x4>;
+			syscon = <&slcr>;
 			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL
 					IRQ_DEFAULT_PRIORITY>,
 				     <GIC_SPI 23 IRQ_TYPE_LEVEL

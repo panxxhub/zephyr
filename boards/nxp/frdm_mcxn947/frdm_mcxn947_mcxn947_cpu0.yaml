@@ -18,4 +18,7 @@ supported:
   - dma
   - gpio
   - spi
+  - dac
+  - i2c
+  - watchdog
 vendor: nxp

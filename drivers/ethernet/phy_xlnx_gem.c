@@ -16,6 +16,7 @@
 #include <zephyr/device.h>
 
 #include "eth_xlnx_gem_priv.h"
+#include "phy_xlnx_gem.h"
 
 #define LOG_MODULE_NAME phy_xlnx_gem
 #define LOG_LEVEL CONFIG_ETHERNET_LOG_LEVEL
@@ -174,6 +175,215 @@ static void phy_xlnx_gem_mdio_write(
 			"register address %hhu timed out",
 			base_addr, phy_addr, reg_addr);
 	}
+}
+
+/**
+ * @brief Microchip KSZ family PHY reset function
+ *
+ * @param dev
+ */
+static void phy_xlnx_gem_microchip_ksz_reset(const struct device *dev)
+{
+	//
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data = 0;
+	uint32_t retries = 0;
+	/*
+	 * IEEE 802.3 Clause 22 compliant PHYs have a reset bit in the
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	phy_data |= PHY_MC_KSZ_BASIC_CONTROL_RESET_BIT;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_BASIC_CONTROL_REGISTER, phy_data);
+	/* Bit [15] reverts to 0 once the reset is complete. */
+	while (((phy_data & PHY_TI_BASIC_MODE_CONTROL_RESET_BIT) != 0) && (retries++ < 10)) {
+		phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+						  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	}
+	if (retries == 10) {
+		LOG_ERR("%s reset PHY address %hhu (Marvell Alaska) timed out", dev->name,
+			dev_data->phy_addr);
+	}
+}
+
+/**
+ * @brief MicroChip KSZ PHY configuration function
+ * Configuration function for the MicroChip KSZ PHY series
+ *
+ * @param dev Pointer to the device data
+ */
+static void phy_xlnx_gem_microchip_ksz_cfg(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data = 0;
+	uint16_t phy_data_g = 0;
+
+	/*
+	 * 1. disable auto-negotiation, then trigger a PHY reset.
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	phy_data &= ~PHY_MC_KSZ_BASIC_CONTROL_AUTONEG_ENABLE_BIT;
+	phy_xlnx_gem_microchip_ksz_reset(dev);
+
+	/*
+	 * 2. configure the auto mdi/mdi-x
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_AUTO_MDIX_CONTROL_REGISTER);
+	phy_data |= PHY_MC_KSZ_AUTO_MDIX_SWAP_OFF;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_AUTO_MDIX_CONTROL_REGISTER, phy_data);
+
+	/**
+	 * 3. configure the interrupt control/status register
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER);
+	phy_data |= (PHY_MC_KSZ_LINK_UP_INT_ENABLE_BIT | PHY_MC_KSZ_LINK_DOWN_INT_ENABLE_BIT);
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER, phy_data);
+
+	/*
+	 * 4. configure the auto-neg advertisement register
+	 */
+	phy_data_g = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					    PHY_MC_KSZ_1000BASET_CONTROL_REGISTER);
+	phy_data_g &= ~PHY_MC_KSZ_ADV_1000BASET_FDX_BIT;
+	phy_data_g &= ~PHY_MC_KSZ_ADV_1000BASET_HDX_BIT;
+
+	if (dev_conf->enable_fdx) {
+		if (dev_conf->max_link_speed == LINK_1GBIT) {
+			/* Advertise 1 GBit/s, full duplex */
+			phy_data_g |= PHY_MC_KSZ_ADV_1000BASET_FDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 100 MBit/s, full duplex */
+				phy_data |= PHY_MC_KSZ_ADV_100BASET_FDX_BIT;
+				/* + 10 MBit/s, full duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_FDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_100MBIT) {
+			/* Advertise 100 MBit/s, full duplex */
+			phy_data |= PHY_MC_KSZ_ADV_100BASET_FDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 10 MBit/s, full duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_FDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_10MBIT) {
+			/* Advertise 10 MBit/s, full duplex */
+			phy_data |= PHY_MC_KSZ_ADV_10BASET_FDX_BIT;
+		}
+	} else {
+		if (dev_conf->max_link_speed == LINK_1GBIT) {
+			/* Advertise 1 GBit/s, half duplex */
+			phy_data_g = PHY_MC_KSZ_ADV_1000BASET_HDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 100 MBit/s, half duplex */
+				phy_data |= PHY_MC_KSZ_ADV_100BASET_HDX_BIT;
+				/* + 10 MBit/s, half duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_HDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_100MBIT) {
+			/* Advertise 100 MBit/s, half duplex */
+			phy_data |= PHY_MC_KSZ_ADV_100BASET_HDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 10 MBit/s, half duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_HDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_10MBIT) {
+			/* Advertise 10 MBit/s, half duplex */
+			phy_data |= PHY_MC_KSZ_ADV_10BASET_HDX_BIT;
+		}
+	}
+
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_1000BASET_CONTROL_REGISTER, phy_data_g);
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_AUTONEG_ADV_REGISTER, phy_data);
+
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	phy_data |= PHY_MC_KSZ_BASIC_CONTROL_AUTONEG_ENABLE_BIT;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_BASIC_CONTROL_REGISTER, phy_data);
+
+	phy_xlnx_gem_microchip_ksz_reset(dev);
+
+	/*
+	 * Set the link speed to 'link down' for now, once auto-negotiation
+	 * is complete, the result will be handled by the system work queue.
+	 */
+	dev_data->eff_link_speed = LINK_DOWN;
+}
+
+static uint16_t phy_xlnx_gem_microchip_ksz_poll_sc(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+	uint16_t phy_status = 0;
+
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_STATUS_REGISTER);
+
+	if ((phy_data & PHY_MC_KSZ_BASIC_STATUS_AUTO_NEG_COMPLETE_BIT) != 0) {
+		phy_status |= PHY_XLNX_GEM_EVENT_AUTONEG_COMPLETE;
+	}
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER);
+	if (phy_data & (PHY_MC_KSZ_LINK_UP_BIT | PHY_MC_KSZ_LINK_DOWN_BIT)) {
+		phy_status |= PHY_XLNX_GEM_EVENT_LINK_STATE_CHANGED;
+	}
+
+	return phy_status;
+}
+
+static uint8_t phy_xlnx_gem_microchip_ksz_poll_lsts(const struct device*dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+
+	/*
+	 * see ieee 802.3 clause 22, register 0x01
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_STATUS_REGISTER);
+
+	return ((phy_data >> PHY_MC_KSZ_BASIC_STATUS_LINK_STATUS_BIT) & 0x0001);
+
+}
+
+static enum eth_xlnx_link_speed phy_xlnx_gem_microchip_ksz_poll_lspd(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+
+	/*
+	 * Current link speed is obtained from:
+	 * Page 0, register address 17 = Copper Specific Status Register 1
+	 * bits [15 .. 14] = Speed.
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_VS_CONTROL_REGISTER);
+
+	/*
+	 * vendor specific 1F.[6:4] = speed
+	 */
+	if (phy_data & PHY_MC_KSZ_FINAL_SPEED_1000BASET) {
+		return LINK_1GBIT;
+	}
+	if (phy_data & PHY_MC_KSZ_FINAL_SPEED_100BASET) {
+		return LINK_100MBIT;
+	}
+	if (phy_data & PHY_MC_KSZ_FINAL_SPEED_10BASET) {
+		return LINK_10MBIT;
+	}
+	return LINK_DOWN;
 }
 
 /*
@@ -842,6 +1052,15 @@ static struct phy_xlnx_gem_api phy_xlnx_gem_ti_dp83822_api = {
 	.phy_poll_link_speed_func    = phy_xlnx_gem_ti_dp83822_poll_lspd
 };
 
+
+static struct phy_xlnx_gem_api phy_xlnx_gem_microchip_ksz_api = {
+	.phy_reset_func 		= phy_xlnx_gem_microchip_ksz_reset,
+	.phy_configure_func 		= phy_xlnx_gem_microchip_ksz_cfg,
+	.phy_poll_status_change_func 	= phy_xlnx_gem_microchip_ksz_poll_sc,
+	.phy_poll_link_status_func 	= phy_xlnx_gem_microchip_ksz_poll_lsts,
+	.phy_poll_link_speed_func 	= phy_xlnx_gem_microchip_ksz_poll_lspd
+};
+
 /*
  * All vendor-specific API structs & code are located above
  * -> assemble the top-level list of supported devices the
@@ -880,7 +1099,14 @@ static struct phy_xlnx_gem_supported_dev phy_xlnx_gem_supported_devs[] = {
 		.phy_id_mask = PHY_TI_PHY_ID_MODEL_MASK,
 		.api         = &phy_xlnx_gem_ti_dp83822_api,
 		.identifier  = "Texas Instruments TLK105"
+	},
+	{
+		.phy_id      = PHY_MC_KSZ_PHY_ID_MODEL_MASK,
+		.phy_id_mask = PHY_MC_KSZ_PHY_ID_MODEL_KSZ9031,
+		.api         = &phy_xlnx_gem_microchip_ksz_api,
+		.identifier  = "Microchip KSZ Family"
 	}
+
 };
 
 /**

@@ -256,6 +256,9 @@
 			compatible = "nxp,kinetis-lpuart";
 			reg = <0x94000 0x1000>;
 			clocks = <&syscon MCUX_FLEXCOMM2_CLK>;
+			/* DMA channels 4 and 5, muxed to LPUART2 RX and TX */
+			dmas = <&edma0 4 73>, <&edma0 5 74>;
+			dma-names = "rx", "tx";
 			status = "disabled";
 		};
 		flexcomm2_lpspi2: lpspi@94000 {
@@ -324,6 +327,9 @@
 			compatible = "nxp,kinetis-lpuart";
 			reg = <0xb4000 0x1000>;
 			clocks = <&syscon MCUX_FLEXCOMM4_CLK>;
+			/* DMA channels 2 and 3, muxed to LPUART4 RX and TX */
+			dmas = <&edma0 2 77>, <&edma0 3 78>;
+			dma-names = "rx", "tx";
 			status = "disabled";
 		};
 		flexcomm4_lpspi4: lpspi@b4000 {
@@ -567,6 +573,51 @@
 		interrupts = <57 0>;
 		status = "disabled";
 	};
+
+	dac0: dac@10f000 {
+		compatible = "nxp,lpdac";
+		reg = < 0x10f000 0x1000>;
+		interrupts = <106 0>;
+		status = "disabled";
+		voltage-reference = <0>;
+		#io-channel-cells = <1>;
+	};
+
+	dac1: dac@112000 {
+		compatible = "nxp,lpdac";
+		reg = < 0x112000 0x1000>;
+		interrupts = <107 0>;
+		status = "disabled";
+		voltage-reference = <0>;
+		#io-channel-cells = <1>;
+	};
+
+	enet: ethernet@40100000 {
+		compatible = "nxp,enet-qos";
+		reg = <0x40100000 0x1200>;
+		clocks = <&syscon MCUX_ENET_QOS_CLK>;
+		enet_mac: ethernet {
+			compatible = "nxp,enet-qos-mac";
+			status = "disabled";
+			interrupts = <139 0>, <140 0>, <141 0>;
+			interrupt-names = "mac", "power", "lpi";
+		};
+		enet_mdio: mdio {
+			#address-cells = <1>;
+			#size-cells = <0>;
+			compatible = "nxp,enet-qos-mdio";
+			status = "disabled";
+		};
+	};
+
+	wwdt0: watchdog@16000 {
+		compatible = "nxp,lpc-wwdt";
+		reg = <0x16000 0x1000>;
+		interrupts = <152 0>;
+		status = "disabled";
+		clk-divider = <1>;
+	};
+
 };
 
 &systick {

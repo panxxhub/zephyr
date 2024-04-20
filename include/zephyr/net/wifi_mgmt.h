@@ -48,6 +48,13 @@ extern "C" {
 #endif /* CONFIG_WIFI_MGMT_SCAN_CHAN_MAX_MANUAL */
 
 #define WIFI_MGMT_BAND_STR_SIZE_MAX 8
+#define WIFI_MGMT_SCAN_MIN_DWELL_TIME_ACTIVE 5
+#define WIFI_MGMT_SCAN_MAX_DWELL_TIME_ACTIVE 1000
+#define WIFI_MGMT_SCAN_MIN_DWELL_TIME_PASSIVE 10
+#define WIFI_MGMT_SCAN_MAX_DWELL_TIME_PASSIVE 1000
+#define WIFI_MGMT_SCAN_DEFAULT_DWELL_TIME_ACTIVE 50
+#define WIFI_MGMT_SCAN_DEFAULT_DWELL_TIME_PASSIVE 130
+#define WIFI_MGMT_SCAN_MAX_BSS_CNT 65535
 
 /** Wi-Fi management commands */
 enum net_request_wifi_cmd {
@@ -373,7 +380,14 @@ enum wifi_conn_status {
 	WIFI_STATUS_CONN_SUCCESS = 0,
 	/** Connection failed - generic failure */
 	WIFI_STATUS_CONN_FAIL,
-	/** Connection failed - wrong password */
+	/** Connection failed - wrong password
+	 * Few possible reasons for 4-way handshake failure that we can guess are as follows:
+	 * 1) Incorrect key
+	 * 2) EAPoL frames lost causing timeout
+	 *
+	 * #1 is the likely cause, so, we convey to the user that it is due to
+	 * Wrong passphrase/password.
+	 */
 	WIFI_STATUS_CONN_WRONG_PASSWORD,
 	/** Connection timed out */
 	WIFI_STATUS_CONN_TIMEOUT,

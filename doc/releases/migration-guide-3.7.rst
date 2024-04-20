@@ -28,6 +28,9 @@ Kernel
 Boards
 ******
 
+* Reordered D1 and D0 in the `pro_micro` connector gpio-map for SparkFun Pro Micro RP2040 to match
+  original Pro Micro definition. Out-of-tree shields must be updated to reflect this change.
+
 Modules
 *******
 
@@ -206,6 +209,12 @@ Networking
   used to read the inner IPv4/IPv6 packets in an IP tunnel. This incoming tunnel read is now
   implemented in `recv` callback. (:github:`70549`)
 
+* Virtual LAN (VLAN) implementation is changed to use the Virtual network interfaces.
+  There are no API changes, but the type of a VLAN network interface is changed from `ETHERNET`
+  to `VIRTUAL`. This could require changes to the code that sets the VLAN tags to a network
+  interface. For example in the `net_eth_is_vlan_enabled()` API, the 2nd interface parameter
+  must point to the main Ethernet interface, and not to the VLAN interface. (:github:`70345`)
+
 * Modified the ``wifi connect`` command to use key-value format for the arguments. In the
   previous implementation, we were identifying an option using its position in the argument string.
   This made it difficult to deal with optional arguments or extending the support
@@ -213,6 +222,13 @@ Networking
   can be passed to the connect command.
   ``wifi -h`` will give more information about the usage of connect command.
   (:github:`70024`)
+
+* The Kconfig ``CONFIG_NET_TCP_ACK_TIMEOUT`` has been deprecated. Its usage was
+  limited to TCP handshake only, and in such case the total timeout should depend
+  on the total retransmission timeout (as in other cases) making the config
+  redundant and confusing. Use ``CONFIG_NET_TCP_INIT_RETRANSMISSION_TIMEOUT`` and
+  ``CONFIG_NET_TCP_RETRY_COUNT`` instead to control the total timeout at the
+  TCP level. (:github:`70731`)
 
 Other Subsystems
 ****************
