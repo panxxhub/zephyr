@@ -23,6 +23,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/syscon.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/__assert.h>
 
@@ -36,6 +37,15 @@
 #define LOG_LEVEL CONFIG_ETHERNET_LOG_LEVEL
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
+
+/* SLCR lock offsets and keys */
+#define SLCR_LOCK_OFFSET   0x0004
+#define SLCR_UNLOCK_OFFSET 0x0008
+#define SLCR_STS_OFFSET    0x000C
+#define SLCR_LOCK_KEY      0x0000767B
+#define SLCR_UNLOCK_KEY    0x0000DF0D
+
+
 
 static int  eth_xlnx_gem_dev_init(const struct device *dev);
 static void eth_xlnx_gem_iface_init(struct net_if *iface);
@@ -63,6 +73,7 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
 static void eth_xlnx_gem_tx_done_work(struct k_work *item);
 static void eth_xlnx_gem_handle_tx_done(const struct device *dev);
 
+
 static const struct ethernet_api eth_xlnx_gem_apis = {
 	.iface_api.init   = eth_xlnx_gem_iface_init,
 	.get_capabilities = eth_xlnx_gem_get_capabilities,
@@ -74,11 +85,29 @@ static const struct ethernet_api eth_xlnx_gem_apis = {
 #endif
 };
 
+static const struct device *const slcr = DEVICE_DT_GET(DT_INST_PHANDLE(0, syscon));
+static ALWAYS_INLINE int32_t slcr_unlock()
+{
+	return syscon_write_reg(slcr, SLCR_UNLOCK_OFFSET, SLCR_UNLOCK_KEY);
+}
+static ALWAYS_INLINE int32_t slcr_lock()
+{
+	return syscon_write_reg(slcr, SLCR_LOCK_OFFSET, SLCR_LOCK_KEY);
+}
+static ALWAYS_INLINE int32_t slcr_locked(int32_t *val)
+{
+	return syscon_read_reg(slcr, SLCR_STS_OFFSET, val);
+}
+
+
 /*
  * Insert the configuration & run-time data for all GEM instances which
  * are enabled in the device tree of the current target board.
  */
 DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_INITIALIZE)
+
+
+
 
 /**
  * @brief GEM device initialization function
@@ -737,6 +766,7 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 	uint32_t tmp;
 	uint32_t clk_ctrl_reg;
 
+
 	if ((!dev_conf->init_phy) || dev_data->eff_link_speed == LINK_DOWN) {
 		/*
 		 * Run-time data indicates 'link down' or PHY management
@@ -818,22 +848,61 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 	if ((tmp & ETH_XLNX_CRL_APB_WPROT_BIT) > 0) {
 		sys_write32(tmp, ETH_XLNX_CRL_APB_WPROT_REGISTER_ADDRESS);
 	}
-# elif defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
-	clk_ctrl_reg  = sys_read32(dev_conf->clk_ctrl_reg_address);
-	clk_ctrl_reg &= ~((ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
-			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR0_SHIFT) |
-			(ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
-			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR1_SHIFT));
-	clk_ctrl_reg |= ((div0 & ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK) <<
-			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR0_SHIFT) |
-			((div1 & ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK) <<
-			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR1_SHIFT);
+#elif defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
+	int err = 0;
+	int slcr_locked_val = 0;
 
-	sys_write32(clk_ctrl_reg, dev_conf->clk_ctrl_reg_address);
+
+	/* read lock state */
+	err = slcr_locked(&slcr_locked_val);
+	if (err != 0) {
+		LOG_ERR("failed to read SLCR lock (err %d)", err);
+		return;
+	}
+
+	/* unlock slcr, if locked */
+	if (slcr_locked_val == 1) {
+		err = slcr_unlock();
+		if (err != 0) {
+			LOG_ERR("failed to unlock SLCR (err %d)", err);
+			return;
+		}
+	}
+
+	err = syscon_read_reg(slcr, dev_conf->clk_ctrl_reg_address, &clk_ctrl_reg);
+	if (err != 0) {
+		LOG_ERR("failed to read SLCR register (err %d)", err);
+		return;
+	}
+	clk_ctrl_reg &= ~((ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK
+			   << ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR0_SHIFT) |
+			  (ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK
+			   << ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR1_SHIFT));
+	clk_ctrl_reg |= ((div0 & ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK)
+			 << ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR0_SHIFT) |
+			((div1 & ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK)
+			 << ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR1_SHIFT);
+
+	err = syscon_write_reg(slcr, dev_conf->clk_ctrl_reg_address, clk_ctrl_reg);
+	if(err != 0) {
+		LOG_ERR("failed to write SLCR register (err %d)", err);
+		return;
+	}
+
+	/* lock slcr, if unlocked */
+	if (slcr_locked_val == 1) {
+		err = slcr_lock();
+		if (err != 0) {
+			LOG_ERR("failed to lock SLCR (err %d)", err);
+			return;
+		}
+	}
+
 #endif /* CONFIG_SOC_XILINX_ZYNQMP / CONFIG_SOC_FAMILY_XILINX_ZYNQ7000 */
 
 	LOG_DBG("%s set clock dividers div0/1 %u/%u for target "
-		"frequency %u Hz", dev->name, div0, div1, target);
+		"frequency %u Hz",
+		dev->name, div0, div1, target);
 }
 
 /**

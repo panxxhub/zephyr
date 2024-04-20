@@ -16,6 +16,13 @@ properties:
   interrupts:
     required: true
 
+  syscon:
+    type: phandle
+    required: false
+    description: |
+      phandle to the System Level Control Registers (SLCR).
+
+
   clock-frequency:
     type: int
     required: true
