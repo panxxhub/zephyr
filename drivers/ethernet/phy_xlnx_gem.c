@@ -347,7 +347,7 @@ static uint8_t phy_xlnx_gem_microchip_ksz_poll_lsts(const struct device*dev)
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_MC_KSZ_BASIC_STATUS_REGISTER);
 
-	return ((phy_data & PHY_MC_KSZ_BASIC_STATUS_LINK_STATUS_BIT) != 0x0001);
+	return ((phy_data & PHY_MC_KSZ_BASIC_STATUS_LINK_STATUS_BIT) != 0);
 
 }
 
