@@ -327,12 +327,6 @@ static uint16_t phy_xlnx_gem_microchip_ksz_poll_sc(const struct device *dev)
 	uint16_t phy_status = 0;
 
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
-					  PHY_MC_KSZ_BASIC_STATUS_REGISTER);
-
-	if ((phy_data & PHY_MC_KSZ_BASIC_STATUS_AUTO_NEG_COMPLETE_BIT) != 0) {
-		phy_status |= PHY_XLNX_GEM_EVENT_AUTONEG_COMPLETE;
-	}
-	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER);
 	if (phy_data & (PHY_MC_KSZ_LINK_UP_BIT | PHY_MC_KSZ_LINK_DOWN_BIT)) {
 		phy_status |= PHY_XLNX_GEM_EVENT_LINK_STATE_CHANGED;
@@ -353,7 +347,7 @@ static uint8_t phy_xlnx_gem_microchip_ksz_poll_lsts(const struct device*dev)
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_MC_KSZ_BASIC_STATUS_REGISTER);
 
-	return ((phy_data >> PHY_MC_KSZ_BASIC_STATUS_LINK_STATUS_BIT) & 0x0001);
+	return ((phy_data & PHY_MC_KSZ_BASIC_STATUS_LINK_STATUS_BIT) != 0x0001);
 
 }
 
