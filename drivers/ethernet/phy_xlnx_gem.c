@@ -1095,8 +1095,8 @@ static struct phy_xlnx_gem_supported_dev phy_xlnx_gem_supported_devs[] = {
 		.identifier  = "Texas Instruments TLK105"
 	},
 	{
-		.phy_id      = PHY_MC_KSZ_PHY_ID_MODEL_MASK,
-		.phy_id_mask = PHY_MC_KSZ_PHY_ID_MODEL_KSZ9031,
+		.phy_id      = PHY_MC_KSZ_PHY_ID_MODEL_KSZ9031,
+		.phy_id_mask = PHY_MC_KSZ_PHY_ID_MODEL_MASK,
 		.api         = &phy_xlnx_gem_microchip_ksz_api,
 		.identifier  = "Microchip KSZ Family"
 	}
