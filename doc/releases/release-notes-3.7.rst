@@ -60,6 +60,8 @@ Architectures
 
   * Implemented frame-pointer based stack unwinding.
 
+  * The fatal error message triggered from a fault now contains the callee-saved-registers states.
+
 * Xtensa
 
 Bluetooth
@@ -76,6 +78,8 @@ Boards & SoC Support
 
 * Made these changes in other SoC series:
 
+  * ITE: Rename the Kconfig symbol for all ITE SoC variants.
+
 * Added support for these ARM boards:
 
 * Added support for these Xtensa boards:
@@ -90,6 +94,14 @@ Boards & SoC Support
 
 Build system and Infrastructure
 *******************************
+
+* CI-enabled blackbox tests were added in order to verify correctness of the vast majority of Twister flags.
+
+* Compiler
+
+  * Deprecated the global CSTD cmake property in favor of the :kconfig:option:`CONFIG_STD_C`
+    choice to select the C Standard version. Additionally subsystems can select a minimum
+    required C Standard version, with for example :kconfig:option:`CONFIG_REQUIRES_STD_C11`.
 
 Drivers and Sensors
 *******************
