@@ -20,6 +20,7 @@
 		zephyr,flash = &flash0;
 		zephyr,code-partition = &slot0_partition;
 		zephyr,display = &ili9341;
+		zephyr,bt-hci = &esp32_bt_hci;
 	};
 
 	leds {
@@ -76,6 +77,7 @@
 		led0 = &blue_led;
 		sw0 = &menu_button;
 		watchdog0 = &wdt0;
+		sdhc0 = &sd0;
 	};
 
 	mipi_dbi {
@@ -96,14 +98,6 @@
 			height = <240>;
 		};
 	};
-};
-
-&cpu0 {
-	clock-frequency = <ESP32_CLK_CPU_240M>;
-};
-
-&cpu1 {
-	clock-frequency = <ESP32_CLK_CPU_240M>;
 };
 
 &uart0 {
@@ -143,7 +137,7 @@
 	pinctrl-0 = <&spim3_default>;
 	pinctrl-names = "default";
 
-	sdhc0: sdhc@1 {
+	sd0: sd@1 {
 		compatible = "zephyr,sdhc-spi-slot";
 		reg = <1>;
 		status = "okay";
@@ -212,4 +206,8 @@
 			reg = <0x00250000 0x00006000>;
 		};
 	};
+};
+
+&esp32_bt_hci {
+	status = "okay";
 };

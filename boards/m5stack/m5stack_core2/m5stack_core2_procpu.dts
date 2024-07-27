@@ -23,6 +23,7 @@
 		watchdog0 = &wdt0;
 		rtc = &pfc8563_rtc;
 		led0 = &led_pwr;
+		sdhc0 = &sd0;
 	};
 
 	chosen {
@@ -33,6 +34,7 @@
 		zephyr,display = &ili9342c;
 		zephyr,code-partition = &slot0_partition;
 		zephyr,rtc = &pfc8563_rtc;
+		zephyr,bt-hci = &esp32_bt_hci;
 	};
 
 	leds {
@@ -70,14 +72,6 @@
 			rotation = <0>;
 		};
 	};
-};
-
-&cpu0 {
-	clock-frequency = <ESP32_CLK_CPU_240M>;
-};
-
-&cpu1 {
-	clock-frequency = <ESP32_CLK_CPU_240M>;
 };
 
 &psram0 {
@@ -215,7 +209,7 @@
 	cs-gpios = <&gpio0 5 GPIO_ACTIVE_LOW>,
 			   <&gpio0 4 GPIO_ACTIVE_LOW>;
 
-	sdhc0: sdhc@1 {
+	sd0: sd@1 {
 		compatible = "zephyr,sdhc-spi-slot";
 		reg = <1>;
 		status = "okay";
@@ -289,4 +283,8 @@
 			reg = <0x00250000 0x00db0000>;
 		};
 	};
+};
+
+&esp32_bt_hci {
+	status = "okay";
 };
