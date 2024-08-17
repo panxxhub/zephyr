@@ -42,6 +42,8 @@ zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54H20_CPURAD     NRF54H20_XXAA
                                                                 NRF_RADIOCORE)
 zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54H20_CPUPPR     NRF54H20_XXAA
                                                                 NRF_PPR)
+zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54H20_CPUFLPR    NRF54H20_XXAA
+                                                                NRF_FLPR)
 zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54L15_ENGA       NRF54L15_ENGA_XXAA)
 zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54L15_ENGA_CPUAPP NRF_APPLICATION)
 zephyr_compile_definitions_ifdef(CONFIG_SOC_NRF54L15_ENGA_CPUFLPR NRF_FLPR)
@@ -86,8 +88,9 @@ zephyr_library_sources_ifdef(CONFIG_SOC_SERIES_NRF91X  ${MDK_DIR}/system_nrf91.c
 
 zephyr_library_sources(nrfx_glue.c)
 zephyr_library_sources(${HELPERS_DIR}/nrfx_flag32_allocator.c)
-zephyr_library_sources_ifdef(CONFIG_NRFX_DPPI    ${HELPERS_DIR}/nrfx_gppi_dppi.c)
-zephyr_library_sources_ifdef(CONFIG_NRFX_PPI     ${HELPERS_DIR}/nrfx_gppi_ppi.c)
+zephyr_library_sources_ifdef(CONFIG_RETAINED_MEM_NRF_RAM_CTRL ${HELPERS_DIR}/nrfx_ram_ctrl.c)
+zephyr_library_sources_ifdef(CONFIG_NRFX_DPPI                 ${HELPERS_DIR}/nrfx_gppi_dppi.c)
+zephyr_library_sources_ifdef(CONFIG_NRFX_PPI                  ${HELPERS_DIR}/nrfx_gppi_ppi.c)
 
 zephyr_library_sources_ifdef(CONFIG_NRFX_PRS     ${SRC_DIR}/prs/nrfx_prs.c)
 
@@ -194,6 +197,7 @@ mdk_svd_ifdef(CONFIG_SOC_NRF5340_CPUAPP       nrf5340_application.svd)
 mdk_svd_ifdef(CONFIG_SOC_NRF5340_CPUNET       nrf5340_network.svd)
 mdk_svd_ifdef(CONFIG_SOC_NRF54H20_CPUAPP      nrf54h20_application.svd)
 mdk_svd_ifdef(CONFIG_SOC_NRF54H20_CPUPPR      nrf54h20_ppr.svd)
+mdk_svd_ifdef(CONFIG_SOC_NRF54H20_CPUFLPR     nrf54h20_flpr.svd)
 mdk_svd_ifdef(CONFIG_SOC_NRF54H20_CPURAD      nrf54h20_radiocore.svd)
 mdk_svd_ifdef(CONFIG_SOC_NRF54L15_ENGA_CPUAPP nrf54l15_enga_application.svd)
 mdk_svd_ifdef(CONFIG_SOC_NRF54L15_ENGA_CPUFLPR nrf54l15_enga_flpr.svd)

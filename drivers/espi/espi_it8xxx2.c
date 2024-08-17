@@ -11,6 +11,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/interrupt_controller/wuc_ite_it8xxx2.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/util.h>
 #include <soc.h>
 #include <soc_dt.h>
 #include "soc_espi.h"
@@ -208,6 +209,7 @@ static const struct ec2i_t pmc2_settings[] = {
  */
 #define IT8XXX2_ESPI_H2RAM_POOL_SIZE_MAX 0x1000
 #define IT8XXX2_ESPI_H2RAM_OFFSET_MASK   GENMASK(5, 0)
+#define IT8XXX2_ESPI_H2RAM_BASEADDR_MASK (KB(CONFIG_SRAM_SIZE) - 1)
 
 #if defined(CONFIG_ESPI_PERIPHERAL_ACPI_SHM_REGION)
 #define H2RAM_ACPI_SHM_MAX ((CONFIG_ESPI_IT8XXX2_ACPI_SHM_H2RAM_SIZE) + \
@@ -259,8 +261,8 @@ static void smfi_it8xxx2_init(const struct device *dev)
 	uint8_t h2ram_offset;
 
 	/* Set the host to RAM cycle address offset */
-	h2ram_offset = ((uint32_t)h2ram_pool & 0xffff) /
-				IT8XXX2_ESPI_H2RAM_POOL_SIZE_MAX;
+	h2ram_offset = ((uint32_t)h2ram_pool & IT8XXX2_ESPI_H2RAM_BASEADDR_MASK) /
+		       IT8XXX2_ESPI_H2RAM_POOL_SIZE_MAX;
 	gctrl->GCTRL_H2ROFSR =
 		(gctrl->GCTRL_H2ROFSR & ~IT8XXX2_ESPI_H2RAM_OFFSET_MASK) |
 		h2ram_offset;
@@ -945,7 +947,7 @@ static int espi_it8xxx2_write_lpc_request(const struct device *dev,
 		   ((((tag) & 0xF) << 4) | (((len) >> 8) & 0xF))
 
 struct espi_oob_msg_packet {
-	uint8_t data_byte[0];
+	FLEXIBLE_ARRAY_DECLARE(uint8_t, data_byte);
 };
 
 static int espi_it8xxx2_send_oob(const struct device *dev,
