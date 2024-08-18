@@ -356,7 +356,7 @@ static const struct udc_api udc_zynq_api = {
 	.ep_dequeue = udc_zynq_ep_dequeue,
 };
 
-#define DT_DRV_COMPAT zephyr_udc_zynq_2_20_a
+#define DT_DRV_COMPAT zephyr_udc_zynq
 
 /*
  * A UDC driver should always be implemented as a multi-instance
