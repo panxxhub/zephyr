@@ -1,0 +1,8 @@
+# Copyright (c) 2017, I-SENSE group of ICCS
+# SPDX-License-Identifier: Apache-2.0
+
+description: Xilinx Zynq USB controller
+
+compatible: "xlnx,zynq-usb-2.20.a"
+
+include: [usb-ep.yaml, pinctrl-device.yaml]
