@@ -3,6 +3,6 @@
 
 description: Xilinx Zynq USB controller
 
-compatible: "xlnx,zynq-usb-2.20.a"
+compatible: "xlnx,zynq-usb"
 
 include: [usb-ep.yaml, pinctrl-device.yaml]
