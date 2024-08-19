@@ -24,6 +24,12 @@
  */
 
 #include "udc_common.h"
+#include "zephyr/arch/arm/cortex_a_r/sys_io.h"
+#include "zephyr/device.h"
+#include "zephyr/sys/device_mmio.h"
+#include "zephyr/sys/sys_io.h"
+#include "zephyr/toolchain.h"
+#include "udc_zynq.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -32,7 +38,12 @@
 #include <zephyr/drivers/usb/udc.h>
 
 #include <zephyr/logging/log.h>
+#include <sys/types.h>
 LOG_MODULE_REGISTER(udc_zynq, CONFIG_UDC_DRIVER_LOG_LEVEL);
+
+#define DEV_CFG(dev) ((const struct udc_zynq_config *)dev->config)
+
+#define USB_EP_LUT_IDX(ep) (USB_EP_DIR_IS_IN(ep) ? (ep & BIT_MASK(4)) + 16 : ep & BIT_MASK(4))
 
 /*
  * Structure for holding controller configuration items that can remain in
@@ -56,11 +67,17 @@ struct udc_zynq_data {
 	struct k_thread thread_data;
 };
 
+
+static ALWAYS_INLINE void zynq_usb_setbits(const struct device* dev, uint16_t reg_offset , uint32_t bits)
+{
+
+}
+
 /*
  * You can use one thread per driver instance model or UDC driver workqueue,
  * whichever model suits your needs best. If you decide to use the UDC workqueue,
  * enable Kconfig option UDC_WORKQUEUE and remove the handler below and
- * caller from the UDC_zynq_DEVICE_DEFINE macro.
+ * caller from the UDC_ZYNQ_DEVICE_DEFINE macro.
  */
 static ALWAYS_INLINE void zynq_thread_handler(void *const arg)
 {
@@ -79,9 +96,8 @@ static ALWAYS_INLINE void zynq_thread_handler(void *const arg)
  * in a single location. Please refer to existing driver implementations
  * for examples.
  */
-static int udc_zynq_ep_enqueue(const struct device *dev,
-				   struct udc_ep_config *const cfg,
-				   struct net_buf *buf)
+static int udc_zynq_ep_enqueue(const struct device *dev, struct udc_ep_config *const cfg,
+			       struct net_buf *buf)
 {
 	LOG_DBG("%p enqueue %p", dev, buf);
 	udc_buf_put(cfg, buf);
@@ -89,7 +105,7 @@ static int udc_zynq_ep_enqueue(const struct device *dev,
 	if (cfg->stat.halted) {
 		/*
 		 * It is fine to enqueue a transfer for a halted endpoint,
-		 * you need to make sure that transfers are retriggered when
+		 * you need to make sure that transfers are re-triggered when
 		 * the halt is cleared.
 		 *
 		 * Always use the abbreviation 'ep' for the endpoint address
@@ -111,8 +127,7 @@ static int udc_zynq_ep_enqueue(const struct device *dev,
  * ECONNABORTED as the request result.
  * It is up to the request owner to clean up or reuse the buffer.
  */
-static int udc_zynq_ep_dequeue(const struct device *dev,
-				   struct udc_ep_config *const cfg)
+static int udc_zynq_ep_dequeue(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	unsigned int lock_key;
 	struct net_buf *buf;
@@ -134,10 +149,19 @@ static int udc_zynq_ep_dequeue(const struct device *dev,
  * This is called in the context of udc_ep_enable() or udc_ep_enable_internal(),
  * the latter of which may be used by the driver to enable control endpoints.
  */
-static int udc_zynq_ep_enable(const struct device *dev,
-				  struct udc_ep_config *const cfg)
+static int udc_zynq_ep_enable(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Enable ep 0x%02x", cfg->addr);
+	mm_reg_t regs = DEVICE_MMIO_GET(dev);
+	uint32_t dummy = 0;
+	uint8_t ep_num = USB_EP_LUT_IDX(cfg->addr);
+	mm_reg_t ep_ctrl = regs + XUSBPS_EPCRn_OFFSET(ep_num);
+	dummy = sys_read32(ep_ctrl);
+	bool ep_is_out = USB_EP_DIR_IS_OUT(cfg->addr);
+
+	dummy |= (ep_is_out ? XUSBPS_EPCR_RXE_MASK : XUSBPS_EPCR_TXE_MASK);
+
+	sys_write32(dummy, ep_ctrl);
 
 	return 0;
 }
@@ -146,8 +170,7 @@ static int udc_zynq_ep_enable(const struct device *dev,
  * Opposite function to udc_zynq_ep_enable(). udc_ep_disable_internal()
  * may be used by the driver to disable control endpoints.
  */
-static int udc_zynq_ep_disable(const struct device *dev,
-				   struct udc_ep_config *const cfg)
+static int udc_zynq_ep_disable(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Disable ep 0x%02x", cfg->addr);
 
@@ -155,8 +178,7 @@ static int udc_zynq_ep_disable(const struct device *dev,
 }
 
 /* Halt endpoint. Halted endpoint should respond with a STALL handshake. */
-static int udc_zynq_ep_set_halt(const struct device *dev,
-				    struct udc_ep_config *const cfg)
+static int udc_zynq_ep_set_halt(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Set halt ep 0x%02x", cfg->addr);
 
@@ -169,8 +191,7 @@ static int udc_zynq_ep_set_halt(const struct device *dev,
  * Opposite to halt endpoint. If there are requests in the endpoint queue,
  * the next transfer should be prepared.
  */
-static int udc_zynq_ep_clear_halt(const struct device *dev,
-				      struct udc_ep_config *const cfg)
+static int udc_zynq_ep_clear_halt(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Clear halt ep 0x%02x", cfg->addr);
 	cfg->stat.halted = false;
@@ -204,6 +225,7 @@ static int udc_zynq_enable(const struct device *dev)
 {
 	LOG_DBG("Enable device %p", dev);
 
+
 	return 0;
 }
 
@@ -221,14 +243,12 @@ static int udc_zynq_disable(const struct device *dev)
  */
 static int udc_zynq_init(const struct device *dev)
 {
-	if (udc_ep_enable_internal(dev, USB_CONTROL_EP_OUT,
-				   USB_EP_TYPE_CONTROL, 64, 0)) {
+	if (udc_ep_enable_internal(dev, USB_CONTROL_EP_OUT, USB_EP_TYPE_CONTROL, 64, 0)) {
 		LOG_ERR("Failed to enable control endpoint");
 		return -EIO;
 	}
 
-	if (udc_ep_enable_internal(dev, USB_CONTROL_EP_IN,
-				   USB_EP_TYPE_CONTROL, 64, 0)) {
+	if (udc_ep_enable_internal(dev, USB_CONTROL_EP_IN, USB_EP_TYPE_CONTROL, 64, 0)) {
 		LOG_ERR("Failed to enable control endpoint");
 		return -EIO;
 	}
@@ -260,7 +280,6 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 {
 	const struct udc_zynq_config *config = dev->config;
 	struct udc_data *data = dev->data;
-	uint16_t mps = 1023;
 	int err;
 
 	/*
@@ -270,11 +289,10 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 	 */
 	k_mutex_init(&data->mutex);
 
-	data->caps.rwup = true;
+	data->caps.rwup = false;
 	data->caps.mps0 = UDC_MPS0_64;
 	if (config->speed_idx == 2) {
 		data->caps.hs = true;
-		mps = 1024;
 	}
 
 	for (int i = 0; i < config->num_of_eps; i++) {
@@ -286,7 +304,7 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 			config->ep_cfg_out[i].caps.bulk = 1;
 			config->ep_cfg_out[i].caps.interrupt = 1;
 			config->ep_cfg_out[i].caps.iso = 1;
-			config->ep_cfg_out[i].caps.mps = mps;
+			config->ep_cfg_out[i].caps.mps = 1024;
 		}
 
 		config->ep_cfg_out[i].addr = USB_EP_DIR_OUT | i;
@@ -306,7 +324,7 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 			config->ep_cfg_in[i].caps.bulk = 1;
 			config->ep_cfg_in[i].caps.interrupt = 1;
 			config->ep_cfg_in[i].caps.iso = 1;
-			config->ep_cfg_in[i].caps.mps = mps;
+			config->ep_cfg_in[i].caps.mps = 1024;
 		}
 
 		config->ep_cfg_in[i].addr = USB_EP_DIR_IN | i;
@@ -356,59 +374,52 @@ static const struct udc_api udc_zynq_api = {
 	.ep_dequeue = udc_zynq_ep_dequeue,
 };
 
-#define DT_DRV_COMPAT zephyr_udc_zynq
+#define DT_DRV_COMPAT xlnx_zynq_usb
 
 /*
  * A UDC driver should always be implemented as a multi-instance
  * driver, even if your platform does not require it.
  */
-#define UDC_zynq_DEVICE_DEFINE(n)						\
-	K_THREAD_STACK_DEFINE(udc_zynq_stack_##n, CONFIG_UDC_zynq);	\
-										\
-	static void udc_zynq_thread_##n(void *dev, void *arg1, void *arg2)	\
-	{									\
-		zynq_thread_handler(dev);					\
-	}									\
-										\
-	static void udc_zynq_make_thread_##n(const struct device *dev)	\
-	{									\
-		struct udc_zynq_data *priv = udc_get_private(dev);		\
-										\
-		k_thread_create(&priv->thread_data,				\
-				udc_zynq_stack_##n,				\
-				K_THREAD_STACK_SIZEOF(udc_zynq_stack_##n),	\
-				udc_zynq_thread_##n,			\
-				(void *)dev, NULL, NULL,			\
-				K_PRIO_COOP(CONFIG_UDC_zynq_THREAD_PRIORITY),\
-				K_ESSENTIAL,					\
-				K_NO_WAIT);					\
-		k_thread_name_set(&priv->thread_data, dev->name);		\
-	}									\
-										\
-	static struct udc_ep_config						\
-		ep_cfg_out[DT_INST_PROP(n, num_bidir_endpoints)];		\
-	static struct udc_ep_config						\
-		ep_cfg_in[DT_INST_PROP(n, num_bidir_endpoints)];		\
-										\
-	static const struct udc_zynq_config udc_zynq_config_##n = {	\
-		.num_of_eps = DT_INST_PROP(n, num_bidir_endpoints),		\
-		.ep_cfg_in = ep_cfg_out,					\
-		.ep_cfg_out = ep_cfg_in,					\
-		.make_thread = udc_zynq_make_thread_##n,			\
-		.speed_idx = DT_ENUM_IDX(DT_DRV_INST(n), maximum_speed),	\
-	};									\
-										\
-	static struct udc_zynq_data udc_priv_##n = {			\
-	};									\
-										\
-	static struct udc_data udc_data_##n = {					\
-		.mutex = Z_MUTEX_INITIALIZER(udc_data_##n.mutex),		\
-		.priv = &udc_priv_##n,						\
-	};									\
-										\
-	DEVICE_DT_INST_DEFINE(n, udc_zynq_driver_preinit, NULL,		\
-			      &udc_data_##n, &udc_zynq_config_##n,		\
-			      POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEVICE,	\
-			      &udc_zynq_api);
+#define UDC_ZYNQ_DEVICE_DEFINE(n)                                                                  \
+	K_THREAD_STACK_DEFINE(udc_zynq_stack_##n, CONFIG_UDC_ZYNQ);                                \
+                                                                                                   \
+	static void udc_zynq_thread_##n(void *dev, void *arg1, void *arg2)                         \
+	{                                                                                          \
+		zynq_thread_handler(dev);                                                          \
+	}                                                                                          \
+                                                                                                   \
+	static void udc_zynq_make_thread_##n(const struct device *dev)                             \
+	{                                                                                          \
+		struct udc_zynq_data *priv = udc_get_private(dev);                                 \
+                                                                                                   \
+		k_thread_create(&priv->thread_data, udc_zynq_stack_##n,                            \
+				K_THREAD_STACK_SIZEOF(udc_zynq_stack_##n), udc_zynq_thread_##n,    \
+				(void *)dev, NULL, NULL,                                           \
+				K_PRIO_COOP(CONFIG_UDC_ZYNQ_THREAD_PRIORITY), K_ESSENTIAL,         \
+				K_NO_WAIT);                                                        \
+		k_thread_name_set(&priv->thread_data, dev->name);                                  \
+	}                                                                                          \
+                                                                                                   \
+	static struct udc_ep_config ep_cfg_out[DT_INST_PROP(n, num_bidir_endpoints)];              \
+	static struct udc_ep_config ep_cfg_in[DT_INST_PROP(n, num_bidir_endpoints)];               \
+                                                                                                   \
+	static const struct udc_zynq_config udc_zynq_config_##n = {                                \
+		.num_of_eps = DT_INST_PROP(n, num_bidir_endpoints),                                \
+		.ep_cfg_in = ep_cfg_in,                                                            \
+		.ep_cfg_out = ep_cfg_out,                                                          \
+		.make_thread = udc_zynq_make_thread_##n,                                           \
+		.speed_idx = DT_ENUM_IDX(DT_DRV_INST(n), maximum_speed),                           \
+	};                                                                                         \
+                                                                                                   \
+	static struct udc_zynq_data udc_priv_##n = {};                                             \
+                                                                                                   \
+	static struct udc_data udc_data_##n = {                                                    \
+		.mutex = Z_MUTEX_INITIALIZER(udc_data_##n.mutex),                                  \
+		.priv = &udc_priv_##n,                                                             \
+	};                                                                                         \
+                                                                                                   \
+	DEVICE_DT_INST_DEFINE(n, udc_zynq_driver_preinit, NULL, &udc_data_##n,                     \
+			      &udc_zynq_config_##n, POST_KERNEL,                                   \
+			      CONFIG_KERNEL_INIT_PRIORITY_DEVICE, &udc_zynq_api);
 
 DT_INST_FOREACH_STATUS_OKAY(UDC_ZYNQ_DEVICE_DEFINE)
