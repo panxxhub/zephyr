@@ -68,9 +68,16 @@ struct udc_zynq_data {
 };
 
 
-static ALWAYS_INLINE void zynq_usb_setbits(const struct device* dev, uint16_t reg_offset , uint32_t bits)
+static ALWAYS_INLINE void zynq_usb_set_bits(const struct device* dev, uint16_t reg_offset , uint32_t bits)
 {
+	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	sys_write32(sys_read32(base + reg_offset) | bits, base + reg_offset);
+}
 
+static ALWAYS_INLINE void zynq_usb_clear_bits(const struct device* dev, uint16_t reg_offset , uint32_t bits)
+{
+	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	sys_write32(sys_read32(base + reg_offset) & ~bits, base + reg_offset);
 }
 
 /*
@@ -152,16 +159,11 @@ static int udc_zynq_ep_dequeue(const struct device *dev, struct udc_ep_config *c
 static int udc_zynq_ep_enable(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Enable ep 0x%02x", cfg->addr);
-	mm_reg_t regs = DEVICE_MMIO_GET(dev);
-	uint32_t dummy = 0;
 	uint8_t ep_num = USB_EP_LUT_IDX(cfg->addr);
-	mm_reg_t ep_ctrl = regs + XUSBPS_EPCRn_OFFSET(ep_num);
-	dummy = sys_read32(ep_ctrl);
 	bool ep_is_out = USB_EP_DIR_IS_OUT(cfg->addr);
-
-	dummy |= (ep_is_out ? XUSBPS_EPCR_RXE_MASK : XUSBPS_EPCR_TXE_MASK);
-
-	sys_write32(dummy, ep_ctrl);
+	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(ep_num);
+	uint32_t set_bits = (ep_is_out ? XUSBPS_EPCR_RXE_MASK : XUSBPS_EPCR_TXE_MASK);
+	zynq_usb_set_bits(dev, ctrl_offset, set_bits);
 
 	return 0;
 }
@@ -173,6 +175,11 @@ static int udc_zynq_ep_enable(const struct device *dev, struct udc_ep_config *co
 static int udc_zynq_ep_disable(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Disable ep 0x%02x", cfg->addr);
+	uint8_t ep_num = USB_EP_LUT_IDX(cfg->addr);
+	bool ep_is_out = USB_EP_DIR_IS_OUT(cfg->addr);
+	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(ep_num);
+	uint32_t clear_bits = (ep_is_out ? XUSBPS_EPCR_RXE_MASK : XUSBPS_EPCR_TXE_MASK);
+	zynq_usb_clear_bits(dev, ctrl_offset, clear_bits);
 
 	return 0;
 }
