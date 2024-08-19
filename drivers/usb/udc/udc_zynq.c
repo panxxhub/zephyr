@@ -31,6 +31,7 @@
 #include "zephyr/toolchain.h"
 #include "udc_zynq.h"
 
+#include <stdint.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -78,6 +79,12 @@ static ALWAYS_INLINE void zynq_usb_clear_bits(const struct device* dev, uint16_t
 {
 	mm_reg_t base = DEVICE_MMIO_GET(dev);
 	sys_write32(sys_read32(base + reg_offset) & ~bits, base + reg_offset);
+}
+
+static ALWAYS_INLINE void zynq_usb_write32(const struct device* dev, uint16_t reg_offset , uint32_t val)
+{
+	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	sys_write32(val, base + reg_offset);
 }
 
 /*
@@ -188,8 +195,12 @@ static int udc_zynq_ep_disable(const struct device *dev, struct udc_ep_config *c
 static int udc_zynq_ep_set_halt(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Set halt ep 0x%02x", cfg->addr);
-
 	cfg->stat.halted = true;
+	uint8_t	ep_num = USB_EP_LUT_IDX(cfg->addr);
+	bool ep_is_out = USB_EP_DIR_IS_OUT(cfg->addr);
+	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(ep_num);
+	uint32_t set_bits = (ep_is_out ? XUSBPS_EPCR_RXS_MASK : XUSBPS_EPCR_TXS_MASK);
+	zynq_usb_set_bits(dev, ctrl_offset, set_bits);
 
 	return 0;
 }
@@ -202,6 +213,11 @@ static int udc_zynq_ep_clear_halt(const struct device *dev, struct udc_ep_config
 {
 	LOG_DBG("Clear halt ep 0x%02x", cfg->addr);
 	cfg->stat.halted = false;
+	uint8_t ep_num = USB_EP_LUT_IDX(cfg->addr);
+	bool ep_is_out = USB_EP_DIR_IS_OUT(cfg->addr);
+	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(ep_num);
+	uint32_t clear_bits = (ep_is_out ? XUSBPS_EPCR_RXS_MASK : XUSBPS_EPCR_TXS_MASK);
+	zynq_usb_clear_bits(dev, ctrl_offset, clear_bits);
 
 	return 0;
 }
@@ -209,6 +225,13 @@ static int udc_zynq_ep_clear_halt(const struct device *dev, struct udc_ep_config
 static int udc_zynq_set_address(const struct device *dev, const uint8_t addr)
 {
 	LOG_DBG("Set new address %u for %p", addr, dev);
+	if (addr > XUSBPS_DEVICEADDR_MAX) {
+		return -EINVAL;
+	}
+
+	zynq_usb_write32(dev, XUSBPS_DEVICEADDR_OFFSET,
+			 (addr << XUSBPS_DEVICEADDR_ADDR_SHIFT) |
+				 XUSBPS_DEVICEADDR_DEVICEAADV_MASK);
 
 	return 0;
 }

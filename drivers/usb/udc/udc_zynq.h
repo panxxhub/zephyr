@@ -188,4 +188,31 @@
 #define XUSBPS_dTDTOKEN_LEN_MASK    0x7FFF0000 /**< Transfer Length Field */
 /* @} */
 
+/** @name USB Mode Register (MODE) bit positions.
+ *  @{
+ */
+#define XUSBPS_MODE_CM_MASK		0x00000003 /**< Controller Mode Select */
+#define XUSBPS_MODE_CM_IDLE_MASK	0x00000000
+#define XUSBPS_MODE_CM_DEVICE_MASK	0x00000002
+#define XUSBPS_MODE_CM_HOST_MASK	0x00000003
+#define XUSBPS_MODE_ES_MASK		0x00000004 /**< USB Endian Select */
+#define XUSBPS_MODE_SLOM_MASK		0x00000008 /**< USB Setup Lockout Mode Disable */
+#define XUSBPS_MODE_SDIS_MASK		0x00000010
+#define XUSBPS_MODE_VALID_MASK		0x0000001F
+
+/* @} */
+
+/** @name USB Device Address Register (DEVICEADDR) bit positions.
+ *  @{
+ */
+#define XUSBPS_DEVICEADDR_DEVICEAADV_MASK	0x01000000
+/**< Device Addr Auto Advance */
+#define XUSBPS_DEVICEADDR_ADDR_MASK		0xFE000000
+/**< Device Address */
+#define XUSBPS_DEVICEADDR_ADDR_SHIFT		25
+/**< Address shift */
+#define XUSBPS_DEVICEADDR_MAX			127
+/**< Biggest allowed address */
+/* @} */
+
 #endif
