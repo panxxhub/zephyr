@@ -46,6 +46,25 @@ LOG_MODULE_REGISTER(udc_zynq, CONFIG_UDC_DRIVER_LOG_LEVEL);
 
 #define USB_EP_LUT_IDX(ep) (USB_EP_DIR_IS_IN(ep) ? (ep & BIT_MASK(4)) + 16 : ep & BIT_MASK(4))
 
+/* The following type definitions are used for referencing Queue Heads and
+ * Transfer Descriptors. The structures themselves are not used, however, the
+ * types are used in the API to avoid using (void *) pointers.
+ */
+typedef uint8_t	udc_qh[XUSBPS_dQH_ALIGN];
+typedef uint8_t	udc_td[XUSBPS_dTD_ALIGN];
+
+struct udc_ep_priv {
+	struct udc_ep_config *cfg;
+	udc_qh* qh;
+	udc_td* tds;
+	udc_td* td_curr;
+
+	uint8_t *td_bufs;
+};
+
+#define UDC_EP_PRIV(ep_cfg) (CONTAINER_OF(ep_cfg, struct udc_ep_priv, cfg))
+
+
 /*
  * Structure for holding controller configuration items that can remain in
  * non-volatile memory. This is usually accessed as
@@ -66,8 +85,10 @@ struct udc_zynq_config {
  */
 struct udc_zynq_data {
 	struct k_thread thread_data;
-};
 
+	struct udc_ep_priv *ep_priv_in;
+	struct udc_ep_priv *ep_priv_out;
+};
 
 static ALWAYS_INLINE void zynq_usb_set_bits(const struct device* dev, uint16_t reg_offset , uint32_t bits)
 {
@@ -239,7 +260,7 @@ static int udc_zynq_set_address(const struct device *dev, const uint8_t addr)
 static int udc_zynq_host_wakeup(const struct device *dev)
 {
 	LOG_DBG("Remote wakeup from %p", dev);
-
+	zynq_usb_set_bits(dev, XUSBPS_PORTSCR1_OFFSET, XUSBPS_PORTSCR_FPR_MASK);
 	return 0;
 }
 
@@ -432,6 +453,8 @@ static const struct udc_api udc_zynq_api = {
                                                                                                    \
 	static struct udc_ep_config ep_cfg_out[DT_INST_PROP(n, num_bidir_endpoints)];              \
 	static struct udc_ep_config ep_cfg_in[DT_INST_PROP(n, num_bidir_endpoints)];               \
+	static struct udc_ep_priv ep_priv_out[DT_INST_PROP(n, num_bidir_endpoints)];               \
+	static struct udc_ep_priv ep_priv_in[DT_INST_PROP(n, num_bidir_endpoints)];                \
                                                                                                    \
 	static const struct udc_zynq_config udc_zynq_config_##n = {                                \
 		.num_of_eps = DT_INST_PROP(n, num_bidir_endpoints),                                \
@@ -441,7 +464,10 @@ static const struct udc_api udc_zynq_api = {
 		.speed_idx = DT_ENUM_IDX(DT_DRV_INST(n), maximum_speed),                           \
 	};                                                                                         \
                                                                                                    \
-	static struct udc_zynq_data udc_priv_##n = {};                                             \
+	static struct udc_zynq_data udc_priv_##n = {                                               \
+		.ep_priv_in = ep_priv_in,                                                          \
+		.ep_priv_out = ep_priv_out,                                                        \
+	};                                                                                         \
                                                                                                    \
 	static struct udc_data udc_data_##n = {                                                    \
 		.mutex = Z_MUTEX_INITIALIZER(udc_data_##n.mutex),                                  \
