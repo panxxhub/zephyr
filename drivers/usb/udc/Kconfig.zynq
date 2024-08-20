@@ -19,6 +19,14 @@ config UDC_ZYNQ_THREAD_PRIORITY
 	help
 	  Skeleton device controller driver thread priority.
 
+config UDC_ZYNQ_MAX_QMESSAGES
+	int "UDC ZYNQ maximum number of ISR event messages"
+	depends on UDC_ZYNQ
+	range 4 64
+	default 8
+	help
+	  zynq maximum number of ISR event messages.
+
 
 
 	
