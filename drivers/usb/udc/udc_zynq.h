@@ -6,8 +6,10 @@
 #ifndef __ZEPHYR_DRIVERS_USB_UDC_ZYNQ_H__
 #define __ZEPHYR_DRIVERS_USB_UDC_ZYNQ_H__
 
+#include <stdint.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/usb/udc.h>
+#include <sys/cdefs.h>
 
 /************************** Constant Definitions *****************************/
 
@@ -349,5 +351,150 @@
 
 /**< Alignment requirement for Transfer Descriptor buffers. */
 #define XUSBPS_dTD_BUF_ALIGN 4096
+
+/**
+ * @brief device Transfer Descriptor(dTD) structure
+ * compatible with ChipIdea's USB 2.0 IP
+ */
+struct zynq_udc_dtd {
+	union /* D_WORD0 */ {
+		struct {
+			uint8_t terminate: 1;
+			uint8_t rsvd0: 4;
+			uint32_t next_dtd_msb27: 27; // pointer to next dtd
+		};
+		uintptr_t next_dtd_nlp;
+	};
+	union /* D_WORD1 */ {
+		struct {
+			uint8_t sts_rsvd0: 3;
+			uint8_t trans_err: 1;
+			uint8_t sts_rsvd1: 1;
+			uint8_t data_buf_err: 1;
+			uint8_t halted: 1;
+			uint8_t active: 1;
+			uint8_t rsvd2: 2;
+			uint8_t multo: 2;
+			uint8_t curr_page: 3;
+			uint8_t irq_on_cmpl: 1;
+			uint16_t total_bytes: 15;
+			uint8_t rsvd3: 1;
+		};
+		uint32_t dtd_token;
+	};
+
+	union /* D_WORD2 */ {
+		struct {
+			uint16_t current_offset: 12;
+			uint32_t buf_ptr_msb20: 20; // note this can't be used directly, we need to
+						    // shift it left by 12 bits
+		};
+		uintptr_t buf_ptr_page0; // we set this to the physical address of the buffer
+	};
+
+	union /* D_WORD3 */ {
+		struct {
+			uint16_t frame_number: 11;
+			uint8_t rsvd4: 1;
+			uint32_t buf_ptr1_msb20: 20; // note this can't be used directly, we need to
+						     // shift it left by 12 bits
+		};
+		uintptr_t buf_ptr_pg1; // we set this to the physical address of the buffer
+	};
+
+	union /* D_WORD4 */ {
+		struct {
+			uint16_t rsvd5: 12;
+			uint32_t buf_ptr2_msb20: 20;
+		};
+		uintptr_t buf_ptr_pg2; // we set this to the physical address of the buffer
+	};
+
+	union /* D_WORD5 */ {
+		struct {
+			uint16_t rsvd6: 12;
+			uint32_t buf_ptr3_msb20: 20;
+		};
+		uintptr_t buf_ptr_pg3; // we set this to the physical address of the buffer
+	};
+
+	union /* D_WORD6 */ {
+		struct {
+			uint16_t user_data: 12;
+			uint32_t buf_ptr4_msb20: 20;
+		};
+		uintptr_t buf_ptr_pg4; // we set this to the physical address of the buffer
+	};
+
+};
+
+
+/**
+ * @brief device Queue Head(dQH) structure
+ * compatible with ChipIdea's USB 2.0 IP 
+ */
+struct zynq_udc_dqh {
+	union /* D_WORD0 */ {
+		struct {
+			uint16_t rsvd0: 15;
+			uint8_t irq_on_setup: 1;
+			uint16_t max_packet_len: 11;
+			uint8_t zlt: 1;
+			uint8_t mult: 2;
+		};
+		uint32_t ep_cap;
+	};
+
+	union /* D_WORD1 */ {
+		struct {
+			uint8_t rsvd1: 5;
+			uint32_t cur_dtd_msb27: 27; // pointer to current dtd
+		};
+		uintptr_t ep_cur_dtd;
+	};
+
+	struct zynq_udc_dtd xfer_overlay;
+
+	uint32_t rsvd2;
+	uint8_t setup_buffer[8];
+};
+
+// struct zynq_udc_ep_ptrs {
+// 	uint32_t usb_cmd;
+// 	uint32_t usb_sts;
+// 	uint32_t usb_intr;
+// 	uint32_t fr_index;
+// 	uint32_t device_addr;
+// 	uint32_t endpoint_list_addr;
+// };
+
+// struct zynq_udc_ep_cfg {
+
+// };
+
+// /* Read Only */
+// struct zynq_usb_id_regs {
+// 	uint32_t id;
+// 	uint32_t hw_general;
+// 	uint32_t hw_host; 
+// 	uint32_t hw_device;
+// 	uint32_t hw_tx_buf;
+// 	uint32_t hw_rx_buf;
+// };
+
+// struct zynq_usb_gpt {
+// 	uint32_t gpt0_load_value;
+// 	uint32_t gpt0_ctrl;
+// 	uint32_t gpt1_load_value;
+// 	uint32_t gpt1_ctrl;
+// };
+
+// struct zynq_usb_ahb {
+// 	uint32_t bus_cfg;
+// };
+
+// struct zynq_udc_reg {
+
+// };
 
 #endif

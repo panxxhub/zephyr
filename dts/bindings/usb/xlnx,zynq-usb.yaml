@@ -6,3 +6,7 @@ description: Xilinx Zynq USB controller
 compatible: "xlnx,zynq-usb"
 
 include: [usb-ep.yaml, pinctrl-device.yaml]
+
+bus: usb
+ 
+
