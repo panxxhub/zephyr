@@ -383,49 +383,31 @@ struct zynq_udc_dtd {
 		uint32_t dtd_token;
 	};
 
-	union /* D_WORD2 */ {
+	union {
 		struct {
-			uint16_t current_offset: 12;
-			uint32_t buf_ptr_msb20: 20; // note this can't be used directly, we need to
-						    // shift it left by 12 bits
-		};
-		uintptr_t buf_ptr_page0; // we set this to the physical address of the buffer
-	};
+			/* D_WORD2 */ 
+			uint16_t p0_current_offset: 12;
+			uint32_t p0_buf_ptr_msb20: 20; // note this can't be used directly, we need to shift it left by 12 bits
 
-	union /* D_WORD3 */ {
-		struct {
-			uint16_t frame_number: 11;
-			uint8_t rsvd4: 1;
-			uint32_t buf_ptr1_msb20: 20; // note this can't be used directly, we need to
-						     // shift it left by 12 bits
-		};
-		uintptr_t buf_ptr_pg1; // we set this to the physical address of the buffer
-	};
+			/* D_WORD3 */ 
+			uint16_t p1_frame_number: 11;
+			uint8_t p1_rsvd4: 1;
+			uint32_t p1_msb20: 20; // note this can't be used directly, we need to shift it left by 12 bits
 
-	union /* D_WORD4 */ {
-		struct {
-			uint16_t rsvd5: 12;
-			uint32_t buf_ptr2_msb20: 20;
-		};
-		uintptr_t buf_ptr_pg2; // we set this to the physical address of the buffer
-	};
+			/* D_WORD4 */ 
+			uint16_t p2_lsb0: 12;
+			uint32_t p2_msb20: 20;
 
-	union /* D_WORD5 */ {
-		struct {
-			uint16_t rsvd6: 12;
-			uint32_t buf_ptr3_msb20: 20;
-		};
-		uintptr_t buf_ptr_pg3; // we set this to the physical address of the buffer
-	};
+			/* D_WORD5 */ 
+			uint16_t p3_lsb0: 12;
+			uint32_t p3_msb20: 20;
 
-	union /* D_WORD6 */ {
-		struct {
-			uint16_t user_data: 12;
-			uint32_t buf_ptr4_msb20: 20;
+			/* D_WORD6 */ 
+			uint16_t p4_lsb0: 12;
+			uint32_t p4_msb20: 20;
 		};
-		uintptr_t buf_ptr_pg4; // we set this to the physical address of the buffer
+		uintptr_t pages[5]; // we set this to the physical address of the buffer
 	};
-
 };
 
 
