@@ -27,6 +27,10 @@ config UDC_ZYNQ_MAX_QMESSAGES
 	help
 	  zynq maximum number of ISR event messages.
 
-
-
-	
+config UDC_ZYNQ_TIMEOUT
+	int "UDC ZYNQ timeout in counter"
+	depends on UDC_ZYNQ
+	default 10000
+	help
+	  while prime or reset, we check status by polling, 
+	  this is the trival timeout counter init value.

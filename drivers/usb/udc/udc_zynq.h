@@ -119,6 +119,7 @@
 #define XUSBPS_EPCR_TXS_MASK         0x00010000 /**< Stall TX endpoint */
 #define XUSBPS_EPCR_TXE_MASK         0x00800000 /**< Transmit enable  - TX */
 #define XUSBPS_EPCR_TXR_MASK         0x00400000 /**< Data Toggle Reset Bit */
+#define XUSBPS_EPCR_TXI_MASK         0x00200000 /**< TX data toggle inhibit */
 
 /* Definitions for RX Endpoint bits */
 #define XUSBPS_EPCR_RXT_TYPE_SHIFT   2          /* < Endpoint Type - RX bit shift*/
@@ -130,6 +131,7 @@
 #define XUSBPS_EPCR_RXS_MASK         0x00000001 /**< Stall RX endpoint. */
 #define XUSBPS_EPCR_RXE_MASK         0x00000080 /**< Transmit enable. - RX */
 #define XUSBPS_EPCR_RXR_MASK         0x00000040 /**< Data Toggle Reset Bit */
+#define XUSBPS_EPCR_RXI_MASK         0x00000020 /**< RX data toggle inhibit */
 /* @} */
 
 /** @name USB Command Register (CR) bit positions.
@@ -280,6 +282,12 @@
 #define XUSBPS_PORTSCR_PHCD_MASK 0x00800000 /**< PHY Low Power Suspend - Clock Disable */
 #define XUSBPS_PORTSCR_PFSC_MASK 0x01000000 /**< Port Force Full Speed Connect */
 #define XUSBPS_PORTSCR_PSPD_MASK 0x0C000000 /**< Port Speed */
+
+#define XUSBPS_PORTSCR_PSPD_FS	 0x00000000 /**< Full Speed */
+#define XUSBPS_PORTSCR_PSPD_LS	 0x04000000 /**< Low Speed */
+#define XUSBPS_PORTSCR_PSPD_HS	 0x08000000 /**< High Speed */
+#define XUSBPS_PORTSCR_PSPD_NC	 0x0C000000 /**< Not Connected */
+
 /* @} */
 
 /** @name On-The-Go Status Control Register (OTGCSR) bit positions.
@@ -333,6 +341,52 @@
 				 XUSBPS_OTGSC_DPIE_MASK)
 /** Mask for All IRQ Enable masks */
 /* @} */
+
+/** @name USB Interrupt Status Register (ISR) / Interrupt Enable Register (IER)
+ * bit positions.
+ *  @{
+ */
+#define XUSBPS_IXR_UI_MASK	0x00000001 /**< USB Transaction Complete */
+#define XUSBPS_IXR_UE_MASK	0x00000002 /**< Transaction Error */
+#define XUSBPS_IXR_PC_MASK	0x00000004 /**< Port Change Detect */
+#define XUSBPS_IXR_FRE_MASK	0x00000008 /**< Frame List Rollover */
+#define XUSBPS_IXR_AA_MASK	0x00000020 /**< Async Advance */
+#define XUSBPS_IXR_UR_MASK	0x00000040 /**< RESET Received */
+#define XUSBPS_IXR_SR_MASK	0x00000080 /**< Start of Frame */
+#define XUSBPS_IXR_SLE_MASK	0x00000100 /**< Device Controller Suspend */
+#define XUSBPS_IXR_ULPI_MASK	0x00000400 /**< ULPI IRQ */
+#define XUSBPS_IXR_HCH_MASK	0x00001000 /**< Host Controller Halted * Read Only */
+#define XUSBPS_IXR_RCL_MASK	0x00002000 /**< USB Reclamation  Read Only */
+#define XUSBPS_IXR_PS_MASK	0x00004000 /**< Periodic Sched Status * Read Only */
+#define XUSBPS_IXR_AS_MASK	0x00008000 /**< Async Sched Status Read only */
+#define XUSBPS_IXR_NAK_MASK	0x00010000 /**< NAK IRQ */
+#define XUSBPS_IXR_UA_MASK	0x00040000 /**< USB Host Async IRQ */
+#define XUSBPS_IXR_UP_MASK	0x00080000 /**< USB Host Periodic IRQ */
+#define XUSBPS_IXR_TI0_MASK	0x01000000 /**< Timer 0 Interrupt */
+#define XUSBPS_IXR_TI1_MASK	0x02000000 /**< Timer 1 Interrupt */
+
+#define XUSBPS_IXR_ALL (XUSBPS_IXR_UI_MASK	| \
+			XUSBPS_IXR_UE_MASK	| \
+			XUSBPS_IXR_PC_MASK	| \
+			XUSBPS_IXR_FRE_MASK	| \
+			XUSBPS_IXR_AA_MASK	| \
+			XUSBPS_IXR_UR_MASK	| \
+			XUSBPS_IXR_SR_MASK	| \
+			XUSBPS_IXR_SLE_MASK	| \
+			XUSBPS_IXR_ULPI_MASK	| \
+			XUSBPS_IXR_HCH_MASK	| \
+			XUSBPS_IXR_RCL_MASK	| \
+			XUSBPS_IXR_PS_MASK 	| \
+			XUSBPS_IXR_AS_MASK	| \
+			XUSBPS_IXR_NAK_MASK	| \
+			XUSBPS_IXR_UA_MASK	| \
+			XUSBPS_IXR_UP_MASK 	| \
+			XUSBPS_IXR_TI0_MASK 	| \
+			XUSBPS_IXR_TI1_MASK)
+/**< Mask for ALL IRQ types */
+/* @} */
+
+
 
 /**< Alignment of the Device Queue Head List BASE. */
 #define XUSBPS_dQH_BASE_ALIGN 2048
