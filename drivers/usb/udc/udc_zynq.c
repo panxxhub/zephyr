@@ -470,6 +470,27 @@ static int udc_zynq_ep_enqueue(const struct device *dev, struct udc_ep_config *c
 	return 0;
 }
 
+static void udc_zynq_device_partial_reset(const struct device *dev, const struct udc_ep_config *cfg)
+{
+
+	uint32_t ep_num = USB_EP_LUT_IDX(cfg->addr);
+	/* clear all setup token sema4 by writing the read value of the XUSBPS_EPSTAT_OFFSET */
+	if(ep_num == 0) {
+		zynq_usb_clear_setup_token_semaphores(dev);
+	}
+	/* prime clear and flush */
+	const uint32_t prime_mask = 0x00010001 << ep_num;
+	/* read ep prime sts */
+	uint32_t timeout = CONFIG_UDC_ZYNQ_TIMEOUT;
+	while((zynq_usb_read32(dev, XUSBPS_EPPRIME_OFFSET) & prime_mask) && --timeout) {
+		/* NOP */
+	}
+
+	zynq_usb_set_bits(dev, XUSBPS_EPFLUSH_OFFSET, prime_mask);
+}
+
+
+
 /*
  * This is called in the context of udc_ep_dequeue()
  * and must remove all requests from an endpoint queue
@@ -480,16 +501,15 @@ static int udc_zynq_ep_enqueue(const struct device *dev, struct udc_ep_config *c
 static int udc_zynq_ep_dequeue(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	struct net_buf *buf;
-	/* read ep prime sts */
-
-	/* flush the */
-
 
 	buf = udc_buf_get_all(dev, cfg->addr);
 	if (buf) {
 		udc_submit_ep_event(dev, buf, -ECONNABORTED);
 	}
 
+	udc_zynq_device_partial_reset(dev, cfg);
+
+	/* flush the */
 	udc_ep_set_busy(dev, cfg->addr, false);
 
 
@@ -497,18 +517,7 @@ static int udc_zynq_ep_dequeue(const struct device *dev, struct udc_ep_config *c
 	return 0;
 }
 
-static void zynq_flush_tx_fifo(const struct device *dev, const uint8_t idx)
-{
-	uint32_t val = (1 << idx) << XUSBPS_EPFLUSH_TX_SHIFT;
-	zynq_usb_set_bits(dev, XUSBPS_EPFLUSH_OFFSET, val);
 
-}
-
-static void zynq_flush_rx_fifo(const struct device *dev, const uint8_t idx)
-{
-	uint32_t val = (1 << idx) << XUSBPS_EPFLUSH_RX_SHIFT;
-	zynq_usb_set_bits(dev, XUSBPS_EPFLUSH_OFFSET, val);
-}
 
 /*
  * Configure and make an endpoint ready for use.
@@ -726,14 +735,6 @@ static int udc_zynq_disable(const struct device *dev)
 
 	zynq_usb_stop(dev);
 	return 0;
-}
-
-static void udc_zynq_device_partial_reset(const struct device *dev)
-{
-	/* clear all setup token sema4 by writing the read value of the XUSBPS_EPSTAT_OFFSET */
-	zynq_usb_clear_setup_token_semaphores(dev);
-	/* prime clear and flush */
-	zynq_usb_prime_and_flush_all(dev);
 }
 
 /**
