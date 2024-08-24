@@ -103,6 +103,10 @@
 #define XUSBPS_EPFLUSH_RX_SHIFT 0
 #define XUSBPS_EPFLUSH_TX_SHIFT 16
 
+#define XUSBPS_EPCOMPL_CTRL_MASK 0x00010001 /**< Control bit for EPCOMPL register */
+#define XUSBPS_EPCOMPL_RX_MASK   0x0000FFFF /**< RX bit mask for EPCOMPL register */
+#define XUSBPS_EPCOMPL_TX_MASK   0xFFFF0000 /**< TX bit mask for EPCOMPL register */
+
 /* @} */
 
 /** @name Endpoint Control Register (EPCR) bit positions.
@@ -355,7 +359,7 @@
 #define XUSBPS_IXR_SR_MASK	0x00000080 /**< Start of Frame */
 #define XUSBPS_IXR_SLE_MASK	0x00000100 /**< Device Controller Suspend */
 #define XUSBPS_IXR_ULPI_MASK	0x00000400 /**< ULPI IRQ */
-#define XUSBPS_IXR_HCH_MASK	0x00001000 /**< Host Controller Halted * Read Only */
+#define XUSBPS_IXR_HCH_MASK	0x00001000 /**< Host Controller Halted Read Only */
 #define XUSBPS_IXR_RCL_MASK	0x00002000 /**< USB Reclamation  Read Only */
 #define XUSBPS_IXR_PS_MASK	0x00004000 /**< Periodic Sched Status * Read Only */
 #define XUSBPS_IXR_AS_MASK	0x00008000 /**< Async Sched Status Read only */
@@ -406,6 +410,9 @@
 /**< Alignment requirement for Transfer Descriptor buffers. */
 #define XUSBPS_dTD_BUF_ALIGN 4096
 
+#define ENDPOINT_MAXP_MULT_MASK  0xC00
+#define ENDPOINT_MAXP_MULT_SHIFT 10
+
 /**
  * @brief device Transfer Descriptor(dTD) structure
  * compatible with ChipIdea's USB 2.0 IP
@@ -426,6 +433,10 @@ struct zynq_udc_dtd {
 			uint8_t sts_rsvd1: 1;
 			uint8_t data_buf_err: 1;
 			uint8_t halted: 1;
+			/** active status bit
+			 * for RX, set active by DCD, controller clr set after Rx
+			 * for TX, controller set active, DCD check completion by reading the active bit
+			 */
 			uint8_t active: 1;
 			uint8_t rsvd2: 2;
 			uint8_t multo: 2;
@@ -495,42 +506,4 @@ struct zynq_udc_dqh {
 	uint8_t setup_buffer[8];
 };
 
-// struct zynq_udc_ep_ptrs {
-// 	uint32_t usb_cmd;
-// 	uint32_t usb_sts;
-// 	uint32_t usb_intr;
-// 	uint32_t fr_index;
-// 	uint32_t device_addr;
-// 	uint32_t endpoint_list_addr;
-// };
-
-// struct zynq_udc_ep_cfg {
-
-// };
-
-// /* Read Only */
-// struct zynq_usb_id_regs {
-// 	uint32_t id;
-// 	uint32_t hw_general;
-// 	uint32_t hw_host; 
-// 	uint32_t hw_device;
-// 	uint32_t hw_tx_buf;
-// 	uint32_t hw_rx_buf;
-// };
-
-// struct zynq_usb_gpt {
-// 	uint32_t gpt0_load_value;
-// 	uint32_t gpt0_ctrl;
-// 	uint32_t gpt1_load_value;
-// 	uint32_t gpt1_ctrl;
-// };
-
-// struct zynq_usb_ahb {
-// 	uint32_t bus_cfg;
-// };
-
-// struct zynq_udc_reg {
-
-// };
-
-#endif
+#endif /* __ZEPHYR_DRIVERS_USB_UDC_ZYNQ_H__ */

@@ -34,3 +34,10 @@ config UDC_ZYNQ_TIMEOUT
 	help
 	  while prime or reset, we check status by polling, 
 	  this is the trival timeout counter init value.
+
+config UDC_ZYNQ_TD_PER_EP
+	int "UDC ZYNQ number of TDs per QH"
+	depends on UDC_ZYNQ
+	default 8
+	help
+	  zynq number of TDs per QH. Note only 4 is supported right now.
