@@ -31,6 +31,8 @@
 #include "zephyr/sys/sys_io.h"
 #include "zephyr/toolchain.h"
 #include "udc_zynq.h"
+#include <zephyr/drivers/gpio.h>
+
 
 #include <stdint.h>
 #include <string.h>
@@ -43,9 +45,10 @@
 #include <strings.h>
 #include <sys/cdefs.h>
 #include <sys/types.h>
-LOG_MODULE_REGISTER(udc_zynq, CONFIG_UDC_DRIVER_LOG_LEVEL);
+LOG_MODULE_REGISTER(UDC_ZYNQ, CONFIG_UDC_DRIVER_LOG_LEVEL);
 
-#define USB_EP_LUT_IDX(ep) (USB_EP_DIR_IS_IN(ep) ? (ep & BIT_MASK(4)) + 16 : ep & BIT_MASK(4))
+#define USB_EP_LUT_IDX(ep)  (USB_EP_DIR_IS_IN(ep) ? (ep & BIT_MASK(4)) + 16 : ep & BIT_MASK(4))
+
 
 /* The following type definitions are used for referencing Queue Heads and
  * Transfer Descriptors. The structures themselves are not used, however, the
@@ -95,6 +98,8 @@ typedef void (*zynq_udc_irq_config_func)(const struct device *dev, bool en);
  *   const struct udc_zynq_config *config = dev->config;
  */
 struct udc_zynq_config {
+	DEVICE_MMIO_ROM;
+	const struct gpio_dt_spec phy_reset;
 	size_t num_of_eps;
 	struct udc_ep_config *ep_cfg_in;
 	struct udc_ep_config *ep_cfg_out;
@@ -103,6 +108,9 @@ struct udc_zynq_config {
 	struct dqh_aligned *qh_arr;
 	struct dtd_aligned *td_arr;
 	zynq_udc_irq_config_func config_func;
+#ifdef CONFIG_PINCTRL
+	const struct pinctrl_dev_config *pincfg;
+#endif
 };
 
 typedef struct ep_priv {
@@ -128,23 +136,23 @@ typedef struct ep_priv {
  * have setup with data out stage
  */
 struct zynq_udc_data {
+	DEVICE_MMIO_RAM;
 	struct k_thread thread_data;
-
 	struct ep_priv *eps;
 };
 
-#define DEV_PRIV(dev)        ((struct zynq_udc_data *)udc_get_private(dev))
-#define DEV_CFG(dev)         ((const struct udc_zynq_config *)dev->config)
-#define DEV_DATA(dev)        ((struct udc_data *)dev->data)
-#define EP_CFG_IDX(dev, idx) (DEV_DATA(dev)->ep_lut[(idx)])
-#define DEV_EP(dev, idx)     (DEV_PRIV(dev)->eps[(idx)])
-#define DEV_EP_PTR(dev, idx) (&DEV_EP(dev, idx))
-#define EP_DQH_OUT(dev, idx) (DEV_EP(dev, idx).dqh_out)
-#define EP_DQH_IN(dev, idx)  (DEV_EP(dev, idx).dqh_in)
-#define OUT_SETUP(dev, idx)  (EP_DQH_OUT(dev, idx)->setup_buffer)
-#define IN_SETUP(dev, idx)   (EP_DQH_IN(dev, idx)->setup_buffer)
-#define CTRL_EP(dev)         (DEV_EP(dev, 0))
-#define CTRL_OUT_SETUP(dev)  (OUT_SETUP(dev, 0)) // default setup buffer
+#define DEV_PRIV(dev)             ((struct zynq_udc_data *)udc_get_private(dev))
+#define DEV_CFG(dev)              ((const struct udc_zynq_config *)dev->config)
+#define DEV_DATA(dev)             ((struct udc_data *)dev->data)
+#define EP_CFG_IDX(dev, idx, dir) (DEV_DATA(dev)->ep_lut[USB_EP_GET_ADDR(idx, dir)])
+#define DEV_EP(dev, idx)          (DEV_PRIV(dev)->eps[(idx)])
+#define DEV_EP_PTR(dev, idx)      (&DEV_EP(dev, idx))
+#define EP_DQH_OUT(dev, idx)      (DEV_EP(dev, idx).dqh_out)
+#define EP_DQH_IN(dev, idx)       (DEV_EP(dev, idx).dqh_in)
+#define OUT_SETUP(dev, idx)       (EP_DQH_OUT(dev, idx)->setup_buffer)
+#define IN_SETUP(dev, idx)        (EP_DQH_IN(dev, idx)->setup_buffer)
+#define CTRL_EP(dev)              (DEV_EP(dev, 0))
+#define CTRL_OUT_SETUP(dev)       (OUT_SETUP(dev, 0)) // default setup buffer
 
 static ALWAYS_INLINE void zynq_usb_set_bits(const struct device *dev, uint16_t reg_offset,
 					    uint32_t bits)
@@ -223,29 +231,20 @@ static ALWAYS_INLINE bool zynq_usb_test_setup_sema4(const struct device *dev)
 static ALWAYS_INLINE void zynq_usb_ep_clear_stall(const struct device *dev,
 						  const struct udc_ep_config *ep)
 {
-	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(USB_EP_LUT_IDX(ep->addr));
-	uint32_t clear_bits =
-		USB_EP_DIR_IS_OUT(ep->addr) ? XUSBPS_EPCR_RXS_MASK : XUSBPS_EPCR_TXS_MASK;
+	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(USB_EP_GET_IDX(ep->addr));
+	uint32_t clear_bits = USB_EP_DIR_IS_OUT(ep->addr) ? XUSBPS_EPCR_RXS_MASK : XUSBPS_EPCR_TXS_MASK;
 	zynq_usb_clear_bits(dev, ctrl_offset, clear_bits);
 }
 
-static ALWAYS_INLINE void zynq_usb_ep_set_stall(const struct device *dev,
-						const struct udc_ep_config *ep)
+static ALWAYS_INLINE void zynq_usb_ep_set_stall(const struct device *dev, const struct udc_ep_config *ep)
 {
-	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(USB_EP_LUT_IDX(ep->addr));
-	uint32_t set_bits =
-		USB_EP_DIR_IS_OUT(ep->addr) ? XUSBPS_EPCR_RXS_MASK : XUSBPS_EPCR_TXS_MASK;
+	uint16_t ctrl_offset = XUSBPS_EPCRn_OFFSET(USB_EP_GET_IDX(ep->addr));
+	uint32_t set_bits = USB_EP_DIR_IS_OUT(ep->addr) ? XUSBPS_EPCR_RXS_MASK : XUSBPS_EPCR_TXS_MASK;
 	zynq_usb_set_bits(dev, ctrl_offset, set_bits);
 }
 
 static ALWAYS_INLINE void zynq_usb_write_complete(const struct device *dev, uint32_t val)
 {
-	zynq_usb_write32(dev, XUSBPS_EPCOMPL_OFFSET, val);
-}
-
-static ALWAYS_INLINE void zynq_usb_clear_ep_complete(const struct device *dev)
-{
-	uint32_t val = zynq_usb_read32(dev, XUSBPS_EPCOMPL_OFFSET);
 	zynq_usb_write32(dev, XUSBPS_EPCOMPL_OFFSET, val);
 }
 
@@ -270,9 +269,7 @@ static ALWAYS_INLINE void zynq_usb_hw_reset(const struct device *dev)
 
 static ALWAYS_INLINE void zynq_prime_ep(const struct device *dev, const struct udc_ep_config *ep)
 {
-	uint32_t ep_num = USB_EP_LUT_IDX(ep->addr);
-	uint32_t mask = USB_EP_DIR_IS_IN(ep->addr) ? 0x00010000 : 0x00000001;
-	uint32_t prime_val = mask << ep_num;
+	uint32_t prime_val = USB_EP_LUT_IDX(ep->addr);
 	zynq_usb_write32(dev, XUSBPS_EPPRIME_OFFSET, prime_val);
 }
 
@@ -280,6 +277,11 @@ static ALWAYS_INLINE void zynq_usb_run(const struct device *dev)
 {
 	/* toggle the start bit */
 	zynq_usb_set_bits(dev, XUSBPS_CMD_OFFSET, XUSBPS_CMD_RS_MASK);
+}
+
+static ALWAYS_INLINE bool zynq_usb_ep_is_ctrl(const struct udc_ep_config *ep)
+{
+	return (ep->addr == USB_CONTROL_EP_OUT) || (ep->addr == USB_CONTROL_EP_IN);
 }
 
 static ALWAYS_INLINE void zynq_usb_stop(const struct device *dev)
@@ -360,12 +362,6 @@ static ALWAYS_INLINE struct zynq_udc_dtd * zynq_udc_din_td_head(const struct dev
 		return NULL;
 	}
 	return ep->dtd_ptrs[ep->in.head_idx];
-}
-
-static ALWAYS_INLINE void zynq_udc_td_dout_advance(const struct device *dev, uint8_t ep_num)
-{
-	struct ep_priv *ep = DEV_EP_PTR(dev, ep_num);
-	ep->out.tail_idx = (ep->out.tail_idx + 1) % ep->out.size;
 }
 
 static ALWAYS_INLINE struct zynq_udc_dtd * zynq_udc_dout_td_tail(const struct device *dev, uint8_t ep_num)
@@ -492,7 +488,7 @@ static int zynq_handle_evt_reset(const struct device *dev)
 
 static int zynq_handle_evt_dout_i(const struct device *dev, uint8_t i)
 {
-	const struct udc_ep_config *cfg = EP_CFG_IDX(dev, i);
+	const struct udc_ep_config *cfg = EP_CFG_IDX(dev, i, USB_EP_DIR_OUT);
 	bool is_ctrl = (i == 0);
 
 	struct net_buf *buf;
@@ -537,7 +533,7 @@ static int zynq_handle_evt_dout_i(const struct device *dev, uint8_t i)
 		return 0;
 	}
 
-	zynq_udc_td_dout_advance(dev, i);
+	zynq_udc_td_dout_tail_advance(dev, i);
 
 	/* check if we still have pending rx bufs */
 	if (!zynq_udc_dout_empty(dev, i)) {
@@ -592,7 +588,7 @@ static int zynq_handle_evt_dout(const struct device *dev, uint16_t flag)
  */
 static int zynq_handle_evt_din_i(const struct device *dev, uint8_t i)
 {
-	const struct udc_ep_config *cfg = EP_CFG_IDX(dev, i);
+	const struct udc_ep_config *cfg = EP_CFG_IDX(dev, i, USB_EP_DIR_IN);
 	bool is_ctrl = (i == 0);
 
 	struct net_buf *buf;
@@ -744,7 +740,7 @@ static int zynq_handle_xfer_next(const struct device *dev, struct udc_ep_config 
 		return -ENODATA;
 	}
 
-	if(buf->len>XUSBPS_dTD_BUF_MAX_SIZE) {
+	if (buf->len > XUSBPS_dTD_BUF_MAX_SIZE) {
 		LOG_ERR("Data size exceeds max transfer size");
 		return -EINVAL;
 	}
@@ -752,7 +748,7 @@ static int zynq_handle_xfer_next(const struct device *dev, struct udc_ep_config 
 	if (dir_in) {
 
 		/* if full */
-		struct zynq_udc_dtd *td = zynq_udc_din_td_head(dev, USB_EP_LUT_IDX(cfg->addr));
+		struct zynq_udc_dtd *td = zynq_udc_din_td_head(dev,USB_EP_GET_IDX(cfg->addr));
 		if (td == NULL) {
 			LOG_ERR("No available td for ep 0x%02x", cfg->addr);
 			udc_submit_ep_event(dev, buf, -ENOBUFS);
@@ -762,15 +758,17 @@ static int zynq_handle_xfer_next(const struct device *dev, struct udc_ep_config 
 		/* attach buffer to td */
 		zynq_td_attach_buf(td, buf, cfg);
 
-		struct zynq_udc_dqh *dqh = EP_DQH_IN(dev, USB_EP_LUT_IDX(cfg->addr));
+		struct zynq_udc_dqh *dqh = EP_DQH_IN(dev, USB_EP_GET_IDX(cfg->addr));
 		dqh->xfer_overlay.next_dtd_nlp = (uint32_t)td;
+
+		zynq_udc_td_din_head_advance(dev, USB_EP_GET_IDX(cfg->addr));
 
 		/* prime the endpoint */
 		zynq_prime_ep(dev, cfg);
 
 	} else {
 		/* if full */
-		struct zynq_udc_dtd *td = zynq_udc_dout_td_head(dev, USB_EP_LUT_IDX(cfg->addr));
+		struct zynq_udc_dtd *td = zynq_udc_dout_td_head(dev, USB_EP_GET_IDX(cfg->addr));
 		if (td == NULL) {
 			LOG_ERR("No available td for ep 0x%02x", cfg->addr);
 			udc_submit_ep_event(dev, buf, -ENOBUFS);
@@ -780,8 +778,10 @@ static int zynq_handle_xfer_next(const struct device *dev, struct udc_ep_config 
 		/* attach buffer to td */
 		zynq_td_attach_buf(td, buf, cfg);
 
-		struct zynq_udc_dqh *dqh = EP_DQH_OUT(dev, USB_EP_LUT_IDX(cfg->addr));
+		struct zynq_udc_dqh *dqh = EP_DQH_OUT(dev, USB_EP_GET_IDX(cfg->addr));
 		dqh->xfer_overlay.next_dtd_nlp = (uint32_t)td;
+
+		zynq_udc_td_dout_head_advance(dev, USB_EP_GET_IDX(cfg->addr));
 
 		/* prime the endpoint */
 		zynq_prime_ep(dev, cfg);
@@ -856,27 +856,6 @@ static int udc_zynq_ep_enqueue(const struct device *dev, struct udc_ep_config *c
 	if (!cfg->stat.halted) {
 		k_msgq_put(&drv_msgq, &evt, K_NO_WAIT);
 	}
-	// bool pipe_empty;
-	// udc_td* desc_ptr;
-	// uint8_t ep_num = USB_EP_LUT_IDX(cfg->addr);
-	// bool is_in = USB_EP_DIR_IS_IN(cfg->addr);
-	// struct udc_zynq_data* priv = DEV_DATA(dev);
-
-	// // struct ep_priv *ep_priv = UDC_EP_PRIV(cfg);
-
-	// if(ep_priv->in.td_head != ep_priv->in.td_tail) {
-	// 	pipe_empty = false;
-	// }
-
-	// if (zynq_usb_td_is_active(ep_priv->in.td_head)) {
-	// 	// TODO(pan), submit event to upper layer
-	// 	return -EBUSY;
-	// }
-
-	// desc_ptr = ep_priv->in.td_head;
-
-	// ep_priv->requested_bytes = buf->len;
-
 	return 0;
 }
 
@@ -884,13 +863,12 @@ static void udc_zynq_device_prime_and_flush(const struct device *dev,
 					    const struct udc_ep_config *cfg)
 {
 
-	uint32_t ep_num = USB_EP_LUT_IDX(cfg->addr);
+	const uint32_t prime_mask = USB_EP_LUT_IDX(cfg->addr);
 	/* clear all setup interrupts by writing the read value of the XUSBPS_EPSTAT_OFFSET */
-	if (ep_num == 0) {
+	if (zynq_usb_ep_is_ctrl(cfg)) {
 		zynq_usb_clear_setup_interrupts(dev);
 	}
 	/* prime clear and flush */
-	const uint32_t prime_mask = 0x00010001 << ep_num;
 	/* read ep prime sts */
 	uint32_t timeout = CONFIG_UDC_ZYNQ_TIMEOUT;
 	while ((zynq_usb_read32(dev, XUSBPS_EPPRIME_OFFSET) & prime_mask) && --timeout) {
@@ -946,10 +924,9 @@ static int udc_zynq_ep_dequeue(const struct device *dev, struct udc_ep_config *c
  */
 static int udc_zynq_ep_enable(const struct device *dev, struct udc_ep_config *const cfg)
 {
-	LOG_DBG("Enable ep 0x%02x", cfg->addr);
-	uint8_t ep_idx = USB_EP_LUT_IDX(cfg->addr);
+	uint8_t ep_idx = USB_EP_GET_IDX(cfg->addr);
 	bool ep_is_out = USB_EP_DIR_IS_OUT(cfg->addr);
-	bool ep_is_ctrl = ep_idx == 0;
+	bool ep_is_ctrl = zynq_usb_ep_is_ctrl(cfg);
 	uint16_t ep_ctrl_offset = XUSBPS_EPCRn_OFFSET(ep_idx);
 
 	/** Configure the queue head
@@ -961,28 +938,33 @@ static int udc_zynq_ep_enable(const struct device *dev, struct udc_ep_config *co
 
 	/* out queue heads */
 	if (ep_is_ctrl) {
-		struct zynq_udc_dqh *dqh_out = EP_DQH_OUT(dev, ep_idx);
-		memset(dqh_out, 0, sizeof(struct zynq_udc_dqh));
-		struct zynq_udc_dqh *dqh_in = EP_DQH_IN(dev, ep_idx);
-		memset(dqh_in, 0, sizeof(struct zynq_udc_dqh));
 
-		dqh_out->max_packet_len = cfg->mps;
-		dqh_out->irq_on_setup = 1;
-		dqh_in->max_packet_len = cfg->mps;
-		dqh_in->irq_on_setup = 1;
-
+		if(cfg->addr == USB_CONTROL_EP_OUT) {
+			LOG_DBG("Enable ctrl ep 0x%02x, idx %d, out", cfg->addr, ep_idx);
+			struct zynq_udc_dqh *dqh_out = EP_DQH_OUT(dev, ep_idx);
+			memset(dqh_out, 0, sizeof(struct zynq_udc_dqh));
+			dqh_out->max_packet_len = cfg->mps;
+			dqh_out->irq_on_setup = 1;
+		} else {
+			LOG_DBG("Enable ctrl ep 0x%02x, idx %d, din", cfg->addr, ep_idx);
+			struct zynq_udc_dqh *dqh_in = EP_DQH_IN(dev, ep_idx);
+			memset(dqh_in, 0, sizeof(struct zynq_udc_dqh));
+			dqh_in->max_packet_len = cfg->mps;
+			dqh_in->irq_on_setup = 1;
+		}
 		/* set the dqh address */
 
 	}
 	/* Configure Endpoint Registers */
 	else {
+		LOG_DBG("Enable non-ctrl ep 0x%02x, idx %d", cfg->addr, ep_idx);
+
+
 		/* set endpoint type */
-		uint32_t type_mask =
-			ep_is_out ? XUSBPS_EPCR_RXT_TYPE_MASK : XUSBPS_EPCR_TXT_TYPE_MASK;
+		uint32_t type_mask = ep_is_out ? XUSBPS_EPCR_RXT_TYPE_MASK : XUSBPS_EPCR_TXT_TYPE_MASK;
 		uint32_t type_val = 0;
 		bool is_iso = false;
-		struct zynq_udc_dqh *dqh =
-			ep_is_out ? EP_DQH_OUT(dev, ep_idx) : EP_DQH_IN(dev, ep_idx);
+		struct zynq_udc_dqh *dqh = ep_is_out ? EP_DQH_OUT(dev, ep_idx) : EP_DQH_IN(dev, ep_idx);
 
 		switch (cfg->attributes & USB_EP_TRANSFER_TYPE_MASK) {
 		case USB_EP_TYPE_BULK:
@@ -1043,7 +1025,7 @@ static int udc_zynq_ep_enable(const struct device *dev, struct udc_ep_config *co
 static int udc_zynq_ep_disable(const struct device *dev, struct udc_ep_config *const cfg)
 {
 	LOG_DBG("Disable ep 0x%02x", cfg->addr);
-	uint8_t ep_idx = USB_EP_LUT_IDX(cfg->addr);
+	uint8_t ep_idx = USB_EP_GET_IDX(cfg->addr);
 	bool ep_is_ctrl = ep_idx == 0;
 	if (ep_is_ctrl) {
 		return 0;
@@ -1137,13 +1119,13 @@ static int udc_zynq_enable(const struct device *dev)
 	ret = udc_ep_enable_internal(dev, USB_CONTROL_EP_OUT, USB_EP_TYPE_CONTROL,
 				     cfg->ep_cfg_out[0].mps, 0);
 	if (ret) {
-		LOG_ERR("Failed to enable control endpoint");
+		LOG_ERR("Failed to enable control endpoint %d", ret);
 		return ret;
 	}
 	ret = udc_ep_enable_internal(dev, USB_CONTROL_EP_IN, USB_EP_TYPE_CONTROL,
 				     cfg->ep_cfg_in[0].mps, 0);
 	if (ret) {
-		LOG_ERR("Failed to enable control endpoint");
+		LOG_ERR("Failed to enable control endpoint %d", ret);
 		return ret;
 	}
 
@@ -1154,17 +1136,18 @@ static int udc_zynq_enable(const struct device *dev)
 	 *Change 4. SoF 5. Suspend
 	 */
 	zynq_usb_write32(dev, XUSBPS_IER_OFFSET, 0);
-	cfg->config_func(dev, true); // connect the interrupt
 	zynq_usb_set_bits(dev, XUSBPS_IER_OFFSET,
-			  /* usb transaction complete */ XUSBPS_IXR_UI_MASK |
+			/* usb transaction complete */ XUSBPS_IXR_UI_MASK |
 				  /* Trans Error */ XUSBPS_IXR_UE_MASK |
 				  /* Port Change Detect */ XUSBPS_IXR_PC_MASK |
 				  /* Reset Received */ XUSBPS_IXR_UR_MASK |
 				  /* Start Of Frame */ XUSBPS_IXR_SR_MASK |
 				  /* Device Controller Suspend */ XUSBPS_IXR_SLE_MASK);
 
+
+	cfg->config_func(dev, true); // connect the interrupt
 	/* toggle the start bit */
-	zynq_usb_set_bits(dev, XUSBPS_CMD_OFFSET, XUSBPS_CMD_RS_MASK);
+	zynq_usb_run(dev);
 
 	return 0;
 }
@@ -1222,6 +1205,7 @@ static void udc_zynq_device_reset(const struct device *dev)
  */
 static int udc_zynq_init(const struct device *dev)
 {
+	LOG_DBG("Init device %p", dev);
 	udc_zynq_device_reset(dev);
 
 	udc_zynq_init_eplist(dev);
@@ -1233,7 +1217,9 @@ static int udc_zynq_init(const struct device *dev)
 /* Shut down the controller completely */
 static int udc_zynq_shutdown(const struct device *dev)
 {
-	udc_zynq_device_reset(dev);
+	LOG_DBG("Shutdown device %p", dev);
+	// udc_zynq_device_reset(dev);
+	zynq_usb_stop(dev);
 	return 0;
 }
 
@@ -1356,19 +1342,58 @@ static void udc_zynq_init_eplist(const struct device *dev)
 			ep->dqh_in->ep_cur_dtd = (uint32_t)ep->dtd_ptrs[0];
 		}
 	}
+	// const struct udc_zynq_config *config = DEV_CFG(dev);
+	/* set queue head list addr */
+	zynq_usb_write32(dev, XUSBPS_EPLISTADDR_OFFSET, (uint32_t)config->qh_arr);
+
 }
 
 static void udc_zynq_reset_post(const struct device *dev)
 {
-	const struct udc_zynq_config *config = DEV_CFG(dev);
-	/* set queue head list addr */
-	zynq_usb_write32(dev, XUSBPS_EPLISTADDR_OFFSET, (uint32_t)config->qh_arr);
 	/* CM(controller mode) in device mode, SLO(setup lockout) mode */
-	zynq_usb_write32(dev, XUSBPS_MODE_OFFSET,
-			 XUSBPS_MODE_CM_DEVICE_MASK | XUSBPS_MODE_SLOM_MASK);
+	zynq_usb_write32(dev, XUSBPS_MODE_OFFSET, XUSBPS_MODE_CM_DEVICE_MASK | XUSBPS_MODE_SLOM_MASK);
 	/* OTG Termination, mandatory in device mode */
 	zynq_usb_set_bits(dev, XUSBPS_OTGCSR_OFFSET, XUSBPS_OTGSC_OT_MASK);
 }
+
+static int udc_zynq_lock(const struct device *dev)
+{
+	return udc_lock_internal(dev, K_FOREVER);
+}
+
+static int udc_zynq_unlock(const struct device *dev)
+{
+	return udc_unlock_internal(dev);
+}
+
+/*
+ * UDC API structure.
+ * Note, you do not need to implement basic checks, these are done by
+ * the UDC common layer udc_common.c
+ */
+static const struct udc_api udc_zynq_api = {
+	.lock = udc_zynq_lock,
+	.unlock = udc_zynq_unlock,
+	.device_speed = udc_zynq_device_speed,
+	.init = udc_zynq_init,
+	.enable = udc_zynq_enable,
+	.disable = udc_zynq_disable,
+	.shutdown = udc_zynq_shutdown,
+	.set_address = udc_zynq_set_address,
+	.host_wakeup = udc_zynq_host_wakeup,
+	.ep_enable = udc_zynq_ep_enable,
+	.ep_disable = udc_zynq_ep_disable,
+	.ep_set_halt = udc_zynq_ep_set_halt,
+	.ep_clear_halt = udc_zynq_ep_clear_halt,
+	.ep_enqueue = udc_zynq_ep_enqueue,
+	.ep_dequeue = udc_zynq_ep_dequeue,
+};
+
+#define DT_DRV_COMPAT xlnx_zynq_usb
+
+#ifdef CONFIG_PINCTRL
+#include <zephyr/drivers/pinctrl.h>
+#endif
 
 /*
  * This is called once to initialize the controller and endpoints
@@ -1382,6 +1407,29 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 
 	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
 
+#ifdef CONFIG_PINCTRL
+	/** note！
+	we only configure the pins but not the PLL/CLK of SDIO [0xF8000150:0xF8001E03]
+	(we shall configure these part in u-boot/fsbl) */
+	err = pinctrl_apply_state(config->pincfg, PINCTRL_STATE_DEFAULT);
+	LOG_DBG("pinctrl apply %d pins", config->pincfg->state_cnt);
+	if (err < 0) {
+		LOG_ERR("Failed to apply pin state %d", err);
+		return err;
+	}
+#endif
+	if (gpio_is_ready_dt(&config->phy_reset)) {
+
+		err = gpio_pin_configure_dt(&config->phy_reset, 0);
+		if (err < 0) {
+			LOG_ERR("Could not configure reset GPIO (%d)", err);
+			return err;
+		}
+		gpio_pin_set(config->phy_reset.port, config->phy_reset.pin, 0);
+		k_sleep(K_MSEC(1));
+		gpio_pin_set(config->phy_reset.port, config->phy_reset.pin, 1);
+	}
+
 	/*
 	 * You do not need to initialize it if your driver does not use
 	 * udc_lock_internal() / udc_unlock_internal(), but implements its
@@ -1389,11 +1437,13 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 	 */
 	k_mutex_init(&data->mutex);
 
-	data->caps.rwup = false;
+	data->caps.rwup = true;
+	data->caps.out_ack = false;
 	data->caps.mps0 = UDC_MPS0_64;
 	if (config->speed_idx == 2) {
 		data->caps.hs = true;
 	}
+	data->caps.can_detect_vbus = true;
 
 	for (int i = 0; i < config->num_of_eps; i++) {
 		config->ep_cfg_out[i].caps.out = 1;
@@ -1440,46 +1490,22 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 	return 0;
 }
 
-static int udc_zynq_lock(const struct device *dev)
-{
-	return udc_lock_internal(dev, K_FOREVER);
-}
+#if CONFIG_PINCTRL
+#define UDC_ZYNQ_PINCTRL_DEFINE(port) PINCTRL_DT_INST_DEFINE(port)
+#define UDC_ZYNQ_PINCTRL_INIT(port)   .pincfg = PINCTRL_DT_INST_DEV_CONFIG_GET(port)
+#else
+#define UDC_ZYNQ_PINCTRL_DEFINE(port)
+#define UDC_ZYNQ_PINCTRL_INIT(port)
+#endif /* CONFIG_PINCTRL */
 
-static int udc_zynq_unlock(const struct device *dev)
-{
-	return udc_unlock_internal(dev);
-}
 
-/*
- * UDC API structure.
- * Note, you do not need to implement basic checks, these are done by
- * the UDC common layer udc_common.c
- */
-static const struct udc_api udc_zynq_api = {
-	.lock = udc_zynq_lock,
-	.unlock = udc_zynq_unlock,
-	.device_speed = udc_zynq_device_speed,
-	.init = udc_zynq_init,
-	.enable = udc_zynq_enable,
-	.disable = udc_zynq_disable,
-	.shutdown = udc_zynq_shutdown,
-	.set_address = udc_zynq_set_address,
-	.host_wakeup = udc_zynq_host_wakeup,
-	.ep_enable = udc_zynq_ep_enable,
-	.ep_disable = udc_zynq_ep_disable,
-	.ep_set_halt = udc_zynq_ep_set_halt,
-	.ep_clear_halt = udc_zynq_ep_clear_halt,
-	.ep_enqueue = udc_zynq_ep_enqueue,
-	.ep_dequeue = udc_zynq_ep_dequeue,
-};
-
-#define DT_DRV_COMPAT xlnx_zynq_usb
 
 /*
  * A UDC driver should always be implemented as a multi-instance
  * driver, even if your platform does not require it.
  */
 #define UDC_ZYNQ_DEVICE_DEFINE(n)                                                                  \
+	UDC_ZYNQ_PINCTRL_DEFINE(n);                                                                 \
 	K_THREAD_STACK_DEFINE(udc_zynq_stack_##n, CONFIG_UDC_ZYNQ);                                \
 	static void zynq_udc_##n##_irq_config_func(const struct device *dev, bool en)              \
 	{                                                                                          \
@@ -1519,6 +1545,8 @@ static const struct udc_api udc_zynq_api = {
 	static struct dtd_aligned td_##n[8 * DT_INST_PROP(n, num_bidir_endpoints)];                \
                                                                                                    \
 	static const struct udc_zynq_config udc_zynq_config_##n = {                                \
+		DEVICE_MMIO_ROM_INIT(DT_DRV_INST(n)),                                              \
+		.phy_reset = GPIO_DT_SPEC_INST_GET_OR(n, reset_gpios, {0}),			\
 		.num_of_eps = DT_INST_PROP(n, num_bidir_endpoints),                                \
 		.ep_cfg_in = ep_cfg_in_##n,                                                        \
 		.ep_cfg_out = ep_cfg_out_##n,                                                      \
@@ -1527,6 +1555,7 @@ static const struct udc_api udc_zynq_api = {
 		.qh_arr = qh_##n,                                                                  \
 		.td_arr = td_##n,                                                                  \
 		.config_func = zynq_udc_##n##_irq_config_func,                                     \
+		UDC_ZYNQ_PINCTRL_INIT(n),                                                          \
 	};                                                                                         \
                                                                                                    \
 	static struct zynq_udc_data udc_priv_##n = {                                               \

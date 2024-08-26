@@ -9,3 +9,8 @@ include: [usb-ep.yaml, pinctrl-device.yaml]
 
 bus: usb
 
+properties:
+  reset-gpios:
+    type: phandle-array
+    description: Reset pin.
+
