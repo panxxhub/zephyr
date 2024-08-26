@@ -154,17 +154,27 @@ struct zynq_udc_data {
 #define CTRL_EP(dev)              (DEV_EP(dev, 0))
 #define CTRL_OUT_SETUP(dev)       (OUT_SETUP(dev, 0)) // default setup buffer
 
+#define ZYNQ_UDC_DEVICE_MMIO_RAM_PTR(dev) (mm_reg_t *)(udc_get_private(dev))
+
+
+#define ZYNQ_UDC_DEVICE_MMIO_MAP(dev, flags) \
+	device_map(ZYNQ_UDC_DEVICE_MMIO_RAM_PTR(dev), \
+		   DEVICE_MMIO_ROM_PTR(dev)->phys_addr, \
+		   DEVICE_MMIO_ROM_PTR(dev)->size, \
+		   (flags))
+#define ZYNQ_UDC_DEVICE_MMIO_GET(dev) (*ZYNQ_UDC_DEVICE_MMIO_RAM_PTR(dev))
+
 static ALWAYS_INLINE void zynq_usb_set_bits(const struct device *dev, uint16_t reg_offset,
 					    uint32_t bits)
 {
-	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	mm_reg_t base = ZYNQ_UDC_DEVICE_MMIO_GET(dev);
 	sys_write32(sys_read32(base + reg_offset) | bits, base + reg_offset);
 }
 
 static ALWAYS_INLINE void zynq_usb_mask_write(const struct device *dev, uint16_t reg_offset,
 					      uint32_t mask, uint32_t val)
 {
-	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	mm_reg_t base = ZYNQ_UDC_DEVICE_MMIO_GET(dev); 
 	mm_reg_t reg = base + reg_offset;
 	sys_write32((sys_read32(reg) & ~mask) | (val & mask), reg);
 }
@@ -172,20 +182,20 @@ static ALWAYS_INLINE void zynq_usb_mask_write(const struct device *dev, uint16_t
 static ALWAYS_INLINE void zynq_usb_clear_bits(const struct device *dev, uint16_t reg_offset,
 					      uint32_t bits)
 {
-	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	mm_reg_t base = ZYNQ_UDC_DEVICE_MMIO_GET(dev);
 	sys_write32(sys_read32(base + reg_offset) & ~bits, base + reg_offset);
 }
 
 static ALWAYS_INLINE void zynq_usb_write32(const struct device *dev, uint16_t reg_offset,
 					   uint32_t val)
 {
-	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	mm_reg_t base = ZYNQ_UDC_DEVICE_MMIO_GET(dev);
 	sys_write32(val, base + reg_offset);
 }
 
 static ALWAYS_INLINE uint32_t zynq_usb_read_write32(const struct device *dev, uint16_t reg_offset)
 {
-	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	mm_reg_t base = ZYNQ_UDC_DEVICE_MMIO_GET(dev);
 	uint32_t read_val = sys_read32(base + reg_offset);
 	if (read_val) {
 		sys_write32(read_val, base + reg_offset);
@@ -195,7 +205,7 @@ static ALWAYS_INLINE uint32_t zynq_usb_read_write32(const struct device *dev, ui
 
 static ALWAYS_INLINE uint32_t zynq_usb_read32(const struct device *dev, uint16_t reg_offset)
 {
-	mm_reg_t base = DEVICE_MMIO_GET(dev);
+	mm_reg_t base = ZYNQ_UDC_DEVICE_MMIO_GET(dev);
 	return sys_read32(base + reg_offset);
 }
 
@@ -803,6 +813,22 @@ static ALWAYS_INLINE void zynq_thread_handler(void *const arg)
 	struct udc_ep_config *ep_cfg;
 	struct zynq_drv_event evt;
 
+	uint32_t port_sts = zynq_usb_read32(dev, XUSBPS_PORTSCR1_OFFSET);
+	bool ccs = port_sts & XUSBPS_PORTSCR_CCS_MASK;
+	k_sleep(K_MSEC(1000));
+	if(ccs) {
+		/* port connection detected */
+		LOG_DBG("Port connection detected");
+	} else {
+		/* port disconnection detected */
+		LOG_DBG("Port disconnection detected");
+	}
+	return;
+	// if(port_sts & xusbps_portscr_ccs_mask) {
+	// 	/* port reset detected */
+	// }
+	
+
 	/* This is the bottom-half of the ISR handler and the place where
 	 * a new transfer can be fed.
 	 */
@@ -1405,7 +1431,10 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 	struct udc_data *data = dev->data;
 	int err;
 
-	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
+	ZYNQ_UDC_DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
+
+	uint32_t id = zynq_usb_read32(dev,0);
+	LOG_DBG("USB ID: 0x%08x", id);
 
 #ifdef CONFIG_PINCTRL
 	/** note！
@@ -1486,6 +1515,19 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 	}
 
 	LOG_INF("Device %p (max. speed %d)", dev, config->speed_idx);
+
+	config->make_thread(dev);
+
+	uint32_t port_sts = zynq_usb_read32(dev, XUSBPS_PORTSCR1_OFFSET);
+	bool ccs = port_sts & XUSBPS_PORTSCR_CCS_MASK;
+	k_sleep(K_MSEC(100));
+	if(ccs) {
+		/* port connection detected */
+		LOG_DBG("Port connection detected");
+	} else {
+		/* port disconnection detected */
+		LOG_DBG("Port disconnection detected");
+	}
 
 	return 0;
 }
