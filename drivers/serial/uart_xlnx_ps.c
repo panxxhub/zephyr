@@ -6,6 +6,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "zephyr/arch/arm/cortex_a_r/sys_io.h"
+#include "zephyr/sys/atomic.h"
 #define DT_DRV_COMPAT xlnx_xuartps
 
 /**
@@ -136,6 +138,9 @@
 #define XUARTPS_SR_RXEMPTY	0x00000002U /**< RX FIFO empty */
 #define XUARTPS_SR_RTRIG	0x00000001U /**< RX FIFO fill over trigger */
 
+#define XUARTPS_RX_NEMPTY_BIT	0x00000000U /**< RX busy bit */
+#define XUARTPS_TX_BUSY_BIT	0x00000001U /**< TX busy bit */
+
 /** Device configuration structure */
 struct uart_xlnx_ps_dev_config {
 	DEVICE_MMIO_ROM;
@@ -147,6 +152,8 @@ struct uart_xlnx_ps_dev_config {
 	const struct pinctrl_dev_config *pincfg;
 #endif
 	uint32_t baud_rate;
+	uint32_t rx_trigger_level;
+	uint32_t tx_trigger_level;
 };
 
 /** Device data structure */
@@ -156,12 +163,28 @@ struct uart_xlnx_ps_dev_data_t {
 	uint32_t stopbits;
 	uint32_t databits;
 	uint32_t flowctrl;
-
+	const struct device *dev;
+	// atomic_t irq_status;
+	atomic_t irq_status;
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
+	struct k_work irq_cb_work;
 	uart_irq_callback_user_data_t user_cb;
 	void *user_data;
 #endif
 };
+
+static struct k_work_q uart_xlnx_work_q;
+static K_KERNEL_STACK_DEFINE(uart_xlnx_stack, CONFIG_UART_XLNX_WQ_STACK_SIZE);
+
+static ALWAYS_INLINE bool uart_xlnx_test_set_bit(uint32_t *v,uint32_t b)
+{
+	bool ret = (*v & b);
+
+	return ret;
+}
+
+
+static void uart_xlnx_irq_cb_handler(struct k_work *work);
 
 /**
  * @brief Disables the UART's RX and TX function.
@@ -270,6 +293,16 @@ static void set_baudrate(const struct device *dev, uint32_t baud_rate)
 	}
 }
 
+static int uart_xlnx_ps_wq_init(void)
+{
+	k_work_queue_init(&uart_xlnx_work_q);
+	k_work_queue_start(&uart_xlnx_work_q, uart_xlnx_stack,
+			   K_KERNEL_STACK_SIZEOF(uart_xlnx_stack),
+			   CONFIG_UART_XLNX_WQ_PRIORITY, NULL);
+	return 0;
+}
+
+
 /**
  * @brief Initialize individual UART port
  *
@@ -282,6 +315,7 @@ static void set_baudrate(const struct device *dev, uint32_t baud_rate)
 static int uart_xlnx_ps_init(const struct device *dev)
 {
 	const struct uart_xlnx_ps_dev_config *dev_cfg = dev->config;
+	struct uart_xlnx_ps_dev_data_t *dev_data = dev->data;
 	uint32_t reg_val;
 #ifdef CONFIG_PINCTRL
 	int err;
@@ -309,13 +343,18 @@ static int uart_xlnx_ps_init(const struct device *dev)
 	sys_write32(reg_val, reg_base + XUARTPS_MR_OFFSET);
 
 	/* Set RX FIFO trigger at 1 data bytes. */
-	sys_write32(0x01U, reg_base + XUARTPS_RXWM_OFFSET);
+	sys_write32(dev_cfg->rx_trigger_level, reg_base + XUARTPS_RXWM_OFFSET);
+
+	/* Set Tx FiFo trigger level */
+	sys_write32(dev_cfg->tx_trigger_level, reg_base + XUARTPS_TXWM_OFFSET);
 
 	/* Disable all interrupts, polling mode is default */
 	sys_write32(XUARTPS_IXR_MASK, reg_base + XUARTPS_IDR_OFFSET);
 
 	/* Set the baud rate */
 	set_baudrate(dev, dev_cfg->baud_rate);
+
+	k_work_init(&dev_data->irq_cb_work, uart_xlnx_irq_cb_handler);
 
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 
@@ -919,14 +958,8 @@ static void uart_xlnx_ps_irq_tx_disable(const struct device *dev)
  */
 static int uart_xlnx_ps_irq_tx_ready(const struct device *dev)
 {
-	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
-	uint32_t reg_val = sys_read32(reg_base + XUARTPS_SR_OFFSET);
-
-	if ((reg_val & (XUARTPS_SR_TTRIG | XUARTPS_SR_TXEMPTY)) == 0) {
-		return 0;
-	} else {
-		return 1;
-	}
+	const struct uart_xlnx_ps_dev_data_t *dev_data = dev->data;
+	return atomic_test_bit(&dev_data->irq_status,  XUARTPS_TX_BUSY_BIT);
 }
 
 /**
@@ -981,15 +1014,8 @@ static void uart_xlnx_ps_irq_rx_disable(const struct device *dev)
  */
 static int uart_xlnx_ps_irq_rx_ready(const struct device *dev)
 {
-	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
-	uint32_t reg_val = sys_read32(reg_base + XUARTPS_ISR_OFFSET);
-
-	if ((reg_val & XUARTPS_IXR_RTRIG) == 0) {
-		return 0;
-	} else {
-		sys_write32(XUARTPS_IXR_RTRIG, reg_base + XUARTPS_ISR_OFFSET);
-		return 1;
-	}
+	struct uart_xlnx_ps_dev_data_t *dev_data = dev->data;
+	return !atomic_test_and_set_bit(&dev_data->irq_status, XUARTPS_RX_NEMPTY_BIT);
 }
 
 /**
@@ -1079,21 +1105,59 @@ static void uart_xlnx_ps_irq_callback_set(const struct device *dev,
 	dev_data->user_data = cb_data;
 }
 
+
+static void uart_xlnx_irq_cb_handler(struct k_work *work)
+{
+	struct uart_xlnx_ps_dev_data_t *dev_data = CONTAINER_OF(work, struct uart_xlnx_ps_dev_data_t, irq_cb_work);
+
+	if (dev_data->user_cb) {
+		dev_data->user_cb(dev_data->dev, dev_data->user_data);
+	}
+}
+	
 /**
  * @brief Interrupt ce routine.
  *
- * This simply calls the callback function, if one exists.
+ * cache the interrupt status register and submit the cb work to the work queue.
  *
  * @param arg Argument to ISR.
  */
 static void uart_xlnx_ps_isr(const struct device *dev)
 {
-	const struct uart_xlnx_ps_dev_data_t *data = dev->data;
+
+	struct uart_xlnx_ps_dev_data_t *data = dev->data;
+	mm_reg_t reg_base = DEVICE_MMIO_GET(dev);
+	uint32_t reg_isr = sys_read32(reg_base + XUARTPS_IMR_OFFSET);
+	sys_write32(reg_isr, reg_base + XUARTPS_ISR_OFFSET);
+
+	/* any empty will clear rx busy */
+	if (reg_isr & XUARTPS_IXR_RXEMPTY) {
+		// atomic_set(&data->rx_nbusy, 1);
+		atomic_set_bit(&data->irq_status, XUARTPS_RX_NEMPTY_BIT);
+	}
+
+	if (reg_isr & (XUARTPS_IXR_RTRIG | XUARTPS_IXR_RXFULL)) {
+		// atomic_clear(&data->rx_nbusy);
+		atomic_clear_bit(&data->irq_status, XUARTPS_RX_NEMPTY_BIT);
+	}
+
+	/* any trigger/nful will trigger tx busy */
+	if (reg_isr & (XUARTPS_IXR_TNFUL | XUARTPS_IXR_TTRIG)) {
+		// atomic_clear(&data->tx_nbusy);
+		atomic_clear_bit(&data->irq_status, XUARTPS_TX_BUSY_BIT);
+	}
+
+	/* tx empty will clear tx busy */
+	if (reg_isr & XUARTPS_IXR_TXEMPTY) {
+		// atomic_set(&data->tx_nbusy, 1);
+		atomic_set_bit(&data->irq_status, XUARTPS_TX_BUSY_BIT);
+	}
 
 	if (data->user_cb) {
-		data->user_cb(dev, data->user_data);
+		k_work_submit_to_queue(&uart_xlnx_work_q, &data->irq_cb_work);
 	}
 }
+
 #endif /* CONFIG_UART_INTERRUPT_DRIVEN */
 
 static const struct uart_driver_api uart_xlnx_ps_driver_api = {
@@ -1143,8 +1207,10 @@ static void uart_xlnx_ps_irq_config_##port(const struct device *dev) \
 
 #endif /*CONFIG_UART_INTERRUPT_DRIVEN */
 
-#define UART_XLNX_PS_DEV_DATA(port) \
-static struct uart_xlnx_ps_dev_data_t uart_xlnx_ps_dev_data_##port
+#define UART_XLNX_PS_DEV_DATA(port)                                                                \
+	static struct uart_xlnx_ps_dev_data_t uart_xlnx_ps_dev_data_##port = {                     \
+		.irq_status = ATOMIC_INIT(0x3),                                                   \
+	};
 
 #if CONFIG_PINCTRL
 #define UART_XLNX_PS_PINCTRL_DEFINE(port) PINCTRL_DT_INST_DEFINE(port);
@@ -1159,6 +1225,8 @@ static struct uart_xlnx_ps_dev_config uart_xlnx_ps_dev_cfg_##port = { \
 	DEVICE_MMIO_ROM_INIT(DT_DRV_INST(port)), \
 	.sys_clk_freq = DT_INST_PROP(port, clock_frequency), \
 	.baud_rate = DT_INST_PROP(port, current_speed), \
+	.rx_trigger_level = DT_INST_PROP(port, rx_trigger_level), \
+	.tx_trigger_level = DT_INST_PROP(port, tx_trigger_level), \
 	UART_XLNX_PS_IRQ_CONF_FUNC_SET(port) \
 	UART_XLNX_PS_PINCTRL_INIT(port) \
 }
@@ -1179,4 +1247,7 @@ DEVICE_DT_INST_DEFINE(port, \
 	UART_XLNX_PS_DEV_CFG(inst);		\
 	UART_XLNX_PS_INIT(inst);
 
-DT_INST_FOREACH_STATUS_OKAY(UART_XLNX_INSTANTIATE)
+DT_INST_FOREACH_STATUS_OKAY(UART_XLNX_INSTANTIATE);
+
+/* NOTE: multi uart inst share the same wq inst */
+SYS_INIT(uart_xlnx_ps_wq_init, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);

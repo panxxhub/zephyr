@@ -812,23 +812,6 @@ static ALWAYS_INLINE void zynq_thread_handler(void *const arg)
 	const struct device *dev = (const struct device *)arg;
 	struct udc_ep_config *ep_cfg;
 	struct zynq_drv_event evt;
-
-	uint32_t port_sts = zynq_usb_read32(dev, XUSBPS_PORTSCR1_OFFSET);
-	bool ccs = port_sts & XUSBPS_PORTSCR_CCS_MASK;
-	k_sleep(K_MSEC(1000));
-	if(ccs) {
-		/* port connection detected */
-		LOG_DBG("Port connection detected");
-	} else {
-		/* port disconnection detected */
-		LOG_DBG("Port disconnection detected");
-	}
-	return;
-	// if(port_sts & xusbps_portscr_ccs_mask) {
-	// 	/* port reset detected */
-	// }
-	
-
 	/* This is the bottom-half of the ISR handler and the place where
 	 * a new transfer can be fed.
 	 */
@@ -1433,9 +1416,6 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 
 	ZYNQ_UDC_DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
 
-	uint32_t id = zynq_usb_read32(dev,0);
-	LOG_DBG("USB ID: 0x%08x", id);
-
 #ifdef CONFIG_PINCTRL
 	/** note！
 	we only configure the pins but not the PLL/CLK of SDIO [0xF8000150:0xF8001E03]
@@ -1454,9 +1434,13 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 			LOG_ERR("Could not configure reset GPIO (%d)", err);
 			return err;
 		}
+		// gpio_pin_set(config->phy_reset.port, config->phy_reset.pin, 0);
+		// k_sleep(K_MSEC(1));
+		// gpio_pin_set(config->phy_reset.port, config->phy_reset.pin, 1);
+		// gpio_pin_set(config->phy_reset.port, config->phy_reset.pin, 1);
+		// k_sleep(K_MSEC(1));
 		gpio_pin_set(config->phy_reset.port, config->phy_reset.pin, 0);
-		k_sleep(K_MSEC(1));
-		gpio_pin_set(config->phy_reset.port, config->phy_reset.pin, 1);
+	
 	}
 
 	/*
@@ -1517,17 +1501,6 @@ static int udc_zynq_driver_preinit(const struct device *dev)
 	LOG_INF("Device %p (max. speed %d)", dev, config->speed_idx);
 
 	config->make_thread(dev);
-
-	uint32_t port_sts = zynq_usb_read32(dev, XUSBPS_PORTSCR1_OFFSET);
-	bool ccs = port_sts & XUSBPS_PORTSCR_CCS_MASK;
-	k_sleep(K_MSEC(100));
-	if(ccs) {
-		/* port connection detected */
-		LOG_DBG("Port connection detected");
-	} else {
-		/* port disconnection detected */
-		LOG_DBG("Port disconnection detected");
-	}
 
 	return 0;
 }
