@@ -24,12 +24,12 @@ config UART_XLNX_UARTLITE
 if UART_XLNX_PS
 	config UART_XLNX_WQ_STACK_SIZE
 		int "Workqueue stack size"
-		default 1024
+		default 8192
 		help
 		  This option sets the stack size for the workqueue thread.
 	config UART_XLNX_WQ_PRIORITY
 		int "Workqueue priority"
-		default 12
+		default 1
 		help
 		  This option sets the priority for the workqueue thread.
 endif

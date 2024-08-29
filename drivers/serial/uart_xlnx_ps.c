@@ -164,8 +164,8 @@ struct uart_xlnx_ps_dev_data_t {
 	uint32_t databits;
 	uint32_t flowctrl;
 	const struct device *dev;
-	// atomic_t irq_status;
-	atomic_t irq_status;
+	atomic_t rx_nready;
+	bool tx_init;
 #ifdef CONFIG_UART_INTERRUPT_DRIVEN
 	struct k_work irq_cb_work;
 	uart_irq_callback_user_data_t user_cb;
@@ -174,14 +174,7 @@ struct uart_xlnx_ps_dev_data_t {
 };
 
 static struct k_work_q uart_xlnx_work_q;
-static K_KERNEL_STACK_DEFINE(uart_xlnx_stack, CONFIG_UART_XLNX_WQ_STACK_SIZE);
-
-static ALWAYS_INLINE bool uart_xlnx_test_set_bit(uint32_t *v,uint32_t b)
-{
-	bool ret = (*v & b);
-
-	return ret;
-}
+K_THREAD_STACK_DEFINE(uart_xlnx_stack, CONFIG_UART_XLNX_WQ_STACK_SIZE);
 
 
 static void uart_xlnx_irq_cb_handler(struct k_work *work);
@@ -297,7 +290,7 @@ static int uart_xlnx_ps_wq_init(void)
 {
 	k_work_queue_init(&uart_xlnx_work_q);
 	k_work_queue_start(&uart_xlnx_work_q, uart_xlnx_stack,
-			   K_KERNEL_STACK_SIZEOF(uart_xlnx_stack),
+			   K_THREAD_STACK_SIZEOF(uart_xlnx_stack),
 			   CONFIG_UART_XLNX_WQ_PRIORITY, NULL);
 	return 0;
 }
@@ -343,10 +336,14 @@ static int uart_xlnx_ps_init(const struct device *dev)
 	sys_write32(reg_val, reg_base + XUARTPS_MR_OFFSET);
 
 	/* Set RX FIFO trigger at 1 data bytes. */
-	sys_write32(dev_cfg->rx_trigger_level, reg_base + XUARTPS_RXWM_OFFSET);
+	if (dev_cfg->rx_trigger_level != 0) {
+		sys_write32(dev_cfg->rx_trigger_level, reg_base + XUARTPS_RXWM_OFFSET);
+	}
 
 	/* Set Tx FiFo trigger level */
-	sys_write32(dev_cfg->tx_trigger_level, reg_base + XUARTPS_TXWM_OFFSET);
+	if (dev_cfg->tx_trigger_level != 0) {
+		sys_write32(dev_cfg->tx_trigger_level, reg_base + XUARTPS_TXWM_OFFSET);
+	}
 
 	/* Disable all interrupts, polling mode is default */
 	sys_write32(XUARTPS_IXR_MASK, reg_base + XUARTPS_IDR_OFFSET);
@@ -929,10 +926,15 @@ static int uart_xlnx_ps_fifo_read(const struct device *dev, uint8_t *rx_data,
 static void uart_xlnx_ps_irq_tx_enable(const struct device *dev)
 {
 	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
-
+	struct uart_xlnx_ps_dev_data_t *dev_data = dev->data;
+	/* submit event */
 	sys_write32(
 		(XUARTPS_IXR_TTRIG | XUARTPS_IXR_TXEMPTY),
 		reg_base + XUARTPS_IER_OFFSET);
+	if (unlikely(dev_data->tx_init && dev_data->user_cb != NULL)) {
+		dev_data->tx_init = false;
+		k_work_submit_to_queue(&uart_xlnx_work_q, &dev_data->irq_cb_work);
+	}
 }
 
 /**
@@ -958,8 +960,14 @@ static void uart_xlnx_ps_irq_tx_disable(const struct device *dev)
  */
 static int uart_xlnx_ps_irq_tx_ready(const struct device *dev)
 {
-	const struct uart_xlnx_ps_dev_data_t *dev_data = dev->data;
-	return atomic_test_bit(&dev_data->irq_status,  XUARTPS_TX_BUSY_BIT);
+	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
+	uint32_t reg_val = sys_read32(reg_base + XUARTPS_SR_OFFSET);
+
+	if ((reg_val & (XUARTPS_SR_TTRIG | XUARTPS_SR_TXEMPTY)) == 0) {
+		return 0;
+	} else {
+		return 1;
+	}
 }
 
 /**
@@ -989,8 +997,10 @@ static int uart_xlnx_ps_irq_tx_complete(const struct device *dev)
 static void uart_xlnx_ps_irq_rx_enable(const struct device *dev)
 {
 	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
-
-	sys_write32(XUARTPS_IXR_RTRIG, reg_base + XUARTPS_IER_OFFSET);
+	const struct uart_xlnx_ps_dev_config *dev_cfg = dev->config;
+	if (dev_cfg->rx_trigger_level != 0) {
+		sys_write32(XUARTPS_IXR_RTRIG, reg_base + XUARTPS_IER_OFFSET);
+	}
 }
 
 /**
@@ -1015,7 +1025,7 @@ static void uart_xlnx_ps_irq_rx_disable(const struct device *dev)
 static int uart_xlnx_ps_irq_rx_ready(const struct device *dev)
 {
 	struct uart_xlnx_ps_dev_data_t *dev_data = dev->data;
-	return !atomic_test_and_set_bit(&dev_data->irq_status, XUARTPS_RX_NEMPTY_BIT);
+	return !atomic_test_and_set_bit(&dev_data->rx_nready, 0);
 }
 
 /**
@@ -1110,7 +1120,7 @@ static void uart_xlnx_irq_cb_handler(struct k_work *work)
 {
 	struct uart_xlnx_ps_dev_data_t *dev_data = CONTAINER_OF(work, struct uart_xlnx_ps_dev_data_t, irq_cb_work);
 
-	if (dev_data->user_cb) {
+	if (dev_data->user_cb != NULL) {
 		dev_data->user_cb(dev_data->dev, dev_data->user_data);
 	}
 }
@@ -1130,30 +1140,11 @@ static void uart_xlnx_ps_isr(const struct device *dev)
 	uint32_t reg_isr = sys_read32(reg_base + XUARTPS_IMR_OFFSET);
 	sys_write32(reg_isr, reg_base + XUARTPS_ISR_OFFSET);
 
-	/* any empty will clear rx busy */
-	if (reg_isr & XUARTPS_IXR_RXEMPTY) {
-		// atomic_set(&data->rx_nbusy, 1);
-		atomic_set_bit(&data->irq_status, XUARTPS_RX_NEMPTY_BIT);
-	}
-
 	if (reg_isr & (XUARTPS_IXR_RTRIG | XUARTPS_IXR_RXFULL)) {
-		// atomic_clear(&data->rx_nbusy);
-		atomic_clear_bit(&data->irq_status, XUARTPS_RX_NEMPTY_BIT);
+		atomic_clear(&data->rx_nready);
 	}
 
-	/* any trigger/nful will trigger tx busy */
-	if (reg_isr & (XUARTPS_IXR_TNFUL | XUARTPS_IXR_TTRIG)) {
-		// atomic_clear(&data->tx_nbusy);
-		atomic_clear_bit(&data->irq_status, XUARTPS_TX_BUSY_BIT);
-	}
-
-	/* tx empty will clear tx busy */
-	if (reg_isr & XUARTPS_IXR_TXEMPTY) {
-		// atomic_set(&data->tx_nbusy, 1);
-		atomic_set_bit(&data->irq_status, XUARTPS_TX_BUSY_BIT);
-	}
-
-	if (data->user_cb) {
+	if (data->user_cb != NULL) {
 		k_work_submit_to_queue(&uart_xlnx_work_q, &data->irq_cb_work);
 	}
 }
@@ -1209,7 +1200,9 @@ static void uart_xlnx_ps_irq_config_##port(const struct device *dev) \
 
 #define UART_XLNX_PS_DEV_DATA(port)                                                                \
 	static struct uart_xlnx_ps_dev_data_t uart_xlnx_ps_dev_data_##port = {                     \
-		.irq_status = ATOMIC_INIT(0x3),                                                   \
+		.dev = DEVICE_DT_INST_GET(port),                                                   \
+		.rx_nready = ATOMIC_INIT(1),                                                       \
+		.tx_init = true,                                                                   \
 	};
 
 #if CONFIG_PINCTRL
