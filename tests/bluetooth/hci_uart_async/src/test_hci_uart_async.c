@@ -6,7 +6,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/kernel/thread.h>
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 
 #include <zephyr/logging/log.h>
 
@@ -37,7 +37,7 @@ static void serial_vnd_data_callback(const struct device *dev, void *user_data);
 static int drv_send(const struct device *dev, struct net_buf *buf);
 static int drv_open(const struct device *dev, bt_hci_recv_t recv);
 
-static const struct bt_hci_driver_api drv_api = {
+static DEVICE_API(bt_hci, drv_api) = {
 	.open = drv_open,
 	.send = drv_send,
 };
@@ -70,10 +70,10 @@ static void hci_uart_thread_entry(void *p1, void *p2, void *p3)
 }
 static int sys_init_spawn_hci_uart(void)
 {
-	k_thread_name_set(&hci_uart_thread, "hci_uart_main");
 	k_thread_create(&hci_uart_thread, hci_uart_thread_stack,
 			K_THREAD_STACK_SIZEOF(hci_uart_thread_stack), hci_uart_thread_entry, NULL,
 			NULL, NULL, CONFIG_MAIN_THREAD_PRIORITY, 0, K_NO_WAIT);
+	k_thread_name_set(&hci_uart_thread, "hci_uart_main");
 	return 0;
 }
 SYS_INIT(sys_init_spawn_hci_uart, POST_KERNEL, 64);

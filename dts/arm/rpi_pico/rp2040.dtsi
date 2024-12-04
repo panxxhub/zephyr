@@ -10,9 +10,17 @@
 #include <zephyr/dt-bindings/clock/rpi_pico_clock.h>
 #include <zephyr/dt-bindings/i2c/i2c.h>
 #include <zephyr/dt-bindings/regulator/rpi_pico.h>
+#include <zephyr/dt-bindings/reset/rpi_pico_reset.h>
 #include <mem.h>
 
-#include "rpi_pico_common.dtsi"
+#include <arm/rpi_pico/override.dtsi>
+/*
+ * This value can be overridden at the board level or in an application specific
+ * override.dtsi file.
+ */
+#ifndef RPI_PICO_DEFAULT_IRQ_PRIORITY
+#define RPI_PICO_DEFAULT_IRQ_PRIORITY 3
+#endif
 
 / {
 	aliases {
@@ -157,8 +165,9 @@
 		};
 
 		xosc: xosc {
-			compatible = "raspberrypi,pico-clock";
+			compatible = "raspberrypi,pico-xosc";
 			clock-frequency = <12000000>;
+			startup-delay-multiplier = <64>;
 			#clock-cells = <0>;
 		};
 
@@ -325,9 +334,9 @@
 			status = "disabled";
 		};
 
-		usbd: usbd@50100000 {
+		usbd: usbd@50110000 {
 			compatible = "raspberrypi,pico-usbd";
-			reg = <0x50100000 0x10000>;
+			reg = <0x50110000 0x10000>;
 			resets = <&reset RPI_PICO_RESETS_RESET_USBCTRL>;
 			clocks = <&clocks RPI_PICO_CLKID_CLK_USB>;
 			interrupts = <5 RPI_PICO_DEFAULT_IRQ_PRIORITY>;

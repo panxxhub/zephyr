@@ -16,6 +16,7 @@
 	compatible = "nxp,frdm-ke17z", "nxp,ke17z", "nxp,mke17z7";
 
 	aliases {
+		watchdog0 = &wdog;
 		led0 = &red_led;
 		led1 = &green_led;
 		led2 = &blue_led;
@@ -24,11 +25,14 @@
 		pwm-led0 = &red_pwm_led;
 		pwm-led1 = &green_pwm_led;
 		pwm-led2 = &blue_pwm_led;
+		mcuboot-button0 = &user_button_0;
 	};
 
 	chosen {
 		zephyr,sram = &sram_u;
 		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,uart-mcumgr = &lpuart0;
 		zephyr,console = &lpuart0;
 		zephyr,shell-uart = &lpuart0;
 	};
@@ -80,6 +84,15 @@
 	};
 };
 
+&idle {
+	min-residency-us = <1>;
+};
+
+&stop {
+	min-residency-us = <20000>;
+	exit-latency-us = <13>;
+};
+
 &lpuart0 {
 	dmas = <&edma 1 2>, <&edma 2 3>;
 	dma-names = "rx", "tx";
@@ -92,6 +105,7 @@
 &adc0 {
 	status = "okay";
 	sample-time = <12>;
+	vref-mv = <3300>;
 	pinctrl-0 = <&adc0_default>;
 	pinctrl-names = "default";
 };
@@ -158,5 +172,9 @@
 };
 
 &edma {
+	status = "okay";
+};
+
+&wdog {
 	status = "okay";
 };

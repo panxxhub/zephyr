@@ -12,6 +12,7 @@
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/clock_control_numaker.h>
 #include <zephyr/drivers/pinctrl.h>
+#include <zephyr/drivers/spi/rtio.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(spi_numaker, CONFIG_SPI_LOG_LEVEL);
@@ -280,8 +281,11 @@ static int spi_numaker_release(const struct device *dev, const struct spi_config
 	return 0;
 }
 
-static const struct spi_driver_api spi_numaker_driver_api = {
+static DEVICE_API(spi, spi_numaker_driver_api) = {
 	.transceive = spi_numaker_transceive,
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
+#endif
 	.release = spi_numaker_release
 };
 

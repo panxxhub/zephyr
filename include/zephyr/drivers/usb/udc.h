@@ -76,6 +76,8 @@ struct udc_ep_caps {
 	uint32_t bulk : 1;
 	/** ISO transfer capable endpoint */
 	uint32_t iso : 1;
+	/** High-Bandwidth (interrupt or iso) capable endpoint */
+	uint32_t high_bandwidth : 1;
 	/** IN transfer capable endpoint */
 	uint32_t in : 1;
 	/** OUT transfer capable endpoint */
@@ -295,6 +297,8 @@ struct udc_data {
  * @brief New USB device controller (UDC) driver API
  * @defgroup udc_api USB device controller driver API
  * @ingroup io_interfaces
+ * @since 3.3
+ * @version 0.1.0
  * @{
  */
 
@@ -369,6 +373,7 @@ int udc_init(const struct device *dev,
  * @return 0 on success, all other values should be treated as error.
  * @retval -EPERM controller is not initialized
  * @retval -EALREADY already enabled
+ * @retval -ETIMEDOUT enable operation timed out
  */
 int udc_enable(const struct device *dev);
 
@@ -722,6 +727,18 @@ static inline const void *udc_get_event_ctx(const struct device *dev)
 	struct udc_data *data = dev->data;
 
 	return data->event_ctx;
+}
+
+/**
+ * @brief Get endpoint size from UDC endpoint configuration
+ *
+ * @param[in] cfg Pointer to UDC endpoint configuration
+ *
+ * @return Endpoint size
+ */
+static inline uint16_t udc_mps_ep_size(const struct udc_ep_config *const cfg)
+{
+	return USB_MPS_EP_SIZE(cfg->mps);
 }
 
 /**

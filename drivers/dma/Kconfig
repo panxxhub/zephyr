@@ -70,6 +70,8 @@ source "drivers/dma/Kconfig.andes_atcdmac300"
 
 source "drivers/dma/Kconfig.sedi"
 
+source "drivers/dma/Kconfig.si32"
+
 source "drivers/dma/Kconfig.smartbond"
 
 source "drivers/dma/Kconfig.nxp_sof_host_dma"
@@ -77,5 +79,8 @@ source "drivers/dma/Kconfig.nxp_sof_host_dma"
 source "drivers/dma/Kconfig.emul"
 
 source "drivers/dma/Kconfig.nxp_edma"
+
+source "drivers/dma/Kconfig.dw_axi_dmac"
+source "drivers/dma/Kconfig.xilinx_axi_dma"
 
 endif # DMA

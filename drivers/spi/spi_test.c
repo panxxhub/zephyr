@@ -11,6 +11,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 
 #define DT_DRV_COMPAT vnd_spi
 
@@ -40,10 +41,13 @@ static int vnd_spi_release(const struct device *dev,
 	return -ENOTSUP;
 }
 
-static const struct spi_driver_api vnd_spi_api = {
+static DEVICE_API(spi, vnd_spi_api) = {
 	.transceive = vnd_spi_transceive,
 #ifdef CONFIG_SPI_ASYNC
 	.transceive_async = vnd_spi_transceive_async,
+#endif
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
 #endif
 	.release = vnd_spi_release,
 };

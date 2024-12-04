@@ -1,7 +1,4 @@
-.. _steval_stwinbx1_board:
-
-STEVAL STWINBX1 Development kit
-###############################
+.. zephyr:board:: steval_stwinbx1
 
 Overview
 ********
@@ -12,10 +9,6 @@ IoT contexts such as condition monitoring and predictive maintenance.
 
 The STEVAL-STWINBX1 kit consists of an STWIN.box core system, a 480mAh LiPo battery, an adapter for the ST-LINK debugger,
 a plastic case, an adapter board for DIL 24 sensors and a flexible cable.
-
-.. image:: img/steval_stwinbx1.jpg
-     :align: center
-     :alt: STEVAL-STWINBX1 Development kit
 
 More information about the board can be found at the `STEVAL-STWINBX1 Development kit website`_.
 
@@ -362,7 +355,7 @@ You should see the following confirmation on your Linux host:
    usb 3-1: SerialNumber: 207136863530
 
 You can build and flash the provided sample application
-(:ref:`steval_stwinbx1_sample_sensors`) that reads sensors data and outputs
+(:zephyr:code-sample:`stwinbx1_sensors`) that reads sensors data and outputs
 values on the console.
 
 .. _STEVAL-STWINBX1 Development kit website:

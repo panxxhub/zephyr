@@ -279,21 +279,22 @@ TAB_SIZE               = 8
 # with the commands \{ and \} for these it is advised to use the version @{ and
 # @} or use a double escape (\\{ and \\})
 
-ALIASES                = "rst=\verbatim embed:rst:leading-asterisk" \
-                         endrst=\endverbatim \
-                         "kconfig{1}=\htmlonly <code>\1</code> \endhtmlonly \xmlonly <verbatim>embed:rst:inline :kconfig:option:`\1`</verbatim> \endxmlonly" \
+ALIASES                = "kconfig{1}=\c \1" \
                          "req{1}=\ref ZEPH_\1 \"ZEPH-\1\"" \
                          "satisfy{1}=\xrefitem satisfy \"Satisfies requirement\" \"Requirement Implementation\" \1" \
                          "verify{1}=\xrefitem verify \"Verifies requirement\" \"Requirement Verification\" \1" \
+                         "kconfig_dep{1}=\attention Available only when the following Kconfig option is enabled: \kconfig{\1}." \
+                         "kconfig_dep{2}=\attention Available only when the following Kconfig options are enabled: \kconfig{\1}, \kconfig{\2}." \
+                         "kconfig_dep{3}=\attention Available only when the following Kconfig options are enabled: \kconfig{\1}, \kconfig{\2}, \kconfig{\3}." \
                          "funcprops=\par \"Function properties (list may not be complete)\"" \
-                         "reschedule=\htmlonly reschedule \endhtmlonly \xmlonly <verbatim>embed:rst:inline :ref:`api_term_reschedule`</verbatim> \endxmlonly" \
-                         "sleep=\htmlonly sleep \endhtmlonly \xmlonly <verbatim>embed:rst:inline :ref:`api_term_sleep`</verbatim> \endxmlonly" \
-                         "no_wait=\htmlonly no-wait \endhtmlonly \xmlonly <verbatim>embed:rst:inline :ref:`api_term_no-wait`</verbatim> \endxmlonly" \
-                         "isr_ok=\htmlonly isr-ok \endhtmlonly \xmlonly <verbatim>embed:rst:inline :ref:`api_term_isr-ok`</verbatim> \endxmlonly" \
-                         "pre_kernel_ok=\htmlonly pre-kernel-ok \endhtmlonly \xmlonly <verbatim>embed:rst:inline :ref:`api_term_pre-kernel-ok`</verbatim> \endxmlonly" \
-                         "async=\htmlonly async \endhtmlonly \xmlonly <verbatim>embed:rst:inline :ref:`api_term_async`</verbatim> \endxmlonly" \
+                         "reschedule=\qualifier reschedule" \
+                         "sleep=\qualifier sleep" \
+                         "no_wait=\qualifier no-wait" \
+                         "isr_ok=\qualifier isr-ok" \
+                         "pre_kernel_ok=\qualifier pre-kernel-ok" \
+                         "async=\qualifier async" \
                          "atomic_api=As for all atomic APIs, includes a full/sequentially-consistent memory barrier (where applicable)." \
-                         "supervisor=\htmlonly supervisor \endhtmlonly \xmlonly <verbatim>embed:rst:inline :ref:`api_term_supervisor`</verbatim> \endxmlonly"
+                         "supervisor=\qualifier supervisor"
 
 # Set the OPTIMIZE_OUTPUT_FOR_C tag to YES if your project consists of C sources
 # only. Doxygen will then generate output that is more tailored for C. For
@@ -769,7 +770,7 @@ GENERATE_DEPRECATEDLIST= YES
 # sections, marked by \if <section_label> ... \endif and \cond <section_label>
 # ... \endcond blocks.
 
-ENABLED_SECTIONS       = YES
+ENABLED_SECTIONS       =
 
 # The MAX_INITIALIZER_LINES tag determines the maximum number of lines that the
 # initial value of a variable or macro / define can have for it to appear in the
@@ -977,7 +978,8 @@ INPUT                  = @ZEPHYR_BASE@/doc/_doxygen/mainpage.md \
                          @ZEPHYR_BASE@/include/ \
                          @ZEPHYR_BASE@/lib/libc/minimal/include/ \
                          @ZEPHYR_BASE@/subsys/testsuite/include/ \
-                         @ZEPHYR_BASE@/subsys/testsuite/ztest/include/
+                         @ZEPHYR_BASE@/subsys/testsuite/ztest/include/ \
+                         @ZEPHYR_BASE@/subsys/secure_storage/include/ \
 
 # This tag can be used to specify the character encoding of the source files
 # that Doxygen parses. Internally Doxygen uses the UTF-8 encoding. Doxygen uses

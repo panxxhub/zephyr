@@ -42,6 +42,8 @@
 #include <zephyr/net/ipv4_autoconf.h>
 #endif
 
+#include <zephyr/net/prometheus/collector.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -300,7 +302,7 @@ struct net_offload;
 #endif /* CONFIG_NET_OFFLOAD */
 
 /** @cond INTERNAL_HIDDEN */
-#if defined(CONFIG_NET_NATIVE_IPV6)
+#if defined(CONFIG_NET_IPV6)
 #define NET_IF_MAX_IPV6_ADDR CONFIG_NET_IF_UNICAST_IPV6_ADDR_COUNT
 #define NET_IF_MAX_IPV6_MADDR CONFIG_NET_IF_MCAST_IPV6_ADDR_COUNT
 #define NET_IF_MAX_IPV6_PREFIX CONFIG_NET_IF_IPV6_PREFIX_COUNT
@@ -330,6 +332,16 @@ struct net_if_ipv6 {
 
 	/** Retransmit timer (RFC 4861, page 52) */
 	uint32_t retrans_timer;
+
+#if defined(CONFIG_NET_IPV6_IID_STABLE)
+	/** IID (Interface Identifier) pointer used for link local address */
+	struct net_if_addr *iid;
+
+	/** Incremented when network interface goes down so that we can
+	 * generate new stable addresses when interface comes back up.
+	 */
+	uint32_t network_counter;
+#endif /* CONFIG_NET_IPV6_IID_STABLE */
 
 #if defined(CONFIG_NET_IPV6_PE)
 	/** Privacy extension DESYNC_FACTOR value from RFC 8981 ch 3.4.
@@ -422,7 +434,7 @@ struct net_if_dhcpv6 {
 #endif /* defined(CONFIG_NET_DHCPV6) && defined(CONFIG_NET_NATIVE_IPV6) */
 
 /** @cond INTERNAL_HIDDEN */
-#if defined(CONFIG_NET_NATIVE_IPV4)
+#if defined(CONFIG_NET_IPV4)
 #define NET_IF_MAX_IPV4_ADDR CONFIG_NET_IF_UNICAST_IPV4_ADDR_COUNT
 #define NET_IF_MAX_IPV4_MADDR CONFIG_NET_IF_MCAST_IPV4_ADDR_COUNT
 #else
@@ -542,11 +554,11 @@ struct net_if_ipv4_autoconf {
  * @brief Network interface IP address configuration.
  */
 struct net_if_ip {
-#if defined(CONFIG_NET_NATIVE_IPV6)
+#if defined(CONFIG_NET_IPV6)
 	struct net_if_ipv6 *ipv6;
 #endif /* CONFIG_NET_IPV6 */
 
-#if defined(CONFIG_NET_NATIVE_IPV4)
+#if defined(CONFIG_NET_IPV4)
 	struct net_if_ipv4 *ipv4;
 #endif /* CONFIG_NET_IPV4 */
 };
@@ -684,6 +696,10 @@ struct net_if {
 #if defined(CONFIG_NET_STATISTICS_PER_INTERFACE)
 	/** Network statistics related to this network interface */
 	struct net_stats stats;
+
+	/** Promethus collector for this network interface */
+	IF_ENABLED(CONFIG_NET_STATISTICS_VIA_PROMETHEUS,
+		   (struct prometheus_collector *collector);)
 #endif /* CONFIG_NET_STATISTICS_PER_INTERFACE */
 
 	/** Network interface instance configuration */
@@ -860,7 +876,8 @@ static inline enum net_if_oper_state net_if_oper_state_set(
 	NET_ASSERT(iface);
 	NET_ASSERT(iface->if_dev);
 
-	if (oper_state >= NET_IF_OPER_UNKNOWN && oper_state <= NET_IF_OPER_UP) {
+	BUILD_ASSERT((enum net_if_oper_state)(-1) > 0 && NET_IF_OPER_UNKNOWN == 0);
+	if (oper_state <= NET_IF_OPER_UP) {
 		iface->if_dev->oper_state = oper_state;
 	}
 
@@ -1826,7 +1843,16 @@ bool net_if_ipv6_router_rm(struct net_if_router *router);
  *
  * @return Hop limit
  */
+#if defined(CONFIG_NET_NATIVE_IPV6)
 uint8_t net_if_ipv6_get_hop_limit(struct net_if *iface);
+#else
+static inline uint8_t net_if_ipv6_get_hop_limit(struct net_if *iface)
+{
+	ARG_UNUSED(iface);
+
+	return 0;
+}
+#endif /* CONFIG_NET_NATIVE_IPV6 */
 
 /**
  * @brief Set the default IPv6 hop limit of a given interface.
@@ -1834,7 +1860,16 @@ uint8_t net_if_ipv6_get_hop_limit(struct net_if *iface);
  * @param iface Network interface
  * @param hop_limit New hop limit
  */
+#if defined(CONFIG_NET_NATIVE_IPV6)
 void net_if_ipv6_set_hop_limit(struct net_if *iface, uint8_t hop_limit);
+#else
+static inline void net_if_ipv6_set_hop_limit(struct net_if *iface,
+					     uint8_t hop_limit)
+{
+	ARG_UNUSED(iface);
+	ARG_UNUSED(hop_limit);
+}
+#endif /* CONFIG_NET_NATIVE_IPV6 */
 
 /** @cond INTERNAL_HIDDEN */
 
@@ -1859,7 +1894,16 @@ static inline void net_ipv6_set_hop_limit(struct net_if *iface,
  *
  * @return Hop limit
  */
+#if defined(CONFIG_NET_NATIVE_IPV6)
 uint8_t net_if_ipv6_get_mcast_hop_limit(struct net_if *iface);
+#else
+static inline uint8_t net_if_ipv6_get_mcast_hop_limit(struct net_if *iface)
+{
+	ARG_UNUSED(iface);
+
+	return 0;
+}
+#endif /* CONFIG_NET_NATIVE_IPV6 */
 
 /**
  * @brief Set the default IPv6 multicast hop limit of a given interface.
@@ -1867,7 +1911,16 @@ uint8_t net_if_ipv6_get_mcast_hop_limit(struct net_if *iface);
  * @param iface Network interface
  * @param hop_limit New hop limit
  */
+#if defined(CONFIG_NET_NATIVE_IPV6)
 void net_if_ipv6_set_mcast_hop_limit(struct net_if *iface, uint8_t hop_limit);
+#else
+static inline void net_if_ipv6_set_mcast_hop_limit(struct net_if *iface,
+						   uint8_t hop_limit)
+{
+	ARG_UNUSED(iface);
+	ARG_UNUSED(hop_limit);
+}
+#endif /* CONFIG_NET_NATIVE_IPV6 */
 
 /**
  * @brief Set IPv6 reachable time for a given interface
@@ -2001,7 +2054,7 @@ static inline uint32_t net_if_ipv6_get_retrans_timer(struct net_if *iface)
  * @return Pointer to IPv6 address to use, NULL if no IPv6 address
  * could be found.
  */
-#if defined(CONFIG_NET_NATIVE_IPV6)
+#if defined(CONFIG_NET_IPV6)
 const struct in6_addr *net_if_ipv6_select_src_addr(struct net_if *iface,
 						   const struct in6_addr *dst);
 #else
@@ -2028,7 +2081,7 @@ static inline const struct in6_addr *net_if_ipv6_select_src_addr(
  * @return Pointer to IPv6 address to use, NULL if no IPv6 address
  * could be found.
  */
-#if defined(CONFIG_NET_NATIVE_IPV6)
+#if defined(CONFIG_NET_IPV6)
 const struct in6_addr *net_if_ipv6_select_src_addr_hint(struct net_if *iface,
 							const struct in6_addr *dst,
 							int flags);
@@ -2053,7 +2106,7 @@ static inline const struct in6_addr *net_if_ipv6_select_src_addr_hint(
  * @return Pointer to network interface to use, NULL if no suitable interface
  * could be found.
  */
-#if defined(CONFIG_NET_NATIVE_IPV6)
+#if defined(CONFIG_NET_IPV6)
 struct net_if *net_if_ipv6_select_src_iface(const struct in6_addr *dst);
 #else
 static inline struct net_if *net_if_ipv6_select_src_iface(
@@ -2430,7 +2483,7 @@ bool net_if_ipv4_is_addr_bcast(struct net_if *iface,
  * @return Pointer to network interface to use, NULL if no suitable interface
  * could be found.
  */
-#if defined(CONFIG_NET_NATIVE_IPV4)
+#if defined(CONFIG_NET_IPV4)
 struct net_if *net_if_ipv4_select_src_iface(const struct in_addr *dst);
 #else
 static inline struct net_if *net_if_ipv4_select_src_iface(
@@ -2453,7 +2506,7 @@ static inline struct net_if *net_if_ipv4_select_src_iface(
  * @return Pointer to IPv4 address to use, NULL if no IPv4 address
  * could be found.
  */
-#if defined(CONFIG_NET_NATIVE_IPV4)
+#if defined(CONFIG_NET_IPV4)
 const struct in_addr *net_if_ipv4_select_src_addr(struct net_if *iface,
 						  const struct in_addr *dst);
 #else
@@ -3151,11 +3204,23 @@ struct net_if_api {
 		NET_IF_DHCPV6_INIT			\
 	}
 
+#define NET_PROMETHEUS_GET_COLLECTOR_NAME(dev_id, sfx)			\
+	net_stats_##dev_id##_##sfx##_collector
+#define NET_PROMETHEUS_INIT(dev_id, sfx)				\
+	IF_ENABLED(CONFIG_NET_STATISTICS_VIA_PROMETHEUS,		\
+		   (.collector = &NET_PROMETHEUS_GET_COLLECTOR_NAME(dev_id, sfx),))
+
 #define NET_IF_GET_NAME(dev_id, sfx) __net_if_##dev_id##_##sfx
 #define NET_IF_DEV_GET_NAME(dev_id, sfx) __net_if_dev_##dev_id##_##sfx
 
 #define NET_IF_GET(dev_id, sfx)						\
 	((struct net_if *)&NET_IF_GET_NAME(dev_id, sfx))
+
+#if defined(CONFIG_NET_STATISTICS_VIA_PROMETHEUS)
+extern int net_stats_prometheus_scrape(struct prometheus_collector *collector,
+				       struct prometheus_metric *metric,
+				       void *user_data);
+#endif /* CONFIG_NET_STATISTICS_VIA_PROMETHEUS */
 
 #define NET_IF_INIT(dev_id, sfx, _l2, _mtu, _num_configs)		\
 	static STRUCT_SECTION_ITERABLE(net_if_dev,			\
@@ -3174,7 +3239,15 @@ struct net_if_api {
 			.if_dev = &(NET_IF_DEV_GET_NAME(dev_id, sfx)),	\
 			NET_IF_CONFIG_INIT				\
 		}							\
-	}
+	};								\
+	IF_ENABLED(CONFIG_NET_STATISTICS_VIA_PROMETHEUS,		\
+		   (static PROMETHEUS_COLLECTOR_DEFINE(			\
+			   NET_PROMETHEUS_GET_COLLECTOR_NAME(dev_id,	\
+							     sfx),	\
+			   net_stats_prometheus_scrape,			\
+			   NET_IF_GET(dev_id, sfx));			\
+		    NET_STATS_PROMETHEUS(NET_IF_GET(dev_id, sfx),	\
+					 dev_id, sfx);))
 
 #define NET_IF_OFFLOAD_INIT(dev_id, sfx, _mtu)				\
 	static STRUCT_SECTION_ITERABLE(net_if_dev,			\
@@ -3192,7 +3265,16 @@ struct net_if_api {
 			.if_dev = &(NET_IF_DEV_GET_NAME(dev_id, sfx)),	\
 			NET_IF_CONFIG_INIT				\
 		}							\
-	}
+	};								\
+	IF_ENABLED(CONFIG_NET_STATISTICS_VIA_PROMETHEUS,		\
+		   (static PROMETHEUS_COLLECTOR_DEFINE(			\
+			   NET_PROMETHEUS_GET_COLLECTOR_NAME(dev_id,	\
+							     sfx),	\
+			   net_stats_prometheus_scrape,			\
+			   NET_IF_GET(dev_id, sfx));			\
+		    NET_STATS_PROMETHEUS(NET_IF_GET(dev_id, sfx),	\
+					 dev_id, sfx);))
+
 
 /** @endcond */
 

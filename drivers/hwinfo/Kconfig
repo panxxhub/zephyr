@@ -65,7 +65,7 @@ endif # HWINFO_CC13XX_CC26XX
 config HWINFO_STM32
 	bool "STM32 hwinfo"
 	default y
-	depends on SOC_FAMILY_STM32
+	depends on SOC_FAMILY_STM32 && !SOC_SERIES_STM32WB0X
 	select HWINFO_HAS_DRIVER
 	help
 	  Enable STM32 hwinfo driver.
@@ -188,17 +188,18 @@ config HWINFO_LITEX
 	bool "LiteX device ID"
 	default y
 	depends on SOC_LITEX_VEXRISCV
+	depends on DT_HAS_LITEX_DNA0_ENABLED
 	select HWINFO_HAS_DRIVER
 	help
 	  Enable LiteX hwinfo driver
 
 config HWINFO_PSOC6
-	bool "Cypress PSoC-6 unique device ID"
+	bool "Cypress PSOC 6 unique device ID"
 	default y
 	depends on SOC_FAMILY_PSOC6_LEGACY
 	select HWINFO_HAS_DRIVER
 	help
-	  Enable Cypress PSoC-6 hwinfo driver.
+	  Enable Cypress PSOC 6 hwinfo driver.
 
 config HWINFO_GECKO
 	bool "GECKO hwinfo"

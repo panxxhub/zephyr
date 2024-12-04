@@ -1,7 +1,4 @@
-.. _mimxrt1180_evk:
-
-NXP MIMXRT1180-EVK
-##################
+.. zephyr:board:: mimxrt1180_evk
 
 Overview
 ********
@@ -10,10 +7,6 @@ The dual core i.MX RT1180 runs on the Cortex-M33 core at 240 MHz and on the
 Cortex-M7 at 792 MHz. The i.MX RT1180 MCU offers support over a wide
 temperature range and is qualified for consumer, industrial and automotive
 markets.
-
-.. image:: mimxrt1180_evk.webp
-   :align: center
-   :alt: MIMXRT1180-EVK
 
 Hardware
 ********
@@ -85,12 +78,11 @@ This platform has the following external memories:
 Supported Features
 ==================
 
-The mimxrt1180_evk board configuration supports the hardware features listed
-below.  For additional features not yet supported, please also refer to the
-:ref:`mimxrt1170_evk` , which is the superset board in NXP's i.MX RT11xx family.
-NXP prioritizes enabling the superset board with NXP's Full Platform Support for
-Zephyr.  Therefore, the mimxrt1170_evk board may have additional features
-already supported, which can also be re-used on this mimxrt1180_evk board:
+NXP considers the MIMXRT1180-EVK as the superset board for the i.MX RT118x
+family of MCUs.  This board is a focus for NXP's Full Platform Support for
+Zephyr, to better enable the entire RT118x family.  NXP prioritizes enabling
+this board with new support for Zephyr features.  The mimxrt1180_evk board
+configuration supports the following hardware features:
 
 +-----------+------------+-------------------------------------+
 | Interface | Controller | Driver/Component                    |
@@ -101,10 +93,28 @@ already supported, which can also be re-used on this mimxrt1180_evk board:
 +-----------+------------+-------------------------------------+
 | GPIO      | on-chip    | gpio                                |
 +-----------+------------+-------------------------------------+
-| COUNTER   | on-chip    | counter                             |
+| GPT       | on-chip    | counter                             |
++-----------+------------+-------------------------------------+
+| QTMR      | on-chip    | counter                             |
 +-----------+------------+-------------------------------------+
 | UART      | on-chip    | serial port-polling;                |
 |           |            | serial port-interrupt               |
++-----------+------------+-------------------------------------+
+| I2C       | on-chip    | i2c                                 |
++-----------+------------+-------------------------------------+
+| ACMP      | on-chip    | sensor                              |
++-----------+------------+-------------------------------------+
+| ADC       | on-chip    | adc                                 |
++-----------+------------+-------------------------------------+
+| NETC      | on-chip    | ethernet, mdio                      |
++-----------+------------+-------------------------------------+
+| CAN       | on-chip    | can                                 |
++-----------+------------+-------------------------------------+
+| LPTMR     | on-chip    | counter                             |
++-----------+------------+-------------------------------------+
+| FLEXSPI   | on-chip    | flash programming                   |
++-----------+------------+-------------------------------------+
+| PWM       | on-chip    | pwm                                 |
 +-----------+------------+-------------------------------------+
 
 The default configuration can be found in the defconfig file:
@@ -142,6 +152,11 @@ Serial Port
 
 The MIMXRT1180 SoC has 12 UARTs. One is configured for the console and the
 remaining are not used.
+
+Ethernet
+========
+
+NETC driver supports to manage the Physical Station Interface (PSI).
 
 Programming and Debugging
 *************************
@@ -208,7 +223,7 @@ etc.):
 Flashing
 ========
 
-Here is an example for the :ref:`hello_world` application on cm33 core.
+Here is an example for the :zephyr:code-sample:`hello_world` application on cm33 core.
 
 Before power on the board, make sure SW5 is set to 0100b
 
@@ -229,7 +244,7 @@ see the following message in the terminal:
 Debugging
 =========
 
-Here is an example for the :ref:`hello_world` application.
+Here is an example for the :zephyr:code-sample:`hello_world` application.
 
 .. zephyr-app-commands::
    :zephyr-app: samples/hello_world
