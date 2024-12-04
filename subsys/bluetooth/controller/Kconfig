@@ -6,7 +6,11 @@
 # The following symbols are enabled depending if the controller actually
 # supports the respective features.
 
+config BT_CTLR_ENTROPY_SUPPORT
+	bool
+
 config BT_CTLR_CRYPTO_SUPPORT
+	depends on BT_CTLR_ENTROPY_SUPPORT
 	bool
 
 config BT_CTLR_LE_ENC_SUPPORT
@@ -114,47 +118,79 @@ config BT_CTLR_LE_PATH_LOSS_MONITORING_SUPPORT
 config BT_CTLR_SUBRATING_SUPPORT
 	bool
 
+config BT_CTLR_CHANNEL_SOUNDING_SUPPORT
+	bool
+
+# Virtual option that all local LL implemenations should select
+config HAS_BT_CTLR
+	bool
+
 config BT_CTLR
-	bool "Bluetooth Controller"
+	bool "Bluetooth Controller [DEPRECATED]"
+	select HAS_BT_CTLR
+	select DEPRECATED
 	help
-	  Enables support for SoC native controller implementations.
-
-if BT_CTLR
-
-choice BT_LL_CHOICE
-	prompt "Bluetooth Link Layer Selection"
-	help
-	  Select the Bluetooth Link Layer to compile.
-	  The link layer choice list can be extended out of tree.
-	  In the nRF Connect SDK, the SoftDevice Controller is selected
-	  and set as the default Bluetooth Controller.
+	  Enables support for SoC native controller implementations. This option
+	  has been deprecated and should not be used anymore. Instead, the
+	  Kconfig options for specific Link Layer implementations should select
+	  the HAS_BT_CTLR option.
 
 config BT_LL_SW_SPLIT
 	bool "Software-based BLE Link Layer"
+	default y
+	depends on DT_HAS_ZEPHYR_BT_HCI_LL_SW_SPLIT_ENABLED
+	select HAS_BT_CTLR
 	help
 	  Use Zephyr software BLE Link Layer ULL LLL split implementation.
-
-endchoice
 
 config BT_CTLR_HCI
 	bool "Host Controller Interface (HCI)"
 	default y
-	depends on DT_HAS_ZEPHYR_BT_HCI_LL_SW_SPLIT_ENABLED
+	depends on HAS_BT_CTLR
 	help
 	  Enable the Host Controller interface (HCI) in the Controller.
 	  This should almost always be enabled, except in a few special
 	  cases, like for unit testing.
 
+if HAS_BT_CTLR
+
 comment "BLE Controller configuration"
+
+config BT_CTLR_ENTROPY
+	bool "Random number generation in Controller"
+	depends on BT_CTLR_ENTROPY_SUPPORT
+	select ENTROPY_GENERATOR
+	default y
+	help
+	  Use random number generation selected by the Controller.
+
+	  Bluetooth Core Specification mandates a use of random number generator
+	  compliant with FIPS PUB 140-2.
+
+	  Deselecting this option allows for Controllers to use other entropy
+	  generators which may not be true random number generators, and hence
+	  would make the implementation experimental.
+
+	  A Controller implementation could also provide custom bare-metal
+	  random number generator implementation without any support in Zephyr
+	  driver, i.e. there is no ENTROPY_HAS_DRIVER enabled.
 
 config BT_CTLR_CRYPTO
 	bool "Crypto functions in Controller"
 	depends on BT_CTLR_CRYPTO_SUPPORT
-	select ENTROPY_GENERATOR
 	default y
 	help
 	  Use random number generation and AES encryption support functions
 	  provided by the controller.
+
+	  Support for HCI LE Rand and HCI LE Encrypt commands is mandatory by
+	  Bluetooth Core Specification.
+
+	  In an Application/Host and Controller split (using a HCI transport) or
+	  combined builds for single CPU SoCs, applications can use their own
+	  FIPS-197 compliant cryptographic implementations. In this case the
+	  Controller cryptographic implementations can be disabled to save flash
+	  and RAM usage.
 
 config BT_CTLR_HCI_VS_BUILD_INFO
 	string "Zephyr HCI VS Build Info string"
@@ -1038,6 +1074,15 @@ config BT_CTLR_SUBRATING
 	  Enable support for Bluetooth v5.3 LE Connection Subrating
 	  in the Controller.
 
+config BT_CTLR_CHANNEL_SOUNDING
+	bool "Channel Sounding support"
+	depends on BT_CTLR_CHANNEL_SOUNDING_SUPPORT
+	select BT_CTLR_SET_HOST_FEATURE
+	default y if BT_CHANNEL_SOUNDING
+	help
+	  Enable support for Bluetooth 6.0 Channel Sounding in the
+	  Controller.
+
 rsource "Kconfig.df"
 rsource "Kconfig.ll_sw_split"
 rsource "Kconfig.dtm"
@@ -1058,7 +1103,7 @@ config BT_CTLR_VS_SCAN_REQ_RX
 	help
 	  Enables usage of VS Scan Request Reports Command and Scan Request Received Event
 
-endif # BT_CTLR
+endif # HAS_BT_CTLR
 
 config BT_CTLR_DEBUG_PINS_CPUAPP
 	bool "Bluetooth Controller Debug Pins"

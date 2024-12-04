@@ -17,6 +17,7 @@
 	chosen {
 		zephyr,entropy = &trng;
 		zephyr,bt-hci = &hci;
+		zephyr,hdlc-rcp-if = &hdlc_rcp_if;
 	};
 
 	cpus {
@@ -363,6 +364,16 @@
 		prescale = <0>;
 	};
 
+	sctimer: pwm@146000 {
+		compatible = "nxp,sctimer-pwm";
+		reg = <0x146000 0x1000>;
+		interrupts = <12 0>;
+		clocks = <&clkctl1 MCUX_SCTIMER_CLK>;
+		status = "disabled";
+		prescaler = <8>;
+		#pwm-cells = <3>;
+	};
+
 	mrt0: mrt@2d000 {
 		compatible = "nxp,mrt";
 		reg = <0x2d000 0x100>;
@@ -509,6 +520,14 @@
 		/* first index is the hci interrupt, the second is the wake up done interrupt */
 		interrupts = <90 2>, <82 2>;
 		interrupt-names = "hci_int", "wakeup_int";
+	};
+
+	hdlc_rcp_if: hdlc_rcp_if {
+		compatible = "nxp,hdlc-rcp-if";
+		/* first index is the hdlc_rcp_if interrupt */
+		/* the second is the wake up done interrupt */
+		interrupts = <90 2>, <82 2>;
+		interrupt-names = "hdlc_rcp_if_int", "wakeup_int";
 	};
 
 	enet: enet@138000 {

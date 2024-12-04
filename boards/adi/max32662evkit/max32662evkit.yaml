@@ -15,5 +15,10 @@ supported:
   - trng
   - watchdog
   - spi
+  - adc
+  - counter
+  - rtc_counter
+  - pwm
+  - flash
 ram: 80
 flash: 256

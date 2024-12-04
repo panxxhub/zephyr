@@ -15,5 +15,9 @@ supported:
   - dma
   - watchdog
   - spi
+  - adc
+  - counter
+  - w1
+  - flash
 ram: 128
 flash: 512

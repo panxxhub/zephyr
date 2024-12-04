@@ -42,8 +42,9 @@ uint32_t var = MIPI_DBI_SPI_READ_REQUIRED;
  * (first bit sent in each word) indicates if the word is a command or
  * data. Typically 0 indicates a command and 1 indicates data, but some
  * displays may vary.
+ * Index starts from 0 so that BIT(8) means 9th bit.
  */
-#define MIPI_DBI_DC_BIT BIT(9)
+#define MIPI_DBI_DC_BIT BIT(8)
 
 static int mipi_dbi_spi_write_helper(const struct device *dev,
 				     const struct mipi_dbi_config *dbi_config,
@@ -313,7 +314,7 @@ static int mipi_dbi_spi_init(const struct device *dev)
 	return 0;
 }
 
-static const struct mipi_dbi_driver_api mipi_dbi_spi_driver_api = {
+static DEVICE_API(mipi_dbi, mipi_dbi_spi_driver_api) = {
 	.reset = mipi_dbi_spi_reset,
 	.command_write = mipi_dbi_spi_command_write,
 	.write_display = mipi_dbi_spi_write_display,

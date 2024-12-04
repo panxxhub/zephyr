@@ -6,7 +6,6 @@
 #include <zephyr/sys/__assert.h>
 #include <zephyr/sys/time_units.h>
 #include <zephyr/toolchain/common.h>
-#include <zephyr/drivers/bluetooth/hci_driver.h>
 #include <errno.h>
 #include <stddef.h>
 #include <string.h>
@@ -23,7 +22,7 @@
 
 #include <zephyr/usb/usb_device.h>
 
-#include <zephyr/net/buf.h>
+#include <zephyr/net_buf.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/l2cap.h>
 #include <zephyr/bluetooth/hci.h>

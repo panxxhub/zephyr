@@ -1463,36 +1463,37 @@ static int flash_stm32_ospi_write(const struct device *dev, off_t addr,
 	/* using 32bits address also in SPI/STR mode */
 	cmd_pp.Instruction = dev_data->write_opcode;
 
-	if (dev_cfg->data_mode != OSPI_OPI_MODE) {
-		switch (cmd_pp.Instruction) {
-		case SPI_NOR_CMD_PP_4B:
-			__fallthrough;
-		case SPI_NOR_CMD_PP: {
-			cmd_pp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
-			cmd_pp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
-			cmd_pp.DataMode = HAL_OSPI_DATA_1_LINE;
-			break;
-		}
-		case SPI_NOR_CMD_PP_1_1_4_4B:
-			__fallthrough;
-		case SPI_NOR_CMD_PP_1_1_4: {
-			cmd_pp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
-			cmd_pp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
-			cmd_pp.DataMode = HAL_OSPI_DATA_4_LINES;
-			break;
-		}
-		case SPI_NOR_CMD_PP_1_4_4_4B:
-			__fallthrough;
-		case SPI_NOR_CMD_PP_1_4_4: {
-			cmd_pp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
-			cmd_pp.AddressMode = HAL_OSPI_ADDRESS_4_LINES;
-			cmd_pp.DataMode = HAL_OSPI_DATA_4_LINES;
-			break;
-		}
-		default:
-			/* use the mode from ospi_prepare_cmd */
-			break;
-		}
+	/* Adapt lines based on write_opcode */
+	switch (cmd_pp.Instruction) {
+	case SPI_NOR_CMD_PP_4B:
+		__fallthrough;
+	case SPI_NOR_CMD_PP:
+		cmd_pp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_pp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
+		cmd_pp.DataMode = HAL_OSPI_DATA_1_LINE;
+		break;
+	case SPI_NOR_CMD_PP_1_1_2:
+		cmd_pp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_pp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
+		cmd_pp.DataMode = HAL_OSPI_DATA_2_LINES;
+		break;
+	case SPI_NOR_CMD_PP_1_1_4_4B:
+		__fallthrough;
+	case SPI_NOR_CMD_PP_1_1_4:
+		cmd_pp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_pp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
+		cmd_pp.DataMode = HAL_OSPI_DATA_4_LINES;
+		break;
+	case SPI_NOR_CMD_PP_1_4_4_4B:
+		__fallthrough;
+	case SPI_NOR_CMD_PP_1_4_4:
+		cmd_pp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_pp.AddressMode = HAL_OSPI_ADDRESS_4_LINES;
+		cmd_pp.DataMode = HAL_OSPI_DATA_4_LINES;
+		break;
+	default:
+		/* Use lines based on data mode set in ospi_prepare_cmd */
+		break;
 	}
 
 	cmd_pp.Address = addr;
@@ -1701,7 +1702,7 @@ static void flash_stm32_ospi_pages_layout(const struct device *dev,
 }
 #endif
 
-static const struct flash_driver_api flash_stm32_ospi_driver_api = {
+static DEVICE_API(flash, flash_stm32_ospi_driver_api) = {
 	.read = flash_stm32_ospi_read,
 	.write = flash_stm32_ospi_write,
 	.erase = flash_stm32_ospi_erase,

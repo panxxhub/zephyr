@@ -19,7 +19,6 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/bluetooth/att.h>
 #include <zephyr/bluetooth/gatt.h>
-#include <zephyr/drivers/bluetooth/hci_driver.h>
 
 #include "common/bt_str.h"
 
@@ -1549,6 +1548,23 @@ static uint8_t att_read_type_req(struct bt_att_chan *chan, struct net_buf *buf)
 		return 0;
 	}
 
+	/* Reading Database Hash is special as it may be used to make client change aware
+	 * (Core Specification 5.4 Vol 3. Part G. 2.5.2.1 Robust Caching).
+	 *
+	 * GATT client shall always use GATT Read Using Characteristic UUID sub-procedure for
+	 * reading Database Hash
+	 * (Core Specification 5.4 Vol 3. Part G. 7.3 Databse Hash)
+	 */
+	if (bt_uuid_cmp(&u.uuid, BT_UUID_GATT_DB_HASH) != 0) {
+		if (!bt_gatt_change_aware(chan->att->conn, true)) {
+			if (!atomic_test_and_set_bit(chan->flags, ATT_OUT_OF_SYNC_SENT)) {
+				return BT_ATT_ERR_DB_OUT_OF_SYNC;
+			} else {
+				return 0;
+			}
+		}
+	}
+
 	return att_read_type_rsp(chan, &u.uuid, start_handle, end_handle);
 }
 
@@ -2461,8 +2477,9 @@ static int att_change_security(struct bt_conn *conn, uint8_t err)
 
 	switch (err) {
 	case BT_ATT_ERR_INSUFFICIENT_ENCRYPTION:
-		if (conn->sec_level >= BT_SECURITY_L2)
+		if (conn->sec_level >= BT_SECURITY_L2) {
 			return -EALREADY;
+		}
 		sec = BT_SECURITY_L2;
 		break;
 	case BT_ATT_ERR_AUTHENTICATION:
@@ -3117,9 +3134,10 @@ static void att_timeout(struct k_work *work)
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
 	struct bt_att_chan *chan = CONTAINER_OF(dwork, struct bt_att_chan,
 						timeout_work);
+	int err;
 
 	bt_addr_le_to_str(bt_conn_get_dst(chan->att->conn), addr, sizeof(addr));
-	LOG_ERR("ATT Timeout for device %s", addr);
+	LOG_ERR("ATT Timeout for device %s. Disconnecting...", addr);
 
 	/* BLUETOOTH SPECIFICATION Version 4.2 [Vol 3, Part F] page 480:
 	 *
@@ -3130,6 +3148,16 @@ static void att_timeout(struct k_work *work)
 	 * target device on this ATT Bearer.
 	 */
 	bt_att_disconnected(&chan->chan.chan);
+
+	/* The timeout state is local and can block new ATT operations, but does not affect the
+	 * remote side. Disconnecting the GATT connection upon ATT timeout simplifies error handling
+	 * for developers. This reduces rare failure conditions to a common one, allowing developers
+	 * to handle unexpected disconnections without needing special cases for ATT timeouts.
+	 */
+	err = bt_conn_disconnect(chan->chan.chan.conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+	if (err) {
+		LOG_ERR("Disconnecting failed (err %d)", err);
+	}
 }
 
 static struct bt_att_chan *att_get_fixed_chan(struct bt_conn *conn)
@@ -3640,7 +3668,7 @@ int bt_eatt_connect(struct bt_conn *conn, size_t num_channels)
 	}
 
 	while (offset < i) {
-		/* bt_l2cap_ecred_chan_connect() uses the first L2CAP_ECRED_CHAN_MAX_PER_REQ
+		/* bt_l2cap_ecred_chan_connect() uses the first BT_L2CAP_ECRED_CHAN_MAX_PER_REQ
 		 * elements of the array or until a null-terminator is reached.
 		 */
 		err = bt_l2cap_ecred_chan_connect(conn, &chan[offset], BT_EATT_PSM);
@@ -3648,7 +3676,7 @@ int bt_eatt_connect(struct bt_conn *conn, size_t num_channels)
 			return err;
 		}
 
-		offset += L2CAP_ECRED_CHAN_MAX_PER_REQ;
+		offset += BT_L2CAP_ECRED_CHAN_MAX_PER_REQ;
 	}
 
 	return 0;
@@ -3739,7 +3767,7 @@ int bt_eatt_reconfigure(struct bt_conn *conn, uint16_t mtu)
 	}
 
 	while (offset < i) {
-		/* bt_l2cap_ecred_chan_reconfigure() uses the first L2CAP_ECRED_CHAN_MAX_PER_REQ
+		/* bt_l2cap_ecred_chan_reconfigure() uses the first BT_L2CAP_ECRED_CHAN_MAX_PER_REQ
 		 * elements of the array or until a null-terminator is reached.
 		 */
 		err = bt_l2cap_ecred_chan_reconfigure(&chans[offset], mtu);
@@ -3747,7 +3775,7 @@ int bt_eatt_reconfigure(struct bt_conn *conn, uint16_t mtu)
 			return err;
 		}
 
-		offset += L2CAP_ECRED_CHAN_MAX_PER_REQ;
+		offset += BT_L2CAP_ECRED_CHAN_MAX_PER_REQ;
 	}
 
 	return 0;

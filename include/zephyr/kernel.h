@@ -250,6 +250,7 @@ void k_thread_foreach_unlocked_filter_by_cpu(unsigned int cpu,
  * */
 #define K_ESSENTIAL (BIT(0))
 
+#define K_FP_IDX 1
 /**
  * @brief FPU registers are managed by context switch
  *
@@ -259,7 +260,6 @@ void k_thread_foreach_unlocked_filter_by_cpu(unsigned int cpu,
  * and restore the contents of these registers when scheduling the thread.
  * No effect if @kconfig{CONFIG_FPU_SHARING} is not enabled.
  */
-#define K_FP_IDX 1
 #define K_FP_REGS (BIT(K_FP_IDX))
 
 /**
@@ -665,7 +665,7 @@ static inline k_tid_t k_current_get(void)
 #ifdef CONFIG_CURRENT_THREAD_USE_TLS
 
 	/* Thread-local cache of current thread ID, set in z_thread_entry() */
-	extern __thread k_tid_t z_tls_current;
+	extern Z_THREAD_LOCAL k_tid_t z_tls_current;
 
 	return z_tls_current;
 #else
@@ -693,18 +693,6 @@ static inline k_tid_t k_current_get(void)
  * @param thread ID of thread to abort.
  */
 __syscall void k_thread_abort(k_tid_t thread);
-
-
-/**
- * @brief Start an inactive thread
- *
- * If a thread was created with K_FOREVER in the delay parameter, it will
- * not be added to the scheduling queue until this function is called
- * on it.
- *
- * @param thread thread to start
- */
-__syscall void k_thread_start(k_tid_t thread);
 
 k_ticks_t z_timeout_expires(const struct _timeout *timeout);
 k_ticks_t z_timeout_remaining(const struct _timeout *timeout);
@@ -1063,6 +1051,24 @@ __syscall void k_thread_suspend(k_tid_t thread);
  * @param thread ID of thread to resume.
  */
 __syscall void k_thread_resume(k_tid_t thread);
+
+/**
+ * @brief Start an inactive thread
+ *
+ * If a thread was created with K_FOREVER in the delay parameter, it will
+ * not be added to the scheduling queue until this function is called
+ * on it.
+ *
+ * @note This is a legacy API for compatibility.  Modern Zephyr
+ * threads are initialized in the "suspended" state and no not need
+ * special handling for "start".
+ *
+ * @param thread thread to start
+ */
+static inline void k_thread_start(k_tid_t thread)
+{
+	k_thread_resume(thread);
+}
 
 /**
  * @brief Set time-slicing period and scope.
@@ -3321,12 +3327,12 @@ static inline unsigned int z_impl_k_sem_count_get(struct k_sem *sem)
  * @param initial_count Initial semaphore count.
  * @param count_limit Maximum permitted semaphore count.
  */
-#define K_SEM_DEFINE(name, initial_count, count_limit) \
-	STRUCT_SECTION_ITERABLE(k_sem, name) = \
-		Z_SEM_INITIALIZER(name, initial_count, count_limit); \
-	BUILD_ASSERT(((count_limit) != 0) && \
-		     ((initial_count) <= (count_limit)) && \
-			 ((count_limit) <= K_SEM_MAX_LIMIT));
+#define K_SEM_DEFINE(name, initial_count, count_limit)                                             \
+	STRUCT_SECTION_ITERABLE(k_sem, name) =                                                     \
+		Z_SEM_INITIALIZER(name, initial_count, count_limit);                               \
+	BUILD_ASSERT(((count_limit) != 0) &&                                                       \
+		     (((initial_count) < (count_limit)) || ((initial_count) == (count_limit))) &&  \
+		     ((count_limit) <= K_SEM_MAX_LIMIT));
 
 /** @} */
 
@@ -4684,7 +4690,7 @@ __syscall int k_msgq_put(struct k_msgq *msgq, const void *data, k_timeout_t time
  *                K_FOREVER.
  *
  * @retval 0 Message received.
- * @retval -ENOMSG Returned without waiting.
+ * @retval -ENOMSG Returned without waiting or queue purged.
  * @retval -EAGAIN Waiting period timed out.
  */
 __syscall int k_msgq_get(struct k_msgq *msgq, void *data, k_timeout_t timeout);

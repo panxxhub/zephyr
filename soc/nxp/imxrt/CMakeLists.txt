@@ -16,7 +16,7 @@ if(CONFIG_SOC_SERIES_IMXRT10XX OR CONFIG_SOC_SERIES_IMXRT11XX)
   if(CONFIG_EXTERNAL_MEM_CONFIG_DATA)
     set(boot_hdr_xmcd_data_section ".boot_hdr.xmcd_data")
   endif()
-  zephyr_sources(mpu_regions.c)
+  zephyr_sources_ifdef(CONFIG_ARM_MPU mpu_regions.c)
   zephyr_linker_section_configure(
     SECTION .rom_start
     INPUT ".boot_hdr.conf"
@@ -31,6 +31,7 @@ if(CONFIG_SOC_SERIES_IMXRT10XX OR CONFIG_SOC_SERIES_IMXRT11XX)
           ${boot_hdr_dcd_data_section}
           ${boot_hdr_xmcd_data_section}
     OFFSET ${CONFIG_IMAGE_VECTOR_TABLE_OFFSET}
+    FIRST
     KEEP
     PRIO 11
   )
@@ -38,10 +39,23 @@ if(CONFIG_SOC_SERIES_IMXRT10XX OR CONFIG_SOC_SERIES_IMXRT11XX)
 endif()
 
 if(CONFIG_SOC_SERIES_IMXRT118X)
+  if(CONFIG_SOC_MIMXRT1189_CM7)
+    zephyr_sources(mpu_regions.c)
+  endif()
+  if(CONFIG_EXTERNAL_MEM_CONFIG_DATA)
+    set(boot_hdr_xmcd_data_section ".boot_hdr.xmcd_data")
+  endif()
   zephyr_linker_section_configure(
     SECTION .rom_start
     INPUT ".boot_hdr.conf"
     OFFSET ${CONFIG_FLEXSPI_CONFIG_BLOCK_OFFSET}
+    KEEP
+    PRIO 10
+  )
+  zephyr_linker_section_configure(
+    SECTION .rom_start
+    INPUT ${boot_hdr_xmcd_data_section}
+    OFFSET ${CONFIG_EXTERNAL_MEM_CONFIG_OFFSET}
     KEEP
     PRIO 10
   )

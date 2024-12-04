@@ -68,10 +68,11 @@ static void rtc_time_to_ambiq_time_set(const struct rtc_time *tm, am_hal_rtc_tim
 static void ambiq_time_to_rtc_time_set(const am_hal_rtc_time_t *atm, struct rtc_time *tm)
 {
 	tm->tm_year = atm->ui32Year;
-	if (atm->ui32CenturyBit == 0)
+	if (atm->ui32CenturyBit == 0) {
 		tm->tm_year += 100;
-	else
+	} else {
 		tm->tm_year += 200;
+	}
 	tm->tm_wday = atm->ui32Weekday;
 	tm->tm_mon = atm->ui32Month - 1;
 	tm->tm_mday = atm->ui32DayOfMonth;
@@ -353,7 +354,7 @@ static int ambiq_rtc_init(const struct device *dev)
 	return 0;
 }
 
-static const struct rtc_driver_api ambiq_rtc_driver_api = {
+static DEVICE_API(rtc, ambiq_rtc_driver_api) = {
 	.set_time = ambiq_rtc_set_time,
 	.get_time = ambiq_rtc_get_time,
 	/* RTC_UPDATE not supported */

@@ -9,6 +9,7 @@
 
 #include <errno.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/rtio.h>
 #include <zephyr/drivers/clock_control.h>
 #include <fsl_dspi.h>
 #include <zephyr/drivers/pinctrl.h>
@@ -794,10 +795,13 @@ static int spi_mcux_init(const struct device *dev)
 	return 0;
 }
 
-static const struct spi_driver_api spi_mcux_driver_api = {
+static DEVICE_API(spi, spi_mcux_driver_api) = {
 	.transceive = spi_mcux_transceive,
 #ifdef CONFIG_SPI_ASYNC
 	.transceive_async = spi_mcux_transceive_async,
+#endif
+#ifdef CONFIG_SPI_RTIO
+	.iodev_submit = spi_rtio_iodev_default_submit,
 #endif
 	.release = spi_mcux_release,
 };

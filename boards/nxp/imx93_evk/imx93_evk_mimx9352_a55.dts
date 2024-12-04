@@ -16,7 +16,9 @@
 	chosen {
 		zephyr,console = &lpuart2;
 		zephyr,shell-uart = &lpuart2;
-		zephyr,sram = &sram0;
+		/* sram node actually locates at DDR DRAM */
+		zephyr,sram = &dram;
+		zephyr,canbus = &flexcan2;
 	};
 
 	cpus {
@@ -25,7 +27,7 @@
 		};
 	};
 
-	sram0: memory@d0000000 {
+	dram: memory@d0000000 {
 		reg = <0xd0000000 DT_SIZE_M(1)>;
 	};
 
@@ -66,9 +68,21 @@
 	};
 
 	board_exp_sel: board-exp-sel {
+		/*
+		 * Kconfig BOARD_MIMX93_EVK_A55_EXP_SEL_INIT must be
+		 * enabled to configure it during init.
+		 */
 		compatible = "imx93evk-exp-sel";
 		mux-gpios = <&gpio_exp0 4 GPIO_ACTIVE_HIGH>;
 		mux = "A";
+	};
+
+	can_phy0: can-phy0 {
+		compatible = "nxp,tja1057", "can-transceiver-gpio";
+		standby-gpios = <&gpio_exp0 8 GPIO_ACTIVE_HIGH>;
+		max-bitrate = <8000000>;
+		#phy-cells = <0>;
+		status = "okay";
 	};
 };
 
@@ -89,7 +103,7 @@
 	pinctrl-0 = <&pinmux_mdio>;
 	pinctrl-names = "default";
 	status = "okay";
-	phy: phy@0 {
+	phy: phy@2 {
 		compatible = "realtek,rtl8211f";
 		reg = <2>;
 		status = "okay";
@@ -145,6 +159,16 @@
 			 */
 		};
 	};
+
+	gpio_exp1: pcal6524@22 {
+		compatible = "nxp,pcal6524";
+		reg = <0x22>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		ngpios = <24>;
+		int-gpios = <&gpio3 27 (GPIO_ACTIVE_LOW|GPIO_PULL_UP)>;
+		status = "okay";
+	};
 };
 
 &lpspi3 {
@@ -167,5 +191,12 @@
 };
 
 &gpio4{
+	status = "okay";
+};
+
+&flexcan2 {
+	pinctrl-0 = <&flexcan2_default>;
+	pinctrl-names = "default";
+	phys = <&can_phy0>;
 	status = "okay";
 };

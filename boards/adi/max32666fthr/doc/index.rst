@@ -1,7 +1,4 @@
-.. _max32666_fthr:
-
-MAX32666FTHR
-############
+.. zephyr:board:: max32666fthr
 
 Overview
 ********
@@ -21,7 +18,7 @@ The Zephyr port is running on the MAX32666 MCU.
    :align: center
    :alt: MAX32666FTHR Front
 
-.. image:: img/max32666fthr_img1.jpg
+.. image:: img/max32666fthr_img2.jpg
    :align: center
    :alt: MAX32666FTHR Back
 
@@ -118,6 +115,16 @@ Below interfaces are supported by Zephyr on MAX32666FTHR.
 | DMA       | on-chip    | dma controller                      |
 +-----------+------------+-------------------------------------+
 | I2C       | on-chip    | i2c                                 |
++-----------+------------+-------------------------------------+
+| ADC       | on-chip    | adc                                 |
++-----------+------------+-------------------------------------+
+| Timer     | on-chip    | counter                             |
++-----------+------------+-------------------------------------+
+| PWM       | on-chip    | pwm                                 |
++-----------+------------+-------------------------------------+
+| W1        | on-chip    | one wire master                     |
++-----------+------------+-------------------------------------+
+| Flash     | on-chip    | flash                               |
 +-----------+------------+-------------------------------------+
 
 Connections and IOs

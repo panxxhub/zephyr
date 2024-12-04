@@ -33,11 +33,7 @@ LOG_MODULE_REGISTER(dma_esp32_gdma, CONFIG_DMA_LOG_LEVEL);
 #define ISR_HANDLER intr_handler_t
 #endif
 
-#if defined(CONFIG_SOC_SERIES_ESP32C6)
-#define DMA_MAX_CHANNEL SOC_GDMA_PAIRS_PER_GROUP_MAX
-#else
 #define DMA_MAX_CHANNEL SOC_GDMA_PAIRS_PER_GROUP
-#endif
 
 #define ESP_DMA_M2M_ON  0
 #define ESP_DMA_M2M_OFF 1
@@ -52,6 +48,12 @@ enum dma_channel_dir {
 	DMA_UNCONFIGURED
 };
 
+struct irq_config {
+	uint8_t irq_source;
+	uint8_t irq_priority;
+	int irq_flags;
+};
+
 struct dma_esp32_channel {
 	uint8_t dir;
 	uint8_t channel_id;
@@ -63,7 +65,7 @@ struct dma_esp32_channel {
 };
 
 struct dma_esp32_config {
-	int *irq_src;
+	struct irq_config *irq_config;
 	uint8_t irq_size;
 	void **irq_handlers;
 	uint8_t dma_channel_max;
@@ -87,6 +89,10 @@ static void IRAM_ATTR dma_esp32_isr_handle_rx(const struct device *dev,
 		status = DMA_STATUS_COMPLETE;
 	} else if (intr_status == GDMA_LL_EVENT_RX_DONE) {
 		status = DMA_STATUS_BLOCK;
+#if defined(CONFIG_SOC_SERIES_ESP32S3)
+	} else if (intr_status == GDMA_LL_EVENT_RX_WATER_MARK) {
+		status = DMA_STATUS_BLOCK;
+#endif
 	} else {
 		status = -intr_status;
 	}
@@ -139,7 +145,11 @@ static int dma_esp32_config_rx_descriptor(struct dma_esp32_channel *dma_channel,
 		return -EINVAL;
 	}
 
-	if (!esp_ptr_dma_capable((uint32_t *)block->dest_address)) {
+	if (!esp_ptr_dma_capable((uint32_t *)block->dest_address)
+#if defined(CONFIG_ESP_SPIRAM)
+	&& !esp_ptr_dma_ext_capable((uint32_t *)block->dest_address)
+#endif
+	) {
 		LOG_ERR("Rx buffer not in DMA capable memory: %p", (uint32_t *)block->dest_address);
 		return -EINVAL;
 	}
@@ -178,7 +188,6 @@ static int dma_esp32_config_rx(const struct device *dev, struct dma_esp32_channe
 {
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
-	struct dma_block_config *block = config_dma->head_block;
 
 	dma_channel->dir = DMA_RX;
 
@@ -219,7 +228,11 @@ static int dma_esp32_config_tx_descriptor(struct dma_esp32_channel *dma_channel,
 		return -EINVAL;
 	}
 
-	if (!esp_ptr_dma_capable((uint32_t *)block->source_address)) {
+	if (!esp_ptr_dma_capable((uint32_t *)block->source_address)
+#if defined(CONFIG_ESP_SPIRAM)
+	&& !esp_ptr_dma_ext_capable((uint32_t *)block->source_address)
+#endif
+	) {
 		LOG_ERR("Tx buffer not in DMA capable memory: %p",
 			(uint32_t *)block->source_address);
 		return -EINVAL;
@@ -259,9 +272,7 @@ static int dma_esp32_config_tx_descriptor(struct dma_esp32_channel *dma_channel,
 static int dma_esp32_config_tx(const struct device *dev, struct dma_esp32_channel *dma_channel,
 				struct dma_config *config_dma)
 {
-	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
 	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
-	struct dma_block_config *block = config_dma->head_block;
 
 	dma_channel->dir = DMA_TX;
 
@@ -297,7 +308,6 @@ static int dma_esp32_config(const struct device *dev, uint32_t channel,
 				struct dma_config *config_dma)
 {
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
-	struct dma_esp32_data *data = (struct dma_esp32_data *const)(dev)->data;
 	struct dma_esp32_channel *dma_channel = &config->dma_channel[channel];
 	int ret = 0;
 
@@ -539,13 +549,15 @@ static int dma_esp32_reload(const struct device *dev, uint32_t channel, uint32_t
 static int dma_esp32_configure_irq(const struct device *dev)
 {
 	struct dma_esp32_config *config = (struct dma_esp32_config *)dev->config;
+	struct irq_config *irq_cfg = (struct irq_config *)config->irq_config;
 
 	for (uint8_t i = 0; i < config->irq_size; i++) {
-		int ret = esp_intr_alloc(config->irq_src[i],
-					 0,
-					 (ISR_HANDLER)config->irq_handlers[i],
-					 (void *)dev,
-					 NULL);
+		int ret = esp_intr_alloc(irq_cfg[i].irq_source,
+			ESP_PRIO_TO_FLAGS(irq_cfg[i].irq_priority) |
+				ESP_INT_FLAGS_CHECK(irq_cfg[i].irq_flags) | ESP_INTR_FLAG_IRAM,
+			(ISR_HANDLER)config->irq_handlers[i],
+			(void *)dev,
+			NULL);
 		if (ret != 0) {
 			LOG_ERR("Could not allocate interrupt handler");
 			return ret;
@@ -663,11 +675,19 @@ static void *irq_handlers[] = {
 #endif
 	};
 
+#define IRQ_NUM(idx)	DT_NUM_IRQS(DT_DRV_INST(idx))
+#define IRQ_ENTRY(n, idx) {	\
+	DT_INST_IRQ_BY_IDX(idx, n, irq),	\
+	DT_INST_IRQ_BY_IDX(idx, n, priority),	\
+	DT_INST_IRQ_BY_IDX(idx, n, flags)	},
+
 #define DMA_ESP32_INIT(idx)                                                                        \
-	static int irq_numbers[] = DT_INST_PROP(idx, interrupts);                                  \
+	static struct irq_config irq_config_##idx[] = {                                            \
+		LISTIFY(IRQ_NUM(idx), IRQ_ENTRY, (), idx)                                          \
+	};                                                                                         \
 	static struct dma_esp32_config dma_config_##idx = {                                        \
-		.irq_src = irq_numbers,                                                            \
-		.irq_size = ARRAY_SIZE(irq_numbers),                                               \
+		.irq_config = irq_config_##idx,                                                    \
+		.irq_size = IRQ_NUM(idx),                                                          \
 		.irq_handlers = irq_handlers,                                                      \
 		.dma_channel_max = DT_INST_PROP(idx, dma_channels),                                \
 		.sram_alignment = DT_INST_PROP(idx, dma_buf_addr_alignment),                       \

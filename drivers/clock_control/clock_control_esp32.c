@@ -47,6 +47,7 @@
 #include <hal/clk_tree_ll.h>
 #include <hal/usb_serial_jtag_ll.h>
 #include <esp_private/esp_pmu.h>
+#include <esp_private/esp_modem_clock.h>
 #include <ocode_init.h>
 #endif
 
@@ -87,6 +88,20 @@ static bool reset_reason_is_cpu_reset(void)
 #if defined(CONFIG_SOC_SERIES_ESP32C6)
 static void esp32_clock_perip_init(void)
 {
+	soc_rtc_slow_clk_src_t rtc_slow_clk_src = rtc_clk_slow_src_get();
+	modem_clock_lpclk_src_t modem_lpclk_src =
+		(modem_clock_lpclk_src_t)((rtc_slow_clk_src == SOC_RTC_SLOW_CLK_SRC_RC_SLOW)
+						  ? MODEM_CLOCK_LPCLK_SRC_RC_SLOW
+					  : (rtc_slow_clk_src == SOC_RTC_SLOW_CLK_SRC_XTAL32K)
+						  ? MODEM_CLOCK_LPCLK_SRC_XTAL32K
+					  : (rtc_slow_clk_src == SOC_RTC_SLOW_CLK_SRC_RC32K)
+						  ? MODEM_CLOCK_LPCLK_SRC_RC32K
+					  : (rtc_slow_clk_src == SOC_RTC_SLOW_CLK_SRC_OSC_SLOW)
+						  ? MODEM_CLOCK_LPCLK_SRC_EXT32K
+						  : SOC_RTC_SLOW_CLK_SRC_RC_SLOW);
+
+	modem_clock_select_lp_clock_source(PERIPH_WIFI_MODULE, modem_lpclk_src, 0);
+
 	soc_reset_reason_t rst_reason = esp_rom_get_reset_reason(0);
 
 	if ((rst_reason != RESET_REASON_CPU0_MWDT0) && (rst_reason != RESET_REASON_CPU0_MWDT1) &&
@@ -125,7 +140,9 @@ static void esp32_clock_perip_init(void)
 		REG_CLR_BIT(PCR_PVT_MONITOR_FUNC_CLK_CONF_REG, PCR_PVT_MONITOR_FUNC_CLK_EN);
 		WRITE_PERI_REG(PCR_CTRL_CLK_OUT_EN_REG, 0);
 
+#if CONFIG_SERIAL_ESP32_USB
 		usb_serial_jtag_ll_enable_bus_clock(false);
+#endif
 	}
 
 	if ((rst_reason == RESET_REASON_CHIP_POWER_ON) ||
@@ -152,7 +169,10 @@ static void esp32_clock_perip_init(void)
 #if !defined(CONFIG_SOC_SERIES_ESP32)
 	uint32_t common_perip_clk1;
 #endif
-
+	/* Avoid APPCPU to mess with the clocks. */
+#if defined(CONFIG_SOC_ESP32_APPCPU) || defined(CONFIG_SOC_ESP32S3_APPCPU)
+	return;
+#endif
 	/* For reason that only reset CPU, do not disable the clocks
 	 * that have been enabled before reset.
 	 */
@@ -614,7 +634,6 @@ static int esp32_cpu_clock_configure(const struct esp32_cpu_clock_config *cpu_cf
 	rtc_cpu_freq_config_t old_config;
 	rtc_cpu_freq_config_t new_config;
 	rtc_clk_config_t rtc_clk_cfg = RTC_CLK_CONFIG_DEFAULT();
-	uint32_t uart_clock_src_hz;
 	bool ret;
 
 	rtc_clk_cfg.xtal_freq = cpu_cfg->xtal_freq;
@@ -685,14 +704,13 @@ static int esp32_cpu_clock_configure(const struct esp32_cpu_clock_config *cpu_cf
 	esp_cpu_set_cycle_count((uint64_t)esp_cpu_get_cycle_count() * rtc_clk_cfg.cpu_freq_mhz /
 				old_config.freq_mhz);
 
-#if !defined(CONFIG_SOC_SERIES_ESP32C2) && !defined(CONFIG_SOC_SERIES_ESP32C6)
-#if ESP_ROM_UART_CLK_IS_XTAL
-	uart_clock_src_hz = (uint32_t)rtc_clk_xtal_freq_get() * MHZ(1);
-#else
-	uart_clock_src_hz = esp_clk_apb_freq();
-#endif
-
 #if !defined(ESP_CONSOLE_UART_NONE)
+#if !defined(CONFIG_SOC_SERIES_ESP32C2) && !defined(CONFIG_SOC_SERIES_ESP32C6)
+#if defined(CONFIG_MCUBOOT) && defined(ESP_ROM_UART_CLK_IS_XTAL)
+	uint32_t uart_clock_src_hz = (uint32_t)rtc_clk_xtal_freq_get() * MHZ(1);
+#else
+	uint32_t uart_clock_src_hz = esp_clk_apb_freq();
+#endif
 	esp_rom_uart_set_clock_baudrate(ESP_CONSOLE_UART_NUM, uart_clock_src_hz,
 					ESP_CONSOLE_UART_BAUDRATE);
 #endif
@@ -703,8 +721,6 @@ static int esp32_cpu_clock_configure(const struct esp32_cpu_clock_config *cpu_cf
 static int clock_control_esp32_configure(const struct device *dev, clock_control_subsys_t sys,
 					 void *data)
 {
-
-	const struct esp32_clock_config *cfg = dev->config;
 	struct esp32_clock_config *new_cfg = data;
 	int ret = 0;
 
@@ -779,7 +795,7 @@ static int clock_control_esp32_init(const struct device *dev)
 	return 0;
 }
 
-static const struct clock_control_driver_api clock_control_esp32_api = {
+static DEVICE_API(clock_control, clock_control_esp32_api) = {
 	.on = clock_control_esp32_on,
 	.off = clock_control_esp32_off,
 	.get_rate = clock_control_esp32_get_rate,
