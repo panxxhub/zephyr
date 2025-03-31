@@ -12,12 +12,17 @@
 #include <stdint.h>
 #include <zephyr/drivers/sensor.h>
 
+/*
+ * This macro converts the Accelerometer full-scale range value (which should be a power of 2) to
+ * an index value used by the decoder. Note: this index is not the same as the RAW register value.
+ */
+#define LSM6DSV16X_ACCEL_FS_VAL_TO_FS_IDX(x) (__builtin_clz(x) - 1)
+
 struct lsm6dsv16x_decoder_header {
 	uint64_t timestamp;
 	uint8_t is_fifo: 1;
 	uint8_t gyro_fs: 4;
-	uint8_t accel_fs: 2;
-	uint8_t reserved: 1;
+	uint8_t accel_fs_idx: 3;
 } __attribute__((__packed__));
 
 struct lsm6dsv16x_fifo_data {
@@ -30,7 +35,8 @@ struct lsm6dsv16x_fifo_data {
 	uint16_t gyro_batch_odr: 4;
 	uint16_t accel_batch_odr: 4;
 	uint16_t temp_batch_odr: 4;
-	uint16_t reserved_2: 4;
+	uint16_t sflp_batch_odr: 3;
+	uint16_t reserved_2: 1;
 } __attribute__((__packed__));
 
 struct lsm6dsv16x_rtio_data {

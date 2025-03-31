@@ -81,8 +81,9 @@ static int spi_cc13xx_cc26xx_configure(const struct device *dev,
 		return -EINVAL;
 	}
 
-	if (config->frequency < 2000000) {
-		LOG_ERR("Frequencies lower than 2 MHz are not supported");
+	if (config->frequency < CPU_FREQ / (254 * (255 + 1))) {
+		LOG_ERR("Frequencies lower than %d Hz are not supported",
+			CPU_FREQ / (254 * (255 + 1)));
 		return -EINVAL;
 	}
 
@@ -291,7 +292,7 @@ static DEVICE_API(spi, spi_cc13xx_cc26xx_driver_api) = {
 #define SPI_CC13XX_CC26XX_DEVICE_INIT(n)				    \
 	PM_DEVICE_DT_INST_DEFINE(n, spi_cc13xx_cc26xx_pm_action);	    \
 									    \
-	DEVICE_DT_INST_DEFINE(n,					    \
+	SPI_DEVICE_DT_INST_DEFINE(n,					    \
 		spi_cc13xx_cc26xx_init_##n,				    \
 		PM_DEVICE_DT_INST_GET(n),				    \
 		&spi_cc13xx_cc26xx_data_##n, &spi_cc13xx_cc26xx_config_##n, \

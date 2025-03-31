@@ -128,6 +128,22 @@ struct bt_cap_initiator_cb {
 	 */
 	void (*unicast_stop_complete)(int err, struct bt_conn *conn);
 #endif /* CONFIG_BT_BAP_UNICAST_CLIENT */
+#if defined(CONFIG_BT_BAP_BROADCAST_SOURCE)
+	/**
+	 * @brief The Broadcast Source has started and all of the streams are ready for audio data
+	 *
+	 * @param source The started Broadcast Source
+	 */
+	void (*broadcast_started)(struct bt_cap_broadcast_source *source);
+
+	/**
+	 * @brief The Broadcast Source has stopped and none of the streams are ready for audio data
+	 *
+	 * @param source The stopped Broadcast Source
+	 * @param reason The reason why the Broadcast Source stopped (see the BT_HCI_ERR_* values)
+	 */
+	void (*broadcast_stopped)(struct bt_cap_broadcast_source *source, uint8_t reason);
+#endif /* CONFIG_BT_BAP_BROADCAST_SOURCE */
 };
 
 /**
@@ -958,7 +974,7 @@ struct bt_cap_commander_broadcast_reception_start_param {
 int bt_cap_commander_broadcast_reception_start(
 	const struct bt_cap_commander_broadcast_reception_start_param *param);
 
-/** Parameters for stopping broadcast reception  */
+/** Member parameters for stopping broadcast reception  */
 struct bt_cap_commander_broadcast_reception_stop_member_param {
 	/** Coordinated or ad-hoc set member. */
 	union bt_cap_set_member member;
@@ -970,6 +986,7 @@ struct bt_cap_commander_broadcast_reception_stop_member_param {
 	size_t num_subgroups;
 };
 
+/** Parameters for stopping broadcast reception */
 struct bt_cap_commander_broadcast_reception_stop_param {
 	/** The type of the set. */
 	enum bt_cap_set_type type;
@@ -992,7 +1009,7 @@ struct bt_cap_commander_broadcast_reception_stop_param {
 int bt_cap_commander_broadcast_reception_stop(
 	const struct bt_cap_commander_broadcast_reception_stop_param *param);
 
-/** Parameters for distributing broadcast code */
+/** Member parameters for distributing broadcast code */
 struct bt_cap_commander_distribute_broadcast_code_member_param {
 	/** Coordinated or ad-hoc set member. */
 	union bt_cap_set_member member;
@@ -1001,6 +1018,7 @@ struct bt_cap_commander_distribute_broadcast_code_member_param {
 	uint8_t src_id;
 };
 
+/** Parameters for distributing broadcast code */
 struct bt_cap_commander_distribute_broadcast_code_param {
 	/** The type of the set. */
 	enum bt_cap_set_type type;

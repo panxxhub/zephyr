@@ -55,6 +55,8 @@ The FRDM-MCXN236 board configuration supports the following hardware features:
 +-----------+------------+-------------------------------------+
 | I2C       | on-chip    | i2c                                 |
 +-----------+------------+-------------------------------------+
+| I3C       | on-chip    | i3c                                 |
++-----------+------------+-------------------------------------+
 | CLOCK     | on-chip    | clock_control                       |
 +-----------+------------+-------------------------------------+
 | FLASH     | on-chip    | soc flash                           |
@@ -64,6 +66,8 @@ The FRDM-MCXN236 board configuration supports the following hardware features:
 | VREF      | on-chip    | regulator                           |
 +-----------+------------+-------------------------------------+
 | ADC       | on-chip    | adc                                 |
++-----------+------------+-------------------------------------+
+| USBHS     | on-chip    | USB device                          |
 +-----------+------------+-------------------------------------+
 | LPCMP     | on-chip    | sensor(comparator)                  |
 +-----------+------------+-------------------------------------+
@@ -77,6 +81,8 @@ The FRDM-MCXN236 board configuration supports the following hardware features:
 | LPTMR     | on-chip    | counter                             |
 +-----------+------------+-------------------------------------+
 | MRT       | on-chip    | counter                             |
++-----------+------------+-------------------------------------+
+| RTC       | on-chip    | rtc                                 |
 +-----------+------------+-------------------------------------+
 
 Targets available
@@ -204,6 +210,9 @@ Troubleshooting
 
 .. include:: ../../common/segger-ecc-systemview.rst
    :start-after: segger-ecc-systemview
+
+.. include:: ../../common/board-footer.rst
+   :start-after: nxp-board-footer
 
 .. _MCX-N236 SoC Website:
    https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/general-purpose-mcus/mcx-arm-cortex-m/mcx-n-series-microcontrollers/mcx-n23x-highly-integrated-mcus-with-on-chip-accelerators-intelligent-peripherals-and-advanced-security:MCX-N23X

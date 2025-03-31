@@ -69,6 +69,32 @@ static enum net_verdict virtual_recv(struct net_if *iface,
 		return verdict;
 	}
 
+	if (IS_ENABLED(CONFIG_NET_STATISTICS)) {
+		size_t pkt_len;
+
+		pkt_len = net_pkt_get_len(pkt);
+
+		NET_DBG("Received pkt %p len %zu", pkt, pkt_len);
+
+		net_stats_update_bytes_recv(iface, pkt_len);
+	}
+
+	/* If there are no virtual interfaces attached, then pass the packet
+	 * to the actual virtual network interface.
+	 */
+	api = net_if_get_device(iface)->api;
+	if (!api || api->recv == NULL) {
+		goto drop;
+	}
+
+	if (!net_if_is_up(iface)) {
+		NET_DBG("Interface %d is down.", net_if_get_by_iface(iface));
+		goto drop;
+	}
+
+	return api->recv(iface, pkt);
+
+drop:
 	NET_DBG("No handler, dropping pkt %p len %zu", pkt, net_pkt_get_len(pkt));
 
 	return NET_DROP;
@@ -165,8 +191,22 @@ enum net_l2_flags virtual_flags(struct net_if *iface)
 	return ctx->virtual_l2_flags;
 }
 
+#if defined(CONFIG_NET_L2_ETHERNET_RESERVE_HEADER) && defined(CONFIG_NET_VLAN)
+extern int vlan_alloc_buffer(struct net_if *iface, struct net_pkt *pkt,
+			     size_t size, uint16_t proto, k_timeout_t timeout);
+
+static int virtual_l2_alloc(struct net_if *iface, struct net_pkt *pkt,
+			    size_t size, enum net_ip_protocol proto,
+			    k_timeout_t timeout)
+{
+	return vlan_alloc_buffer(iface, pkt, size, proto, timeout);
+}
+#else
+#define virtual_l2_alloc NULL
+#endif
+
 NET_L2_INIT(VIRTUAL_L2, virtual_recv, virtual_send, virtual_enable,
-	    virtual_flags);
+	    virtual_flags, virtual_l2_alloc);
 
 static void random_linkaddr(uint8_t *linkaddr, size_t len)
 {
@@ -348,8 +388,8 @@ void net_virtual_set_name(struct net_if *iface, const char *name)
 
 	ctx = net_if_l2_data(iface);
 
-	strncpy(ctx->name, name, CONFIG_NET_L2_VIRTUAL_MAX_NAME_LEN);
-	ctx->name[CONFIG_NET_L2_VIRTUAL_MAX_NAME_LEN - 1] = '\0';
+	strncpy(ctx->name, name, ARRAY_SIZE(ctx->name) - 1);
+	ctx->name[ARRAY_SIZE(ctx->name) - 1] = '\0';
 }
 
 enum net_l2_flags net_virtual_set_flags(struct net_if *iface,

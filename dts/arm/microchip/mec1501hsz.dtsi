@@ -442,6 +442,7 @@
 			status = "disabled";
 			#io-channel-cells = <1>;
 			clktime = <32>;
+			channels = <8>;
 		};
 		kbd0: kbd@40009c00 {
 			compatible = "microchip,xec-kbd";
@@ -470,7 +471,7 @@
 			rxdma = <11>;
 			txdma = <10>;
 			lines = <1>;
-			chip_select = <0>;
+			chip-select = <0>;
 			dcsckon = <6>;
 			dckcsoff = <4>;
 			dldh = <6>;

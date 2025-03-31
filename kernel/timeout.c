@@ -16,6 +16,10 @@ static uint64_t curr_tick;
 
 static sys_dlist_t timeout_list = SYS_DLIST_STATIC_INIT(&timeout_list);
 
+/*
+ * The timeout code shall take no locks other than its own (timeout_lock), nor
+ * shall it call any other subsystem while holding this lock.
+ */
 static struct k_spinlock timeout_lock;
 
 #define MAX_WAIT (IS_ENABLED(CONFIG_SYSTEM_CLOCK_SLOPPY_IDLE) \
@@ -25,10 +29,10 @@ static struct k_spinlock timeout_lock;
 static int announce_remaining;
 
 #if defined(CONFIG_TIMER_READS_ITS_FREQUENCY_AT_RUNTIME)
-int z_clock_hw_cycles_per_sec = CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC;
+unsigned int z_clock_hw_cycles_per_sec = CONFIG_SYS_CLOCK_HW_CYCLES_PER_SEC;
 
 #ifdef CONFIG_USERSPACE
-static inline int z_vrfy_sys_clock_hw_cycles_per_sec_runtime_get(void)
+static inline unsigned int z_vrfy_sys_clock_hw_cycles_per_sec_runtime_get(void)
 {
 	return z_impl_sys_clock_hw_cycles_per_sec_runtime_get();
 }
@@ -113,13 +117,12 @@ void z_add_timeout(struct _timeout *to, _timeout_func_t fn,
 	K_SPINLOCK(&timeout_lock) {
 		struct _timeout *t;
 
-		if (IS_ENABLED(CONFIG_TIMEOUT_64BIT) &&
-		    (Z_TICK_ABS(timeout.ticks) >= 0)) {
+		if (Z_IS_TIMEOUT_RELATIVE(timeout)) {
+			to->dticks = timeout.ticks + 1 + elapsed();
+		} else {
 			k_ticks_t ticks = Z_TICK_ABS(timeout.ticks) - curr_tick;
 
 			to->dticks = MAX(1, ticks);
-		} else {
-			to->dticks = timeout.ticks + 1 + elapsed();
 		}
 
 		for (t = first(); t != NULL; t = next(t)) {
@@ -147,8 +150,13 @@ int z_abort_timeout(struct _timeout *to)
 
 	K_SPINLOCK(&timeout_lock) {
 		if (sys_dnode_is_linked(&to->node)) {
+			bool is_first = (to == first());
+
 			remove_timeout(to);
 			ret = 0;
+			if (is_first) {
+				sys_clock_set_timeout(next_timeout(), false);
+			}
 		}
 	}
 
@@ -301,10 +309,10 @@ k_timepoint_t sys_timepoint_calc(k_timeout_t timeout)
 	} else {
 		k_ticks_t dt = timeout.ticks;
 
-		if (IS_ENABLED(CONFIG_TIMEOUT_64BIT) && Z_TICK_ABS(dt) >= 0) {
-			timepoint.tick = Z_TICK_ABS(dt);
-		} else {
+		if (Z_IS_TIMEOUT_RELATIVE(timeout)) {
 			timepoint.tick = sys_clock_tick_get() + MAX(1, dt);
+		} else {
+			timepoint.tick = Z_TICK_ABS(dt);
 		}
 	}
 

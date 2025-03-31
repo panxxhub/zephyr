@@ -2,6 +2,7 @@
  * Copyright (c) 2017 Linaro Limited
  * Copyright (c) 2021 Nordic Semiconductor
  * Copyright (c) 2023 Arm Limited (or its affiliates). All rights reserved.
+ * Copyright (c) 2025 Aerlync Labs Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -63,6 +64,11 @@ static void zsock_flush_queue(struct net_context *ctx)
 	while ((p = k_fifo_get(&ctx->recv_q, K_NO_WAIT)) != NULL) {
 		if (is_listen) {
 			NET_DBG("discarding ctx %p", p);
+
+			/* Note that we must release all the packets we
+			 * might have received to the accepted socket.
+			 */
+			zsock_flush_queue(p);
 			net_context_put(p);
 		} else {
 			NET_DBG("discarding pkt %p", p);
@@ -1047,13 +1053,13 @@ static int update_msg_controllen(struct msghdr *msg)
 	return 0;
 }
 
-static inline ssize_t zsock_recv_dgram(struct net_context *ctx,
-				       struct msghdr *msg,
-				       void *buf,
-				       size_t max_len,
-				       int flags,
-				       struct sockaddr *src_addr,
-				       socklen_t *addrlen)
+static ssize_t zsock_recv_dgram(struct net_context *ctx,
+				struct msghdr *msg,
+				void *buf,
+				size_t max_len,
+				int flags,
+				struct sockaddr *src_addr,
+				socklen_t *addrlen)
 {
 	k_timeout_t timeout = K_FOREVER;
 	size_t recv_len = 0;
@@ -1164,15 +1170,12 @@ static inline ssize_t zsock_recv_dgram(struct net_context *ctx,
 
 			if (len <= tmp_read_len) {
 				tmp_read_len -= len;
-				msg->msg_iov[iovec].iov_len = len;
 				iovec++;
 			} else {
 				errno = EINVAL;
 				return -1;
 			}
 		}
-
-		msg->msg_iovlen = iovec;
 
 		if (recv_len != read_len) {
 			msg->msg_flags |= ZSOCK_MSG_TRUNC;
@@ -1325,7 +1328,7 @@ static ssize_t zsock_recv_stream_timed(struct net_context *ctx, struct msghdr *m
 {
 	int res;
 	k_timepoint_t end;
-	size_t recv_len = 0, iovec = 0, available_len, max_iovlen = 0;
+	size_t recv_len = 0, iovec = 0, available_len;
 	const bool waitall = (flags & ZSOCK_MSG_WAITALL) == ZSOCK_MSG_WAITALL;
 
 	if (msg != NULL && buf == NULL) {
@@ -1335,8 +1338,6 @@ static ssize_t zsock_recv_stream_timed(struct net_context *ctx, struct msghdr *m
 
 		buf = msg->msg_iov[iovec].iov_base;
 		available_len = msg->msg_iov[iovec].iov_len;
-		msg->msg_iov[iovec].iov_len = 0;
-		max_iovlen = msg->msg_iovlen;
 	}
 
 	for (end = sys_timepoint_calc(timeout); max_len > 0; timeout = sys_timepoint_timeout(end)) {
@@ -1365,7 +1366,6 @@ again:
 				return -EAGAIN;
 			}
 
-			msg->msg_iov[iovec].iov_len += res;
 			buf = (uint8_t *)(msg->msg_iov[iovec].iov_base) + res;
 			max_len -= res;
 
@@ -1373,14 +1373,12 @@ again:
 				/* All data to this iovec was written */
 				iovec++;
 
-				if (iovec == max_iovlen) {
+				if (iovec == msg->msg_iovlen) {
 					break;
 				}
 
-				msg->msg_iovlen = iovec;
 				buf = msg->msg_iov[iovec].iov_base;
 				available_len = msg->msg_iov[iovec].iov_len;
-				msg->msg_iov[iovec].iov_len = 0;
 
 				/* If there is more data, read it now and do not wait */
 				if (buf != NULL && available_len > 0) {
@@ -1567,7 +1565,9 @@ static int zsock_poll_update_ctx(struct net_context *ctx,
 	ARG_UNUSED(ctx);
 
 	if (pfd->events & ZSOCK_POLLIN) {
-		if ((*pev)->state != K_POLL_STATE_NOT_READY || sock_is_eof(ctx)) {
+		if (((*pev)->state != K_POLL_STATE_NOT_READY &&
+		     (*pev)->state != K_POLL_STATE_CANCELLED) ||
+		    sock_is_eof(ctx)) {
 			pfd->revents |= ZSOCK_POLLIN;
 		}
 		(*pev)++;
@@ -1974,6 +1974,18 @@ int zsock_getsockopt_ctx(struct net_context *ctx, int level, int optname,
 			}
 
 			break;
+#if defined(CONFIG_NET_IPV4)
+		case IP_MULTICAST_LOOP:
+			ret = net_context_get_option(ctx,
+						     NET_OPT_IPV4_MCAST_LOOP,
+						     optval, optlen);
+			if (ret < 0) {
+				errno  = -ret;
+				return -1;
+			}
+
+			return 0;
+#endif
 		}
 
 		break;
@@ -2081,6 +2093,18 @@ int zsock_getsockopt_ctx(struct net_context *ctx, int level, int optname,
 			}
 
 			return 0;
+
+		case IPV6_MULTICAST_LOOP:
+			ret = net_context_get_option(ctx,
+						     NET_OPT_IPV6_MCAST_LOOP,
+						     optval, optlen);
+			if (ret < 0) {
+				errno = -ret;
+				return -1;
+			}
+
+			return 0;
+
 		}
 
 		break;
@@ -2592,6 +2616,18 @@ int zsock_setsockopt_ctx(struct net_context *ctx, int level, int optname,
 			}
 
 			break;
+#if defined(CONFIG_NET_IPV4)
+		case IP_MULTICAST_LOOP:
+			ret = net_context_set_option(ctx,
+						     NET_OPT_IPV4_MCAST_LOOP,
+						     optval, optlen);
+			if (ret < 0) {
+				errno  = -ret;
+				return -1;
+			}
+
+			return 0;
+#endif
 		}
 
 		break;
@@ -2723,6 +2759,17 @@ int zsock_setsockopt_ctx(struct net_context *ctx, int level, int optname,
 			}
 
 			break;
+
+		case IPV6_MULTICAST_LOOP:
+			ret = net_context_set_option(ctx,
+						     NET_OPT_IPV6_MCAST_LOOP,
+						     optval, optlen);
+			if (ret < 0) {
+				errno = -ret;
+				return -1;
+			}
+
+			return 0;
 		}
 
 		break;

@@ -47,6 +47,11 @@ and in the `Octopus IO-Board Documentation`_.
 Hardware
 ********
 
+Supported Features
+==================
+
+.. zephyr:board-supported-hw::
+
 Connections and IOs
 ===================
 
@@ -142,5 +147,5 @@ References
 
 .. target-notes::
 
-.. _Octopus IO-Board Product Page: https://www.norik.com/2024/09/16/octopus-io-board/
+.. _Octopus IO-Board Product Page: https://www.norik.com/octopus-io-board/
 .. _Octopus IO-Board Documentation: https://www.norik.com/wp-content/uploads/2024/09/Octopus_IO-Board_Datasheet.pdf

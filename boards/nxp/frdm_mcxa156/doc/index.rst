@@ -4,11 +4,11 @@ Overview
 ********
 
 FRDM-MCXA156 are compact and scalable development boards for rapid prototyping of
-MCX A15X MCUs. They offer industry standard headers for easy access to the
-MCUs I/Os, integrated open-standard serial interfaces, external flash memory and
-an on-board MCU-Link debugger. MCX N Series are high-performance, low-power
-microcontrollers with intelligent peripherals and accelerators providing multi-tasking
-capabilities and performance efficiency.
+MCX A144/5/6 A154/5/6 MCUs. They offer industry standard headers for easy access
+to the MCU's I/Os, integrated open-standard serial interfaces, external flash
+memory and an on-board MCU-Link debugger. Additional tools like our Expansion
+Board Hub for add-on boards and the Application Code Hub for software examples
+are available through the MCUXpresso Developer Experience.
 
 Hardware
 ********
@@ -16,8 +16,8 @@ Hardware
 - MCX-A156 Arm Cortex-M33 microcontroller running at 96 MHz
 - 1MB dual-bank on chip Flash
 - 128 KB RAM
-- USB high-speed (Host/Device) with on-chip HS PHY. HS USB Type-C connectors
-- 2x FlexCAN with FD, 2x I3Cs, 2x SAI
+- USB full-speed with on-chip FS PHY. USB Type-C connectors
+- 1x FlexCAN with FD, 1x I3Cs
 - On-board MCU-Link debugger with CMSIS-DAP
 - Arduino Header, FlexIO/LCD Header, SmartDMA/Camera Header, mikroBUS
 
@@ -54,7 +54,36 @@ The FRDM-MCXA156 board configuration supports the following hardware features:
 +-----------+------------+-------------------------------------+
 | FLASH     | on-chip    | soc flash                           |
 +-----------+------------+-------------------------------------+
+| ADC       | on-chip    | adc                                 |
++-----------+------------+-------------------------------------+
+| CTIMER    | on-chip    | counter                             |
++-----------+------------+-------------------------------------+
 | DAC       | on-chip    | dac                                 |
++-----------+------------+-------------------------------------+
+| DMA       | on-chip    | dma                                 |
++-----------+------------+-------------------------------------+
+| FLEXCAN   | on-chip    | CAN                                 |
++-----------+------------+-------------------------------------+
+| FLEXIO    | on-chip    | flexio                              |
++-----------+------------+-------------------------------------+
+| DISPLAY   | on-chip    | flexio; MIPI-DBI. Tested with       |
+|           |            | :ref:`lcd_par_s035`                 |
++-----------+------------+-------------------------------------+
+| I2C       | on-chip    | i2c                                 |
++-----------+------------+-------------------------------------+
+| I3C       | on-chip    | i3c                                 |
++-----------+------------+-------------------------------------+
+| LPCMP     | on-chip    | sensor(comparator)                  |
++-----------+------------+-------------------------------------+
+| LPSPI     | on-chip    | spi                                 |
++-----------+------------+-------------------------------------+
+| LPTMR     | on-chip    | counter                             |
++-----------+------------+-------------------------------------+
+| PWM       | on-chip    | pwm                                 |
++-----------+------------+-------------------------------------+
+| USB       | on-chip    | USB device                          |
++-----------+------------+-------------------------------------+
+| WATCHDOG  | on-chip    | watchdog                            |
 +-----------+------------+-------------------------------------+
 
 Targets available
@@ -182,6 +211,9 @@ Troubleshooting
 
 .. include:: ../../common/segger-ecc-systemview.rst
    :start-after: segger-ecc-systemview
+
+.. include:: ../../common/board-footer.rst
+   :start-after: nxp-board-footer
 
 .. _MCX-A156 SoC Website:
    https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/general-purpose-mcus/mcx-arm-cortex-m/mcx-a-series-microcontrollers/mcx-a13x-14x-15x-mcus-with-arm-cortex-m33-scalable-device-options-low-power-and-intelligent-peripherals:MCX-A13X-A14X-A15X

@@ -171,6 +171,19 @@ SECTIONS {
    */
   .imrdata : ALIGN(4096) {
     *(.imrdata .imrdata.*)
+  } >imr
+
+  /* Cold code in IMR memory */
+  .cold : ALIGN(4096) {
+    __cold_start = .;
+    *(.cold .cold.* )
+    __cold_end = .;
+  } >imr
+
+  /* Cold data. */
+  .coldrodata : ALIGN(4096) {
+    __coldrodata_start = .;
+    *(.coldrodata .coldrodata.*)
     _imr_end = .;
   } >imr
 
@@ -553,6 +566,7 @@ SECTIONS {
 
   /* rimage module manifest headers */
   .module.boot : { KEEP(*(.module.boot)) } >noload
+  .module.cold : { KEEP(*(.module.cold)) } >noload
   .module.main : { KEEP(*(.module.main)) } >noload
 
  .static_uuid_entries : {

@@ -7,6 +7,7 @@
 /*
  * Copyright (c) 2016 Intel Corporation
  * Copyright (c) 2021 Nordic Semiconductor
+ * Copyright (c) 2025 Aerlync Labs Inc.
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -566,6 +567,10 @@ int net_context_get(sa_family_t family, enum net_sock_type type, uint16_t proto,
 		/* By default IPv4 and IPv6 are in different port spaces */
 		contexts[i].options.ipv6_v6only = true;
 #endif
+#if defined(CONFIG_NET_IPV4)
+		contexts[i].options.ipv4_mcast_loop =
+			IS_ENABLED(CONFIG_NET_INITIAL_IPV4_MCAST_LOOP);
+#endif
 		if (IS_ENABLED(CONFIG_NET_IP)) {
 			(void)memset(&contexts[i].remote, 0, sizeof(struct sockaddr));
 			(void)memset(&contexts[i].local, 0, sizeof(struct sockaddr_ptr));
@@ -583,6 +588,10 @@ int net_context_get(sa_family_t family, enum net_sock_type type, uint16_t proto,
 
 				contexts[i].ipv6_hop_limit = INITIAL_HOP_LIMIT;
 				contexts[i].ipv6_mcast_hop_limit = INITIAL_MCAST_HOP_LIMIT;
+#if defined(CONFIG_NET_IPV6)
+				contexts[i].options.ipv6_mcast_loop =
+					IS_ENABLED(CONFIG_NET_INITIAL_IPV6_MCAST_LOOP);
+#endif
 			}
 			if (IS_ENABLED(CONFIG_NET_IPV4) && family == AF_INET) {
 				struct sockaddr_in *addr = (struct sockaddr_in *)&contexts[i].local;
@@ -1778,6 +1787,19 @@ static int get_context_mcast_ttl(struct net_context *context,
 #endif
 }
 
+static int get_context_ipv4_mcast_loop(struct net_context *context,
+				  void *value, size_t *len)
+{
+#if defined(CONFIG_NET_IPV4)
+	return get_bool_option(context->options.ipv4_mcast_loop, value, len);
+#else
+	ARG_UNUSED(context);
+	ARG_UNUSED(value);
+	ARG_UNUSED(len);
+	return -ENOTSUP;
+#endif
+}
+
 static int get_context_mcast_hop_limit(struct net_context *context,
 				       void *value, size_t *len)
 {
@@ -2024,6 +2046,20 @@ static int get_context_local_port_range(struct net_context *context,
 	*((uint32_t *)value) = context->options.port_range;
 
 	return 0;
+#else
+	ARG_UNUSED(context);
+	ARG_UNUSED(value);
+	ARG_UNUSED(len);
+
+	return -ENOTSUP;
+#endif
+}
+
+static int get_context_ipv6_mcast_loop(struct net_context *context,
+				       void *value, size_t *len)
+{
+#if defined(CONFIG_NET_IPV6)
+	return get_bool_option(context->options.ipv6_mcast_loop, value, len);
 #else
 	ARG_UNUSED(context);
 	ARG_UNUSED(value);
@@ -2544,7 +2580,7 @@ skip_alloc:
 
 		context_finalize_packet(context, family, pkt);
 
-		ret = net_send_data(pkt);
+		ret = net_try_send_data(pkt, timeout);
 	} else if (IS_ENABLED(CONFIG_NET_TCP) &&
 		   net_context_get_proto(context) == IPPROTO_TCP) {
 
@@ -2566,24 +2602,50 @@ skip_alloc:
 
 		if (net_context_get_proto(context) == IPPROTO_RAW) {
 			char type = (NET_IPV6_HDR(pkt)->vtc & 0xf0);
+			struct sockaddr_ll *ll_addr;
 
 			/* Set the family to pkt if detected */
 			switch (type) {
 			case 0x60:
 				net_pkt_set_family(pkt, AF_INET6);
+				net_pkt_set_ll_proto_type(pkt, NET_ETH_PTYPE_IPV6);
 				break;
 			case 0x40:
 				net_pkt_set_family(pkt, AF_INET);
+				net_pkt_set_ll_proto_type(pkt, NET_ETH_PTYPE_IP);
 				break;
 			default:
 				/* Not IP traffic, let it go forward as it is */
+				ll_addr = (struct sockaddr_ll *)dst_addr;
+
+				net_pkt_set_ll_proto_type(pkt,
+							  ntohs(ll_addr->sll_protocol));
 				break;
 			}
 
 			/* Pass to L2: */
-			ret = net_send_data(pkt);
+			ret = net_try_send_data(pkt, timeout);
 		} else {
-			net_if_queue_tx(net_pkt_iface(pkt), pkt);
+			struct sockaddr_ll_ptr *ll_src_addr;
+			struct sockaddr_ll *ll_dst_addr;
+
+			/* The destination address is set in remote for this
+			 * socket type.
+			 */
+			ll_dst_addr = (struct sockaddr_ll *)&context->remote;
+			ll_src_addr = (struct sockaddr_ll_ptr *)&context->local;
+
+			(void)net_linkaddr_set(net_pkt_lladdr_dst(pkt),
+					       ll_dst_addr->sll_addr,
+					       sizeof(struct net_eth_addr));
+			(void)net_linkaddr_set(net_pkt_lladdr_src(pkt),
+					       ll_src_addr->sll_addr,
+					       sizeof(struct net_eth_addr));
+
+			net_pkt_set_ll_proto_type(pkt,
+						  ntohs(ll_dst_addr->sll_protocol));
+
+			net_if_try_queue_tx(net_pkt_iface(pkt), pkt, timeout);
 		}
 	} else if (IS_ENABLED(CONFIG_NET_SOCKETS_CAN) && family == AF_CAN &&
 		   net_context_get_proto(context) == CAN_RAW) {
@@ -2594,7 +2656,7 @@ skip_alloc:
 
 		net_pkt_cursor_init(pkt);
 
-		ret = net_send_data(pkt);
+		ret = net_try_send_data(pkt, timeout);
 	} else {
 		NET_DBG("Unknown protocol while sending packet: %d",
 		net_context_get_proto(context));
@@ -3248,6 +3310,20 @@ static int set_context_mcast_ttl(struct net_context *context,
 #endif
 }
 
+static int set_context_ipv4_mcast_loop(struct net_context *context,
+				       const void *value, size_t len)
+{
+#if defined(CONFIG_NET_IPV4)
+	return set_bool_option(&context->options.ipv4_mcast_loop, value, len);
+#else
+	ARG_UNUSED(context);
+	ARG_UNUSED(value);
+	ARG_UNUSED(len);
+
+	return -ENOTSUP;
+#endif
+}
+
 static int set_context_mcast_hop_limit(struct net_context *context,
 				       const void *value, size_t len)
 {
@@ -3294,6 +3370,20 @@ static int set_context_unicast_hop_limit(struct net_context *context,
 
 	return set_uint8_option(&context->ipv6_hop_limit,
 				&unicast_hop_limit, len);
+#else
+	ARG_UNUSED(context);
+	ARG_UNUSED(value);
+	ARG_UNUSED(len);
+
+	return -ENOTSUP;
+#endif
+}
+
+static int set_context_ipv6_mcast_loop(struct net_context *context,
+				       const void *value, size_t len)
+{
+#if defined(CONFIG_NET_IPV6)
+	return set_bool_option(&context->options.ipv6_mcast_loop, value, len);
 #else
 	ARG_UNUSED(context);
 	ARG_UNUSED(value);
@@ -3626,6 +3716,12 @@ int net_context_set_option(struct net_context *context,
 	case NET_OPT_LOCAL_PORT_RANGE:
 		ret = set_context_local_port_range(context, value, len);
 		break;
+	case NET_OPT_IPV6_MCAST_LOOP:
+		ret = set_context_ipv6_mcast_loop(context, value, len);
+		break;
+	case NET_OPT_IPV4_MCAST_LOOP:
+		ret = set_context_ipv4_mcast_loop(context, value, len);
+		break;
 	}
 
 	k_mutex_unlock(&context->lock);
@@ -3710,6 +3806,12 @@ int net_context_get_option(struct net_context *context,
 		break;
 	case NET_OPT_LOCAL_PORT_RANGE:
 		ret = get_context_local_port_range(context, value, len);
+		break;
+	case NET_OPT_IPV6_MCAST_LOOP:
+		ret = get_context_ipv6_mcast_loop(context, value, len);
+		break;
+	case NET_OPT_IPV4_MCAST_LOOP:
+		ret = get_context_ipv4_mcast_loop(context, value, len);
 		break;
 	}
 

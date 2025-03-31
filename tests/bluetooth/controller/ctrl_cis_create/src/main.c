@@ -127,7 +127,7 @@ static struct pdu_data_llctrl_cis_ind local_cis_ind = {
 	.cig_sync_delay = { 0, 0, 0},
 	.cis_offset = { 0, 0, 0},
 	.cis_sync_delay = { 0, 0, 0},
-	.conn_event_count = 13
+	.conn_event_count = 0
 };
 
 #define ERROR_CODE 0x17
@@ -196,7 +196,7 @@ ZTEST(cis_create, test_cc_create_periph_rem_host_accept)
 	/* Done */
 	event_done(&conn);
 
-	/* There should be excactly one host notification */
+	/* There should be exactly one host notification */
 	ut_rx_node(NODE_CIS_REQUEST, &ntf, &cis_req);
 	ut_rx_q_is_empty();
 
@@ -264,7 +264,7 @@ ZTEST(cis_create, test_cc_create_periph_rem_host_accept)
 	/* Prepare */
 	event_prepare(&conn);
 
-	/* There should be excactly one host notification */
+	/* There should be exactly one host notification */
 	ut_rx_node(NODE_CIS_ESTABLISHED, &ntf, &cis_estab);
 	ut_rx_q_is_empty();
 
@@ -328,7 +328,7 @@ ZTEST(cis_create, test_cc_create_periph_rem_host_reject)
 	/* Done */
 	event_done(&conn);
 
-	/* There should be excactly one host notification */
+	/* There should be exactly one host notification */
 	ut_rx_node(NODE_CIS_REQUEST, &ntf, &cis_req);
 	ut_rx_q_is_empty();
 
@@ -409,7 +409,7 @@ ZTEST(cis_create, test_cc_create_periph_rem_host_accept_to)
 	/* Done */
 	event_done(&conn);
 
-	/* There should be excactly one host notification */
+	/* There should be exactly one host notification */
 	ut_rx_node(NODE_CIS_REQUEST, &ntf, &cis_req);
 	ut_rx_q_is_empty();
 
@@ -435,7 +435,7 @@ ZTEST(cis_create, test_cc_create_periph_rem_host_accept_to)
 	/* Done */
 	event_done(&conn);
 
-	/* There should be excactly one host notification */
+	/* There should be exactly one host notification */
 	ut_rx_node(NODE_CIS_ESTABLISHED, &ntf, &cis_estab);
 	ut_rx_q_is_empty();
 
@@ -579,7 +579,7 @@ ZTEST(cis_create, test_cc_create_central_rem_unsupported)
 	/* Prepare */
 	event_prepare(&conn);
 
-	/* There should be excactly one host notification
+	/* There should be exactly one host notification
 	 * with status BT_HCI_ERR_UNSUPP_REMOTE_FEATURE
 	 */
 	ut_rx_node(NODE_CIS_ESTABLISHED, &ntf, &cis_estab);
@@ -737,7 +737,7 @@ ZTEST(cis_create, test_cc_create_central_rem_accept)
 	/* Prepare */
 	event_prepare(&conn);
 
-	/* There should be excactly one host notification */
+	/* There should be exactly one host notification */
 	ut_rx_node(NODE_CIS_ESTABLISHED, &ntf, &cis_estab);
 	ut_rx_q_is_empty();
 
@@ -846,7 +846,7 @@ ZTEST(cis_create, test_cc_create_central_rem_reject)
 	/* Prepare */
 	event_prepare(&conn);
 
-	/* There should be excactly one host notification */
+	/* There should be exactly one host notification */
 	ut_rx_node(NODE_CIS_ESTABLISHED, &ntf, &cis_estab);
 	ut_rx_q_is_empty();
 

@@ -10,5 +10,6 @@ tests:
       - nrf54l15dk/nrf54l15/cpuapp
   secure_storage.psa.crypto.tfm:
     filter: CONFIG_BUILD_WITH_TFM
+    extra_args: EXTRA_CONF_FILE=overlay-tfm.conf
     integration_platforms:
       - nrf9151dk/nrf9151/ns

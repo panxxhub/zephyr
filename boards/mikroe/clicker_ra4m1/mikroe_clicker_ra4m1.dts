@@ -5,14 +5,13 @@
  */
 
 /dts-v1/;
-#include <renesas/ra/r7fa4m1ab3cfm.dtsi>
+#include <renesas/ra/ra4/r7fa4m1ab3cfm.dtsi>
 #include <zephyr/dt-bindings/gpio/gpio.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
-#include <zephyr/dt-bindings/pinctrl/renesas/pinctrl-ra.h>
 
 / {
 	model = "Mikroe Clicker RA4M1";
-	compatible = "renesas,r7fa4m1ab3cfm";
+	compatible = "renesas,ra4m1", "renesas,ra";
 
 	chosen {
 		zephyr,console = &uart0;
@@ -40,6 +39,29 @@
 			label = "User Button 1";
 			zephyr,code = <INPUT_KEY_0>;
 		};
+	};
+
+	mikrobus_header: mikrobus-connector {
+		compatible = "mikro-bus";
+		#gpio-cells = <2>;
+		gpio-map-mask = <0xffffffff 0xffffffc0>;
+		gpio-map-pass-thru = <0 0x3f>;
+		gpio-map =	<0 0 &ioport0 0 0>,	/* AN  */
+				<1 0 &ioport4 7 0>,		/* RST */
+				<2 0 &ioport1 3 0>,		/* CS   */
+				<3 0 &ioport1 2 0>,		/* SCK  */
+				<4 0 &ioport1 0 0>,		/* MISO */
+				<5 0 &ioport1 1 0>,		/* MOSI */
+							/* +3.3V */
+							/* GND */
+				<6 0 &ioport1 7 0>,		/* PWM  */
+				<7 0 &ioport3 2 0>,		/* INT  */
+				<8 0 &ioport4 10 0>,	/* RX   */
+				<9 0 &ioport4 11 0>,	/* TX   */
+				<10 0 &ioport2 5 0>,	/* SCL  */
+				<11 0 &ioport2 6 0>;	/* SDA  */
+							/* +5V */
+							/* GND */
 	};
 
 	aliases {
@@ -72,6 +94,18 @@
 	};
 };
 
+&ioport0 {
+	status = "okay";
+};
+
+&ioport1 {
+	status = "okay";
+};
+
+&ioport2 {
+	status = "okay";
+};
+
 &ioport3 {
 	status = "okay";
 };
@@ -80,7 +114,8 @@
 	status = "okay";
 };
 
-&fcu {
+&port_irq9 {
+	interrupts = <27 12>;
 	status = "okay";
 };
 
@@ -94,6 +129,7 @@
 };
 
 &iclk {
+	clock-frequency = <12000000>;
 	div = <1>;
 };
 

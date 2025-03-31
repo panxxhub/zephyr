@@ -28,7 +28,14 @@ The typical command to flash the board is:
 
 .. code-block:: console
 
-	west flash [ -r bossac ] [ -p /dev/ttyX ]
+	west flash [ -r bossac ] [ -p /dev/ttyX ] [ --erase ]
+
+.. note::
+
+    By default, flashing with bossac will only erase the flash pages containing
+    the flashed application, leaving other pages untouched. Should you wish to
+    erase the entire flash of the target when flashing, pass the ``--erase``
+    parameter when flashing.
 
 Flash configuration for devices:
 
@@ -178,8 +185,8 @@ As a quick reference, see these three board documentation pages:
 
   - :zephyr:board:`sam4e_xpro` (ROM bootloader)
   - :zephyr:board:`adafruit_feather_m0_basic_proto` (Adafruit UF2 bootloader)
-  - :ref:`arduino_nano_33_iot` (Arduino bootloader)
-  - :ref:`arduino_nano_33_ble` (Arduino legacy bootloader)
+  - :zephyr:board:`arduino_nano_33_iot` (Arduino bootloader)
+  - :zephyr:board:`arduino_nano_33_ble` (Arduino legacy bootloader)
 
 Enabling BOSSAC on Windows Native [Experimental]
 ------------------------------------------------

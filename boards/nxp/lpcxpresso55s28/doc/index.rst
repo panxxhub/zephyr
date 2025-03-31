@@ -139,9 +139,17 @@ and :ref:`application_run` for more details).
 Configuring a Debug Probe
 =========================
 
-A debug probe is used for both flashing and debugging the board. This
-board is configured by default to use the LPC-Link2 CMSIS-DAP Onboard
-Debug Probe.
+LinkServer is the default runner for this board.
+A debug probe is used for both flashing and debugging the board. This board is
+configured by default to use the integrated :ref:`mcu-link-onboard-debug-probe`
+in the CMSIS-DAP mode. To use this probe with Zephyr, you need to install the
+:ref:`linkserver-debug-host-tools` and make sure they are in your search path.
+Refer to the detailed overview about :ref:`application_debugging` for additional
+information.
+
+The integrated MCU-Link hardware can also be used as a J-Link probe with a
+firmware update, as described in :ref:`mcu-link-jlink-onboard-debug-probe`.
+The :ref:`jlink-debug-host-tools` should be available in this case.
 
 Configuring a Console
 =====================
@@ -189,6 +197,9 @@ should see the following message in the terminal:
 
    ***** Booting Zephyr OS zephyr-v2.4.0 *****
    Hello World! lpcxpresso55s28
+
+.. include:: ../../common/board-footer.rst
+   :start-after: nxp-board-footer
 
 .. _LPC55S28 SoC Website:
    https://www.nxp.com/products/processors-and-microcontrollers/arm-microcontrollers/general-purpose-mcus/lpc5500-cortex-m33/lpc552x-s2x-mainstream-arm-cortex-m33-based-microcontroller-family:LPC552x-S2x

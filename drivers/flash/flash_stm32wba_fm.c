@@ -24,7 +24,7 @@ LOG_MODULE_REGISTER(flash_stm32wba, CONFIG_FLASH_LOG_LEVEL);
 #define STM32_FLASH_TIMEOUT	\
 	(2 * DT_PROP(DT_INST(0, st_stm32_nv_flash), max_erase_time))
 
-extern struct k_work_q ble_ctlr_work_q;
+extern struct k_work_q ble_ctrl_work_q;
 struct k_work fm_work;
 
 static const struct flash_parameters flash_stm32_parameters = {
@@ -47,7 +47,7 @@ struct FM_CallbackNode cb_ptr = {
 
 void FM_ProcessRequest(void)
 {
-	k_work_submit_to_queue(&ble_ctlr_work_q, &fm_work);
+	k_work_submit_to_queue(&ble_ctrl_work_q, &fm_work);
 }
 
 void FM_BackgroundProcess_Entry(struct k_work *work)
@@ -64,17 +64,6 @@ bool flash_stm32_valid_range(const struct device *dev, off_t offset,
 		return false;
 	}
 	return flash_stm32_range_exists(dev, offset, len);
-}
-
-
-static inline void flash_stm32_sem_take(const struct device *dev)
-{
-	k_sem_take(&FLASH_STM32_PRIV(dev)->sem, K_FOREVER);
-}
-
-static inline void flash_stm32_sem_give(const struct device *dev)
-{
-	k_sem_give(&FLASH_STM32_PRIV(dev)->sem);
 }
 
 static int flash_stm32_read(const struct device *dev, off_t offset,

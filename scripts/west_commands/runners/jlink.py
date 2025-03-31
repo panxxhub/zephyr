@@ -25,7 +25,8 @@ try:
 except ImportError:
     MISSING_REQUIREMENTS = True
 
-DEFAULT_JLINK_EXE = 'JLink.exe' if sys.platform == 'win32' else 'JLinkExe'
+# Populated in do_add_parser()
+DEFAULT_JLINK_EXE = None
 DEFAULT_JLINK_GDB_PORT = 2331
 DEFAULT_JLINK_RTT_PORT = 19021
 
@@ -107,8 +108,36 @@ class JLinkBinaryRunner(ZephyrBinaryRunner):
     def tool_opt_help(cls) -> str:
         return "Additional options for JLink Commander, e.g. '-autoconnect 1'"
 
+    @staticmethod
+    def default_jlink():
+        global DEFAULT_JLINK_EXE
+
+        if sys.platform == 'win32':
+            # JLink.exe can collide with the JDK executable of the same name
+            # Locate the executable using the registry
+            try:
+                import winreg
+
+                # Note that when multiple JLink versions are installed on the
+                # machine this points to the one that was installed
+                # last, and not to the latest version.
+                key = winreg.OpenKeyEx(
+                    winreg.HKEY_CURRENT_USER, r"Software\SEGGER\J-Link")
+                DEFAULT_JLINK_EXE = (
+                    Path(winreg.QueryValueEx(key, "InstallPath")[0])
+                    / "JLink.exe")
+            except Exception:
+                # Not found via the registry, hope that $PATH is correct
+                DEFAULT_JLINK_EXE = "JLink.exe"
+        else:
+            DEFAULT_JLINK_EXE = "JLinkExe"
+
     @classmethod
     def do_add_parser(cls, parser):
+
+        # Find the default JLink executable
+        cls.default_jlink()
+
         # Required:
         parser.add_argument('--device', required=True, help='device name')
 
@@ -250,6 +279,7 @@ class JLinkBinaryRunner(ZephyrBinaryRunner):
         # version of the tools we're using.
         self.commander = os.fspath(
             Path(self.require(self.commander)).resolve())
+        self.logger.debug(f'JLink executable: {self.commander}')
         self.logger.info(f'JLink version: {self.jlink_version_str}')
 
         rtos = self.thread_info_enabled and self.supports_thread_info
@@ -269,7 +299,7 @@ class JLinkBinaryRunner(ZephyrBinaryRunner):
             + ['-speed', self.speed]
             + ['-device', self.device]
             + ['-silent']
-            + ['-endian' 'big' if big_endian else 'little']
+            + ['-endian', 'big' if big_endian else 'little']
             + ['-singlerun']
             + (['-nogui'] if self.supports_nogui else [])
             + (['-rtos', plugin_dir] if rtos else [])
@@ -299,9 +329,7 @@ class JLinkBinaryRunner(ZephyrBinaryRunner):
                         break
                     except ConnectionRefusedError:
                         time.sleep(0.1)
-                sock.shutdown(socket.SHUT_RDWR)
-                time.sleep(0.1)
-                self.run_telnet_client('localhost', self.rtt_port)
+                self.run_telnet_client('localhost', self.rtt_port, sock)
             except Exception as e:
                 self.logger.error(e)
             finally:

@@ -60,7 +60,7 @@ static int gpio_it8801_configure(const struct device *dev, gpio_pin_t pin, gpio_
 	int ret;
 	uint8_t reg_gpcr = config->reg_gpcr + pin;
 	uint8_t mask = BIT(pin);
-	uint8_t new_value, control;
+	uint8_t control;
 
 	/* Don't support "open source" mode */
 	if (((flags & GPIO_SINGLE_ENDED) != 0) && ((flags & GPIO_LINE_OPEN_DRAIN) == 0)) {
@@ -86,13 +86,11 @@ static int gpio_it8801_configure(const struct device *dev, gpio_pin_t pin, gpio_
 	/* If output, set level before changing type to an output. */
 	if (flags & GPIO_OUTPUT) {
 		if (flags & GPIO_OUTPUT_INIT_HIGH) {
-			new_value = mask;
+			ret = i2c_reg_update_byte_dt(&config->i2c_dev, config->reg_sovr, mask,
+						     mask);
 		} else if (flags & GPIO_OUTPUT_INIT_LOW) {
-			new_value = 0;
-		} else {
-			new_value = 0;
+			ret = i2c_reg_update_byte_dt(&config->i2c_dev, config->reg_sovr, mask, 0);
 		}
-		ret = i2c_reg_update_byte_dt(&config->i2c_dev, config->reg_sovr, mask, new_value);
 		if (ret) {
 			LOG_ERR("Failed to set output value (ret %d)", ret);
 			return ret;
@@ -415,7 +413,7 @@ static int gpio_it8801_pin_interrupt_configure(const struct device *dev, gpio_pi
 	return ret;
 }
 
-static const struct gpio_driver_api gpio_it8801_driver_api = {
+static DEVICE_API(gpio, gpio_it8801_driver_api) = {
 	.pin_configure = gpio_it8801_configure,
 #ifdef CONFIG_GPIO_GET_CONFIG
 	.pin_get_config = gpio_it8801_get_config,
