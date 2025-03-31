@@ -163,7 +163,7 @@
 /* MicroChip PHY ID bits [3..0] = reversion -> discard during ID check */
 /* 24 bit org, 6 bit model */
 #define PHY_MOTORCOMM_YT_PHY_ID_MODEL_MASK   0xFFFFFFF0
-#define PHY_MOTORCOMM_YT_PHY_ID_MODEL_YT8511 0x00000100
+#define PHY_MOTORCOMM_YT_PHY_ID_MODEL_YT8511 0x00000110
 
 #define PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER        0x00
 #define PHY_MOTORCOMM_YT_BASIC_STATUS_REGISTER         0x01

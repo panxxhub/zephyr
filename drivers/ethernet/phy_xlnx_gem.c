@@ -218,6 +218,8 @@ static void phy_xlnx_gem_motorcomm_yt_cfg(const struct device *dev)
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER);
 	phy_data &= ~PHY_MOTORCOMM_YT_BASIC_CONTROL_AUTONEG_ENABLE_BIT; // bit 12
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER, phy_data);
 	phy_xlnx_gem_motorcomm_yt_reset(dev);
 
 	/*
@@ -238,7 +240,18 @@ static void phy_xlnx_gem_motorcomm_yt_cfg(const struct device *dev)
 		   PHY_MRVL_COPPER_LINK_STATUS_CHANGED_INT_BIT;
 	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
 				PHY_MRVL_COPPER_INT_ENABLE_REGISTER, phy_data);
+	phy_xlnx_gem_motorcomm_yt_reset(dev);
 
+	/*
+	 * Clear the interrupt status register before advertising the
+	 * supported link speed(s).
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MRVL_COPPER_INT_STATUS_REGISTER);
+
+	// phy_data = phy_xlnx_gem_mdio_read()
+
+	phy_data = PHY_MRVL_ADV_SELECTOR_802_3;
 	phy_data_gbit = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					       PHY_MRVL_1000BASET_CONTROL_REGISTER);
 	phy_data_gbit &= ~PHY_MRVL_ADV_1000BASET_FDX_BIT;
@@ -1385,6 +1398,7 @@ int phy_xlnx_gem_detect(const struct device *dev)
 	if (!dev_conf->init_phy) {
 		return -ENOTSUP;
 	}
+	LOG_DBG("%s PHY detection", dev->name);
 
 	/*
 	 * PHY detection as described in Zynq-7000 TRM, chapter 16.3.4,
