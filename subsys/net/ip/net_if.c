@@ -340,7 +340,10 @@ void net_process_tx_packet(struct net_pkt *pkt)
 void net_if_try_queue_tx(struct net_if *iface, struct net_pkt *pkt, k_timeout_t timeout)
 {
 	if (!net_pkt_filter_send_ok(pkt)) {
-		/* silently drop the packet */
+		/* Silently drop the packet, but update the statistics in order
+		 * to be able to monitor filter activity.
+		 */
+		net_stats_update_filter_tx_drop(net_pkt_iface(pkt));
 		net_pkt_unref(pkt);
 		return;
 	}
@@ -505,10 +508,10 @@ enum net_verdict net_if_try_send_data(struct net_if *iface, struct net_pkt *pkt,
 	}
 #endif
 
-	/* Bypass the IP stack with SOCK_RAW/IPPROTO_RAW sockets */
-	if (IS_ENABLED(CONFIG_NET_SOCKETS_PACKET) &&
-	    context && net_context_get_type(context) == SOCK_RAW &&
-	    net_context_get_proto(context) == IPPROTO_RAW) {
+	/* Bypass the IP stack with AF_INET(6)/SOCK_RAW */
+	if (context && net_context_get_type(context) == SOCK_RAW &&
+	    (net_context_get_family(context) == AF_INET ||
+	     net_context_get_family(context) == AF_INET6)) {
 		goto done;
 	}
 

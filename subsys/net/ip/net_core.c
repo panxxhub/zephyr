@@ -127,13 +127,6 @@ static inline enum net_verdict process_data(struct net_pkt *pkt,
 
 	if (IS_ENABLED(CONFIG_NET_IP) && (family == AF_INET || family == AF_INET6 ||
 					  family == AF_UNSPEC || family == AF_PACKET)) {
-		/* L2 processed, now we can pass IPPROTO_RAW to packet socket:
-		 */
-		ret = net_packet_socket_input(pkt, IPPROTO_RAW);
-		if (ret != NET_CONTINUE) {
-			return ret;
-		}
-
 		/* IP version and header length. */
 		uint8_t vtc_vhl = NET_IPV6_HDR(pkt)->vtc & 0xf0;
 
@@ -590,7 +583,10 @@ int net_recv_data(struct net_if *iface, struct net_pkt *pkt)
 	net_pkt_set_iface(pkt, iface);
 
 	if (!net_pkt_filter_recv_ok(pkt)) {
-		/* silently drop the packet */
+		/* Silently drop the packet, but update the statistics in order
+		 * to be able to monitor filter activity.
+		 */
+		net_stats_update_filter_rx_drop(net_pkt_iface(pkt));
 		net_pkt_unref(pkt);
 	} else {
 		net_queue_rx(iface, pkt);

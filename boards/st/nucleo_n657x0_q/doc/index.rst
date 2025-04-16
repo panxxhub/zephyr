@@ -62,6 +62,36 @@ Supported Features
 
 .. zephyr:board-supported-hw::
 
+USB
+===
+
+The USB pin assignments on the STM32N657XX microcontroller are immutable. This means that the specific
+pins designated for USB functionality are fixed and cannot be changed or reassigned to other functions,
+ensuring consistent and reliable USB communication.
+
+USB PIN (IOs)
+=============
+
++------------------+--------------------------------------+
+| Name             | Description                          |
++==================+======================================+
+| OTG1_HSDM        | USB OTG1 High-Speed Data- (negative) |
++------------------+--------------------------------------+
+| OTG1_HSDP        | USB OTG1 High-Speed Data+ (positive) |
++------------------+--------------------------------------+
+| OTG1_ID          | USB OTG1 ID Pin                      |
++------------------+--------------------------------------+
+| OTG1_TXRTUNE     | USB OTG1 Transmit Retune             |
++------------------+--------------------------------------+
+| OTG2_HSDM        | USB OTG2 High-Speed Data- (negative) |
++------------------+--------------------------------------+
+| OTG2_HSDP        | USB OTG2 High-Speed Data+ (positive) |
++------------------+--------------------------------------+
+| OTG2_ID          | USB OTG2 ID Pin                      |
++------------------+--------------------------------------+
+| OTG2_TXRTUNE     | USB OTG2 Transmit Retune             |
++------------------+--------------------------------------+
+
 Connections and IOs
 ===================
 
@@ -118,6 +148,8 @@ USART1. Default settings are 115200 8N1.
 
 Programming and Debugging
 *************************
+
+.. zephyr:board-supported-runners::
 
 NUCLEO-N657X0-Q board includes an ST-LINK/V3 embedded debug tool interface.
 This probe allows to flash and debug the board using various tools.

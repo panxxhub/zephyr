@@ -9,6 +9,7 @@
 #ifndef ZEPHYR_SUBSYS_BLUETOOTH_HOST_KEYS_H_
 #define ZEPHYR_SUBSYS_BLUETOOTH_HOST_KEYS_H_
 
+#include <zephyr/sys/util.h>
 #include <zephyr/bluetooth/bluetooth.h>
 
 /** @cond INTERNAL_HIDDEN */
@@ -54,7 +55,7 @@ struct bt_irk {
 
 static inline bool bt_irk_eq(struct bt_irk const *a, struct bt_irk const *b)
 {
-	return (memcmp(a->val, b->val, sizeof(a->val)) == 0);
+	return util_memeq(a->val, b->val, sizeof(a->val));
 }
 
 struct bt_csrk {
@@ -226,8 +227,6 @@ struct bt_keys_link_key *bt_keys_find_link_key(const bt_addr_t *addr);
 void bt_keys_link_key_clear(struct bt_keys_link_key *link_key);
 void bt_keys_link_key_clear_addr(const bt_addr_t *addr);
 void bt_keys_link_key_store(struct bt_keys_link_key *link_key);
-void bt_foreach_bond_br(void (*func)(const struct bt_bond_info *info, void *user_data),
-			void *user_data);
 
 /* This function is used to signal that the key has been used for paring */
 /* It updates the aging counter and saves it to flash if configuration option */
