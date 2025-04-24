@@ -354,3 +354,23 @@ properties:
       Optional feature flag - Enable AHB management descriptor data endian-
       ness swap to big endian. If this flag is not set, data will be little
       endian.
+  
+  rgmii-tx-skew:
+    type: int
+    default: 0
+    description: |
+      Optional feature flag - RGMII TX skew. When set, the RGMII TX skew
+      is enabled. The value of this property is the skew in picoseconds
+      (ps) to be applied to the TX clock. Valid values are between 0 and
+      2000 ps.
+      The default value is 0 ps.
+  
+  rgmii-rx-skew:
+    type: int
+    default: 0
+    description: |
+      Optional feature flag - RGMII RX skew. When set, the RGMII RX skew
+      is enabled. The value of this property is the skew in picoseconds
+      (ps) to be applied to the RX clock. Valid values are between 0 and
+      2000 ps.
+      The default value is 0 ps.

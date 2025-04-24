@@ -447,6 +447,8 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 		(ETH_XLNX_BUFFER_ALIGNMENT-1)) & ~(ETH_XLNX_BUFFER_ALIGNMENT-1)),\
 	.tx_buffer_size			= (((uint16_t)(DT_INST_PROP(port, tx_buffer_size)) +\
 		(ETH_XLNX_BUFFER_ALIGNMENT-1)) & ~(ETH_XLNX_BUFFER_ALIGNMENT-1)),\
+	.rgmii_tx_skew			= DT_INST_PROP(port, rgmii_tx_skew),\
+	.rgmii_rx_skew			= DT_INST_PROP(port, rgmii_rx_skew),\
 	.ignore_ipg_rxer		= DT_INST_PROP(port, ignore_ipg_rxer),\
 	.disable_reject_nsp		= DT_INST_PROP(port, disable_reject_nsp),\
 	.enable_ipg_stretch		= DT_INST_PROP(port, ipg_stretch),\
@@ -704,6 +706,8 @@ struct eth_xlnx_gem_dev_cfg {
 	uint8_t				txbd_count;
 	uint16_t			rx_buffer_size;
 	uint16_t			tx_buffer_size;
+	int32_t 			rgmii_tx_skew;
+	int32_t 			rgmii_rx_skew;
 
 	bool				ignore_ipg_rxer : 1;
 	bool				disable_reject_nsp : 1;

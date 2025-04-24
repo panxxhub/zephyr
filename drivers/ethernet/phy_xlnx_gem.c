@@ -306,6 +306,12 @@ static void phy_xlnx_gem_motorcomm_yt_cfg(const struct device *dev)
 	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
 				PHY_MRVL_COPPER_AUTONEG_ADV_REGISTER, phy_data);
 
+	/**
+	 * 4. configure RGMII skew
+	 */
+	 (void)dev_conf->rgmii_tx_skew;
+
+
 	/*
 	 * Trigger a PHY reset, affecting pages 0, 2, 3, 5, 7.
 	 * Afterwards, set the auto-negotiation enable bit [12] in the
