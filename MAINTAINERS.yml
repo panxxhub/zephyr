@@ -291,6 +291,21 @@ Ambiq Platforms:
   labels:
     - "platform: Ambiq"
 
+AndesTech Platforms:
+  status: maintained
+  maintainers:
+    - jimmyzhe
+  collaborators:
+    - kevinwang821020
+  files:
+    - boards/andestech/
+    - drivers/*/*andes*
+    - dts/bindings/*/*andestech*
+    - dts/riscv/andes/
+    - soc/andestech/
+  labels:
+    - "platform: Andes Technology"
+
 BeagleBoard Platforms:
   status: maintained
   maintainers:
@@ -1050,8 +1065,8 @@ Documentation Infrastructure:
 Release Notes:
   status: maintained
   maintainers:
-    - fabiobaltieri
-    - kartben
+    - danieldegrasse
+    - dkalowsk
   collaborators:
     - kartben
   files:
@@ -1427,6 +1442,7 @@ Release Notes:
     - decsny
     - lmajewski
     - pdgendt
+    - clamattia
   files:
     - drivers/ethernet/
     - include/zephyr/dt-bindings/ethernet/
@@ -3188,6 +3204,20 @@ PHYTEC Platforms:
   labels:
     - "platform: PHYTEC"
 
+PMCI:
+  status: maintained
+  maintainers:
+    - teburd
+  collaborators:
+    - nashif
+    - inteljiangwe1
+    - kehintel
+  files:
+    - subsys/pmci/
+    - samples/modules/pmci/
+  labels:
+    - "area: PMCI"
+
 POSIX API layer:
   status: maintained
   maintainers:
@@ -3474,6 +3504,19 @@ ADI Platforms:
     - ^drivers/(adc|dac|gpio|mfd|regulator)/.*adp?\d+
   labels:
     - "platform: ADI"
+
+Bouffalolab Platforms:
+  status: maintained
+  maintainers:
+    - nandojve
+  files:
+    - boards/bouffalolab/
+    - drivers/*/*bflb*
+    - dts/riscv/bouffalolab/
+    - dts/bindings/*/bflb,*
+    - soc/bouffalolab/
+  labels:
+    - "platform: bouffalolab"
 
 Broadcom Platforms:
   status: odd fixes
@@ -4906,6 +4949,15 @@ West:
   labels:
     - "platform: Microchip SAM"
 
+"West project: hal_bouffalolab":
+  status: maintained
+  maintainers:
+    - nandojve
+  files:
+    - modules/hal_bouffalolab/
+  labels:
+    - "platform: Bouffalo Lab"
+
 "West project: hal_cypress":
   status: maintained
   maintainers:
@@ -5189,8 +5241,7 @@ West:
   collaborators:
     - nashif
     - inteljiangwe1
-  files:
-    - samples/modules/mctp/
+  files: []
   labels:
     - "area: MCTP"
 
