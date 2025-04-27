@@ -174,6 +174,49 @@ static void phy_xlnx_gem_mdio_write(uint32_t base_addr, uint8_t phy_addr, uint8_
 	}
 }
 
+/**
+ * @brief Read from the MotorComm YT PHY's extended register
+ * Reads data from a MotorComm YT PHY's extended register via the MDIO interface
+ *
+ * @param base_addr Base address of the GEM's register space
+ * @param phy_addr  MDIO address of the PHY to be accessed
+ * @param reg_addr  Index of the PHY register to be read
+ * @return          16-bit data word received from the PHY
+ */
+static uint16_t phy_xlnx_gem_motorcomm_ext_mdio_read(uint32_t base_addr, uint8_t phy_addr,
+						     uint16_t reg_addr)
+{
+	// write ext offset 
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
+				PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, reg_addr);
+	// read ext register
+	return phy_xlnx_gem_mdio_read(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_DATA_REGISTER);
+}
+/**
+ * @brief Write to the MotorComm YT PHY's extended register
+ * Writes data to a MotorComm YT PHY's extended register via the MDIO interface
+ *
+ * @param base_addr Base address of the GEM's register space
+ * @param phy_addr  MDIO address of the PHY to be accessed
+ * @param reg_addr  Index of the PHY register to be written to
+ * @param value     16-bit data word to be written to the target register
+ */
+static void phy_xlnx_gem_motorcomm_ext_mdio_write(uint32_t base_addr, uint8_t phy_addr,
+					     uint16_t reg_addr, uint16_t value)
+{
+	// write ext offset 
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
+				PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, reg_addr);
+	// write ext register
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
+				PHY_MOTORCOMM_YT_EXT_DATA_REGISTER, value);
+
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
+				PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, 0);
+	
+}
+
+
 static void phy_xlnx_gem_motorcomm_yt_reset(const struct device *dev)
 {
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
@@ -309,8 +352,20 @@ static void phy_xlnx_gem_motorcomm_yt_cfg(const struct device *dev)
 	/**
 	 * 4. configure RGMII skew
 	 */
-	 (void)dev_conf->rgmii_tx_skew;
-
+	phy_data = phy_xlnx_gem_motorcomm_ext_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+							PHY_MOTORCOMM_YT_EXT_RGMII_CFG1);
+	// phy_data &= ~PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_TX_SKEW_MASK;
+	phy_data &= ~(PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_TX_SKEW_MASK |
+		      PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_RX_SKEW_MASK);
+	uint16_t tx_skew_steps =
+		(dev_conf->rgmii_tx_skew / 150) & PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_TX_SKEW_MASK;
+	uint16_t rx_skew_steps =
+		((dev_conf->rgmii_rx_skew / 150) << PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_RX_SKEW_SHIFT) &
+		PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_RX_SKEW_MASK;
+	phy_data |= (tx_skew_steps | rx_skew_steps);
+	LOG_DBG("motorcomm ext write 0x%x", phy_data);
+	phy_xlnx_gem_motorcomm_ext_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+					      PHY_MOTORCOMM_YT_EXT_RGMII_CFG1, phy_data);
 
 	/*
 	 * Trigger a PHY reset, affecting pages 0, 2, 3, 5, 7.
