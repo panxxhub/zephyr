@@ -107,6 +107,10 @@ Deprecated APIs and options
   pending TX buffers is now aligned with the :kconfig:option:`CONFIG_BT_BUF_ACL_TX_COUNT` Kconfig
   option.
 
+* The :kconfig:option:`CONFIG_CRYPTO_TINYCRYPT_SHIM` Kconfig option has been removed. It
+  was deprecated since Zephyr 4.0, and users were advised to migrate to alternative
+  crypto backends.
+
 New APIs and options
 ====================
 
@@ -120,6 +124,14 @@ New APIs and options
 * Kernel
 
  * :c:macro:`K_TIMEOUT_ABS_SEC`
+ * :c:func:`timespec_add`
+ * :c:func:`timespec_compare`
+ * :c:func:`timespec_equal`
+ * :c:func:`timespec_is_valid`
+ * :c:func:`timespec_negate`
+ * :c:func:`timespec_normalize`
+ * :c:func:`timespec_from_timeout`
+ * :c:func:`timespec_to_timeout`
 
 * I2C
 
@@ -241,6 +253,7 @@ New APIs and options
 
 * ZBus
 
+  * Zbus has achieved stable status with the release of API version v1.0.0.
   * Runtime observers can work without heap. Now it is possible to choose between static, dynamic,
     and none allocation for the runtime observers nodes.
   * Runtime observers using :kconfig:option:`CONFIG_ZBUS_RUNTIME_OBSERVERS_NODE_ALLOC_NONE` must use

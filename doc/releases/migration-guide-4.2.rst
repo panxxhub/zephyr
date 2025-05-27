@@ -114,6 +114,15 @@ DMA
 * Renamed the devicetree property ``nxp,a_on`` to ``nxp,a-on``.
 * Renamed the devicetree property ``dma_channels`` to ``dma-channels``.
 
+Regulator
+=========
+
+* :dtcompatible:`nordic,npm1300-regulator` BUCK and LDO node GPIO properties are now specified as an
+  integer array without a GPIO controller, removing the requirement for a
+  :dtcompatible:`nordic,npm1300-gpio` node to be present and enabled for GPIO control of the output
+  rails. For example, ``enable-gpios = <&pmic_gpios 3 GPIO_ACTIVE_LOW>;`` is now specified as
+  ``enable-gpio-config = <3 GPIO_ACTIVE_LOW>;``.
+
 Counter
 =======
 
@@ -400,9 +409,9 @@ Networking
   :c:macro:`HTTPS_SERVICE_DEFINE_EMPTY`, :c:macro:`HTTP_SERVICE_DEFINE` and
   :c:macro:`HTTPS_SERVICE_DEFINE`.
 
-* :kconfig:option:`NET_ZPERF` no longer includes server support by default. To use
-  the server commands, enable :kconfig:option:`NET_ZPERF_SERVER`. If server support
-  is not needed, :kconfig:option:`ZVFS_POLL_MAX` can possibly be reduced.
+* :kconfig:option:`CONFIG_NET_ZPERF` no longer includes server support by default. To use
+  the server commands, enable :kconfig:option:`CONFIG_NET_ZPERF_SERVER`. If server support
+  is not needed, :kconfig:option:`CONFIG_ZVFS_POLL_MAX` can possibly be reduced.
 
 * The L2 Wi-Fi shell now supports interface option for most commands, to accommodate this
   change some of the existing options have been renamed. The following table
@@ -422,6 +431,12 @@ Networking
   | ``wifi channel``       |                     |                    |
   | ``wifi packet_filter`` |                     |                    |
   +------------------------+---------------------+--------------------+
+
+* The :c:type:`http_response_cb_t` HTTP client response callback signature has
+  changed. The callback function now returns ``int`` instead of ``void``. This
+  allows the application to abort the HTTP connection. Existing applications
+  need to update their response callback implementations. To retain current
+  behavior, simply return 0 from the callback.
 
 OpenThread
 ==========
@@ -569,6 +584,20 @@ Other subsystems
 
 Modules
 *******
+
+CMSIS
+=====
+
+* Cortex-M boards/socs now require the ``CMSIS_6`` module to build properly (instead of ``cmsis``
+  which was CMSIS 5.9.0).
+  If trying to build a Cortex-M board, do a ``west update`` to make sure that ``CMSIS_6`` module is
+  available before running ``west build`` or other commands.
+
+  Boards or SOCs or modules using the older ``cmsis`` module either with a local copy or via the
+  :kconfig:option:`CONFIG_ZEPHYR_CMSIS_MODULE_DIR` are requested to move to the ``CMSIS_6`` module
+  which can be accessed via the :kconfig:option:`CONFIG_ZEPHYR_CMSIS_6_MODULE_DIR` configuration.
+
+  Note: Zephyr will continue using the older ``cmsis`` module for Cortex-A and Cortex-R targets.
 
 Architectures
 *************
