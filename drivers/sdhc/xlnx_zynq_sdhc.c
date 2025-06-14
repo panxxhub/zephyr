@@ -207,11 +207,11 @@ static int zynq_sdhc_set_power(const struct device *dev, enum sdhc_power state)
 			const uint8_t write_val =
 				(XSDPS_PC_BUS_VSEL_3V3_MASK | XSDPS_PC_BUS_PWR_MASK) &
 				~XSDPS_PC_EMMC_HW_RST_MASK;
-			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, write_val);
+			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, write_val); // 3 ?
 		} else {
 			const uint8_t write_val =
 				(XSDPS_PC_BUS_VSEL_3V3_MASK | XSDPS_PC_BUS_PWR_MASK);
-			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, write_val);
+			zynq_sdhc_write8(dev, XSDPS_POWER_CTRL_OFFSET, write_val); // 3.3
 		}
 	} else {
 		/* Turn OFF Bus Power */
@@ -456,6 +456,8 @@ static int set_timing(const struct device *dev, enum sdhc_timing_mode timing)
 
 static void configure_status_interrupts_enable_signals(const struct device *dev)
 {
+	// card interrupt signal disable
+	// Ceata_Error_Signal disable
 	// zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_EN_OFFSET, ZYNQ_SDHC_HOST_NORMAL_INTR_MASK);
 	zynq_sdhc_write16(dev, XSDPS_NORM_INTR_STS_EN_OFFSET,
 			  XSDPS_NORM_INTR_ALL_MASK & (~XSDPS_INTR_CARD_MASK));
@@ -659,10 +661,10 @@ static int zynq_sdhc_init_xfr(const struct device *dev, struct sdhc_data *data, 
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA)) {
 		SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_LOC,
-			 ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 2U);
+			 ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 2U); // adma 2 is selected
 	} else {
 		SET_BITS(regs->host_ctrl1, ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_LOC,
-			 ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 0U);
+			 ZYNQ_SDHC_HOST_CTRL1_DMA_SEL_MASK, 0U); // sdma is selected
 	}
 	/* set block size register */
 	zynq_sdhc_write16(dev, XSDPS_BLK_SIZE_OFFSET, (data->block_size & XSDPS_BLK_SIZE_MASK));
@@ -765,6 +767,7 @@ static enum zynq_sdhc_resp_type zynq_sdhc_decode_resp_type(enum sd_rsp_type type
 	enum zynq_sdhc_resp_type resp_type = ZYNQ_SDHC_HOST_RESP_NONE;
 	// we only take the lower 4 bits, the upper 4 bits is used for spi mode
 	uint8_t resp_type_sel = type & 0xF;
+	LOG_DBG("resp_type_sel: %x", resp_type_sel);
 
 	switch (resp_type_sel) {
 	case SD_RSP_TYPE_NONE:
@@ -1579,7 +1582,7 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_NODELABEL(ocm_high), okay));
 #define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
 	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32)                      \
-		__attribute__((section("OCM_HIGH")));
+	__attribute__((section("OCM_HIGH")));
 #else
 #define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
 	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32);
