@@ -64,6 +64,7 @@ set_variable_ifdef(CONFIG_DMA_MCUX_EDMA_V3      CONFIG_MCUX_COMPONENT_driver.dma
 set_variable_ifdef(CONFIG_DMA_MCUX_EDMA         CONFIG_MCUX_COMPONENT_driver.edma)
 set_variable_ifdef(CONFIG_DMA_MCUX_EDMA_V3      CONFIG_MCUX_COMPONENT_driver.dma3)
 set_variable_ifdef(CONFIG_DMA_MCUX_EDMA_V4      CONFIG_MCUX_COMPONENT_driver.edma4)
+set_variable_ifdef(CONFIG_DMA_NXP_EDMA          CONFIG_MCUX_COMPONENT_driver.edma_rev2)
 set_variable_ifdef(CONFIG_ENTROPY_MCUX_RNGA     CONFIG_MCUX_COMPONENT_driver.rnga)
 set_variable_ifdef(CONFIG_ENTROPY_MCUX_TRNG     CONFIG_MCUX_COMPONENT_driver.trng)
 set_variable_ifdef(CONFIG_ENTROPY_MCUX_CAAM     CONFIG_MCUX_COMPONENT_driver.caam)
@@ -262,7 +263,7 @@ if(CONFIG_SOC_SERIES_MCXA)
   set(CONFIG_MCUX_COMPONENT_driver.romapi ON)
 endif()
 
-if(CONFIG_SOC_SERIES_MCXN AND !CONFIG_SOC_MCXN947 AND !CONFIG_SOC_MCXN547)
+if(CONFIG_SOC_SERIES_MCXN AND (NOT CONFIG_SOC_MCXN947) AND (NOT CONFIG_SOC_MCXN547))
   set_variable_ifdef(CONFIG_SOC_FLASH_MCUX CONFIG_MCUX_COMPONENT_driver.romapi_flashiap)
 endif()
 

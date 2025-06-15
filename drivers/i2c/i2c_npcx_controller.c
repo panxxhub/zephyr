@@ -753,7 +753,7 @@ static void i2c_ctrl_handle_read_int_event(const struct device *dev)
 	}
 
 	/* Is the STOP condition issued? */
-	if ((data->msg->flags & I2C_MSG_STOP) != 0) {
+	if (data->msg != NULL && (data->msg->flags & I2C_MSG_STOP) != 0) {
 		/* Clear rx FIFO threshold and status bits */
 		i2c_ctrl_fifo_clear_status(dev);
 
@@ -1414,7 +1414,7 @@ static void i2c_target_wk_isr(const struct device *dev, struct npcx_wui *wui)
 #endif /* CONFIG_I2C_TARGET */
 
 int npcx_i2c_ctrl_transfer(const struct device *i2c_dev, struct i2c_msg *msgs,
-			      uint8_t num_msgs, uint16_t addr, int port)
+			      uint8_t num_msgs, uint16_t addr, uint8_t port)
 {
 	struct i2c_ctrl_data *const data = i2c_dev->data;
 	int ret = 0;
