@@ -111,6 +111,13 @@ Deprecated APIs and options
   was deprecated since Zephyr 4.0, and users were advised to migrate to alternative
   crypto backends.
 
+Stable API changes in this release
+==================================
+
+* The API signature of ``net_mgmt`` event handler :c:type:`net_mgmt_event_handler_t`
+  and request handler :c:type:`net_mgmt_request_handler_t` has changed. The event value
+  type is changed from ``uint32_t`` to ``uint64_t``.
+
 New APIs and options
 ====================
 
@@ -132,6 +139,7 @@ New APIs and options
  * :c:func:`timespec_normalize`
  * :c:func:`timespec_from_timeout`
  * :c:func:`timespec_to_timeout`
+ * :c:func:`k_heap_array_get`
 
 * I2C
 
@@ -158,6 +166,12 @@ New APIs and options
     * :c:macro:`BT_BAP_PER_ADV_PARAM_BROADCAST_SLOW`
     * :c:func:`bt_csip_set_member_set_size_and_rank`
     * :c:func:`bt_csip_set_member_get_info`
+    * :c:func:`bt_bap_unicast_group_foreach_stream`
+    * :c:func:`bt_cap_unicast_group_create`
+    * :c:func:`bt_cap_unicast_group_reconfig`
+    * :c:func:`bt_cap_unicast_group_add_streams`
+    * :c:func:`bt_cap_unicast_group_delete`
+    * :c:func:`bt_cap_unicast_group_foreach_stream`
 
   * Host
 
@@ -500,6 +514,14 @@ New Boards
 * Würth Elektronik GmbH.
 
    * :zephyr:board:`ophelia4ev` (``ophelia4ev``)
+
+.. _shields_added_in_zephyr_4_2:
+
+New shields
+============
+
+ * :ref:`MikroElektronika Stepper 18 Click <mikroe_stepper_18_click_shield>`
+ * :ref:`MikroElektronika Stepper 19 Click <mikroe_stepper_19_click_shield>`
 
 New Drivers
 ***********
@@ -889,6 +911,7 @@ New Drivers
 
 * Stepper
 
+   * :dtcompatible:`allegro,a4979`
    * :dtcompatible:`adi,tmc51xx`
 
 * System controller
