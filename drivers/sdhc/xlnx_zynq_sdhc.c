@@ -786,6 +786,8 @@ static enum zynq_sdhc_resp_type zynq_sdhc_decode_resp_type(enum sd_rsp_type type
 	case SD_RSP_TYPE_R5b:
 	case SD_RSP_TYPE_R6:
 	case SD_RSP_TYPE_R7:
+		resp_type = ZYNQ_SDHC_HOST_RESP_LEN_48;
+		break;
 	default:
 		resp_type = ZYNQ_SDHC_HOST_INVAL_HOST_RESP;
 	}
@@ -1579,7 +1581,7 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_NODELABEL(ocm_high), okay));
 #define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
 	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32)                      \
-		__attribute__((section("OCM_HIGH")));
+	__attribute__((section("OCM_HIGH")));
 #else
 #define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
 	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32);
