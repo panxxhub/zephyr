@@ -21,6 +21,7 @@ config XLNX_ZYNQ_SDHC_HOST_DMA
 config XLNX_ZYNQ_SDHC_HOST_ADMA
 	bool "Xlnx Zynq SDHC host controller ADMA mode"
 	depends on XLNX_ZYNQ_SDHC_HOST_DMA
+	depends on XLNX_ZYNQ_SDHC_HOST_AUTO_STOP
 	help
 	  Xlnx Zynq SDHC host controller ADMA mode support.
 
