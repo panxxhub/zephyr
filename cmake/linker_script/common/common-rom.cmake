@@ -12,6 +12,7 @@ zephyr_linker_section_obj_level(SECTION init LEVEL APPLICATION)
 zephyr_linker_section_obj_level(SECTION init LEVEL SMP)
 
 zephyr_iterable_section(NAME device NUMERIC KVMA RAM_REGION GROUP RODATA_REGION)
+zephyr_iterable_section(NAME service NUMERIC KVMA RAM_REGION GROUP RODATA_REGION)
 
 if(CONFIG_GEN_SW_ISR_TABLE AND NOT CONFIG_DYNAMIC_INTERRUPTS)
   # ld align has been changed to subalign to provide identical behavior scatter vs. ld.
@@ -215,7 +216,7 @@ if (CONFIG_LOG)
 endif()
 
 if (CONFIG_MULTI_LEVEL_INTERRUPTS)
-  zephyr_iterable_section(NAME intc_table KVMA RAM_REGION GROUP RODATA_REGION SUBALIGN 4)
+  zephyr_iterable_section(NAME intc_table KVMA RAM_REGION GROUP RODATA_REGION)
 endif()
 
 if (CONFIG_HTTP_SERVER)

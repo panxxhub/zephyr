@@ -192,6 +192,11 @@ void board_early_init_hook(void)
 	CLOCK_SetClockDiv(kCLOCK_DivADC, 1u);
 	CLOCK_AttachClk(kFRO_LF_DIV_to_ADC);
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(i3c0))
+	CLOCK_SetClockDiv(kCLOCK_DivI3C0_FCLK, 15U);
+	CLOCK_AttachClk(kFRO_HF_DIV_to_I3C0FCLK);
+#endif
+
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(lpadc0))
 	CLOCK_EnableClock(kCLOCK_GateADC0);
 #endif
@@ -232,6 +237,10 @@ void board_early_init_hook(void)
 	/* Configure input clock to be able to reach the datasheet specified band rate. */
 	CLOCK_SetClockDiv(kCLOCK_DivLPSPI1, 1u);
 	CLOCK_AttachClk(kFRO_LF_DIV_to_LPSPI1);
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(ostimer0))
+	CLOCK_AttachClk(kCLK_1M_to_OSTIMER);
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(lptmr0))

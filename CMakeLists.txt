@@ -159,11 +159,17 @@ zephyr_compile_options($<$<COMPILE_LANGUAGE:C>:$<TARGET_PROPERTY:compiler,no_str
 zephyr_compile_options($<$<COMPILE_LANGUAGE:CXX>:$<TARGET_PROPERTY:compiler-cpp,no_strict_aliasing>>)
 
 # Extra warnings options for twister run
-if (CONFIG_COMPILER_WARNINGS_AS_ERRORS)
+if(CONFIG_COMPILER_WARNINGS_AS_ERRORS)
   zephyr_compile_options($<$<COMPILE_LANGUAGE:C>:$<TARGET_PROPERTY:compiler,warnings_as_errors>>)
   zephyr_compile_options($<$<COMPILE_LANGUAGE:CXX>:$<TARGET_PROPERTY:compiler,warnings_as_errors>>)
   zephyr_compile_options($<$<COMPILE_LANGUAGE:ASM>:$<TARGET_PROPERTY:asm,warnings_as_errors>>)
   zephyr_link_libraries($<TARGET_PROPERTY:linker,warnings_as_errors>)
+endif()
+
+if(CONFIG_DEPRECATION_TEST)
+  zephyr_compile_options($<$<COMPILE_LANGUAGE:C>:$<TARGET_PROPERTY:compiler,no_deprecation_warning>>)
+  zephyr_compile_options($<$<COMPILE_LANGUAGE:CXX>:$<TARGET_PROPERTY:compiler,no_deprecation_warning>>)
+  zephyr_compile_options($<$<COMPILE_LANGUAGE:ASM>:$<TARGET_PROPERTY:asm,no_deprecation_warning>>)
 endif()
 
 # @Intent: Set compiler flags to enable buffer overflow checks in libc functions
@@ -239,6 +245,7 @@ SOC_* symbol.")
 endif()
 
 # Apply the final optimization flag(s)
+zephyr_compile_options($<$<COMPILE_LANGUAGE:ASM>:${OPTIMIZATION_FLAG}>)
 zephyr_compile_options($<$<COMPILE_LANGUAGE:C>:${OPTIMIZATION_FLAG}>)
 zephyr_compile_options($<$<COMPILE_LANGUAGE:CXX>:${OPTIMIZATION_FLAG}>)
 
@@ -1695,8 +1702,12 @@ list(APPEND
 list(APPEND post_build_byproducts ${KERNEL_MAP_NAME})
 
 # Use ';' as separator to get proper space in resulting command.
-set(gap_fill_prop "$<TARGET_PROPERTY:bintools,elfconvert_flag_gapfill>")
-set(gap_fill "$<$<BOOL:${gap_fill_prop}>:${gap_fill_prop}${CONFIG_BUILD_GAP_FILL_PATTERN}>")
+# Ignore gapfill for RX target as some RX toolchains generate wrong output image when running
+# gapfill for binary format.
+if(NOT CONFIG_RX)
+  set(gap_fill_prop "$<TARGET_PROPERTY:bintools,elfconvert_flag_gapfill>")
+  set(gap_fill "$<$<BOOL:${gap_fill_prop}>:${gap_fill_prop}${CONFIG_BUILD_GAP_FILL_PATTERN}>")
+endif()
 
 if(CONFIG_OUTPUT_PRINT_MEMORY_USAGE)
   target_link_libraries(${logical_target_for_zephyr_elf} $<TARGET_PROPERTY:linker,memusage>)
@@ -1899,10 +1910,13 @@ if(CONFIG_BUILD_OUTPUT_S19)
 endif()
 
 if(CONFIG_OUTPUT_DISASSEMBLY)
-if(CONFIG_OUTPUT_DISASSEMBLE_ALL)
+  if(CONFIG_OUTPUT_DISASSEMBLE_ALL)
     set(disassembly_type "$<TARGET_PROPERTY:bintools,disassembly_flag_all>")
-  elseif (CONFIG_OUTPUT_DISASSEMBLY_WITH_SOURCE)
+  elseif(CONFIG_OUTPUT_DISASSEMBLY_WITH_SOURCE)
     set(disassembly_type "$<TARGET_PROPERTY:bintools,disassembly_flag_inline_source>")
+  endif()
+  if(CONFIG_OUTPUT_DISASSEMBLY_NO_ALIASES)
+    list(APPEND disassembly_type "$<TARGET_PROPERTY:bintools,disassembly_flag_no_aliases>")
   endif()
   list(APPEND
     post_build_commands
