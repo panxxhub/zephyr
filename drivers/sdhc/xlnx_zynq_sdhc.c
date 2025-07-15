@@ -679,9 +679,11 @@ static int zynq_sdhc_init_xfr(const struct device *dev, struct sdhc_data *data, 
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_BLOCK_GAP)) {
 		/* Set an interrupt at the block gap */
-		zynq_sdhc_write8(dev, XSDPS_BLK_GAP_CTRL_OFFSET, 1u);
+		SET_BITS(regs->block_gap_ctrl, ZYNQ_SDHC_HOST_BLOCK_GAP_LOC,
+			 ZYNQ_SDHC_HOST_BLOCK_GAP_MASK, 1);
 	} else {
-		zynq_sdhc_write8(dev, XSDPS_BLK_GAP_CTRL_OFFSET, 0u);
+		SET_BITS(regs->block_gap_ctrl, ZYNQ_SDHC_HOST_BLOCK_GAP_LOC,
+			 ZYNQ_SDHC_HOST_BLOCK_GAP_MASK, 0);
 	}
 
 	/* Set data timeout time */
@@ -760,7 +762,8 @@ static int wait_xfr_complete(const struct device *dev, uint32_t time_out)
 	return ret;
 }
 
-static enum zynq_sdhc_resp_type zynq_sdhc_decode_resp_type(enum sd_rsp_type type)
+static enum zynq_sdhc_resp_type zynq_sdhc_decode_resp_type(enum sd_rsp_type type, uint8_t slottype,
+							   uint32_t opcode)
 {
 	enum zynq_sdhc_resp_type resp_type = ZYNQ_SDHC_HOST_RESP_NONE;
 	// we only take the lower 4 bits, the upper 4 bits is used for spi mode
@@ -783,10 +786,18 @@ static enum zynq_sdhc_resp_type zynq_sdhc_decode_resp_type(enum sd_rsp_type type
 		resp_type = ZYNQ_SDHC_HOST_RESP_LEN_136;
 		break;
 
-	case SD_RSP_TYPE_R5b:
 	case SD_RSP_TYPE_R6:
 	case SD_RSP_TYPE_R7:
+		resp_type = ZYNQ_SDHC_HOST_RESP_LEN_48;
+		if (slottype == XLNX_SDHC_EMMC_SLOT) {
+			resp_type = ZYNQ_SDHC_HOST_INVAL_HOST_RESP;
+		}
+		break;
 	default:
+		resp_type = ZYNQ_SDHC_HOST_INVAL_HOST_RESP; // R5b
+	}
+
+	if (slottype == XLNX_SDHC_EMMC_SLOT && opcode == SD_APP_CMD) {
 		resp_type = ZYNQ_SDHC_HOST_INVAL_HOST_RESP;
 	}
 
@@ -922,12 +933,10 @@ static int zynq_sdhc_host_send_cmd(const struct device *dev,
 	volatile struct zynq_sdhc_reg *regs = (volatile struct zynq_sdhc_reg *)reg_base;
 	struct zynq_sdhc_data *sdhc = dev->data;
 	struct sdhc_command *sdhc_cmd = config->sdhc_cmd;
-	enum zynq_sdhc_resp_type resp_type_select =
-		zynq_sdhc_decode_resp_type(sdhc_cmd->response_type);
+	enum zynq_sdhc_resp_type resp_type_select = zynq_sdhc_decode_resp_type(
+		sdhc_cmd->response_type, sdhc->slot_type, sdhc_cmd->opcode);
 	uint32_t cmd_reg;
 	int ret;
-
-	LOG_DBG("");
 
 	/* Check if CMD line is available */
 	if (regs->present_state & ZYNQ_SDHC_HOST_PSTATE_CMD_INHIBIT) {
@@ -946,7 +955,7 @@ static int zynq_sdhc_host_send_cmd(const struct device *dev,
 	}
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
-		k_event_clear(&sdhc->irq_event, ZYNQ_SDHC_HOST_CMD_COMPLETE);
+		k_event_clear(&sdhc->irq_event, XSDPS_NORM_INTR_ALL_MASK & (~XSDPS_INTR_CARD_MASK));
 	}
 	zynq_sdhc_write32(dev, XSDPS_ARGMT_OFFSET, sdhc_cmd->arg);
 
@@ -1132,14 +1141,14 @@ static int write_data_port(const struct device *dev, struct sdhc_data *sdhc)
 	return wait_xfr_complete(dev, sdhc->timeout_ms);
 }
 
-static int zynq_sdhc_stop_transfer(const struct device *dev)
+static int zynq_sdhc_stop_transfer(const struct device *dev, bool is_multi_block)
 {
 	struct zynq_sdhc_data *emmc = dev->data;
 	struct sdhc_command hdc_cmd = {0};
 	struct zynq_sdhc_cmd_config cmd;
 
 	hdc_cmd.arg = emmc->rca << ZYNQ_SDHC_HOST_RCA_SHIFT;
-	hdc_cmd.response_type = SD_RSP_TYPE_R1;
+	hdc_cmd.response_type = SD_RSP_TYPE_R1b;
 	hdc_cmd.timeout_ms = 1000;
 
 	cmd.sdhc_cmd = &hdc_cmd;
@@ -1149,7 +1158,11 @@ static int zynq_sdhc_stop_transfer(const struct device *dev)
 	cmd.idx_check_en = false;
 	cmd.crc_check_en = false;
 
-	return zynq_sdhc_host_send_cmd(dev, &cmd);
+	if (is_multi_block) {
+		return zynq_sdhc_host_send_cmd(dev, &cmd);
+	} else {
+		return 0;
+	}
 }
 
 static int zynq_sdhc_xfr(const struct device *dev, struct sdhc_command *cmd, struct sdhc_data *data,
@@ -1200,7 +1213,7 @@ static int zynq_sdhc_xfr(const struct device *dev, struct sdhc_command *cmd, str
 	}
 
 	if (!IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_AUTO_STOP)) {
-		zynq_sdhc_stop_transfer(dev);
+		zynq_sdhc_stop_transfer(dev, data->blocks > 1);
 	}
 	return ret;
 }
@@ -1245,14 +1258,20 @@ static int zynq_sdhc_request(const struct device *dev, struct sdhc_command *cmd,
 	if (data) {
 		switch (cmd->opcode) {
 		case SD_WRITE_SINGLE_BLOCK:
-		case SD_WRITE_MULTIPLE_BLOCK:
 			LOG_DBG("SD_WRITE_SINGLE_BLOCK");
+			ret = zynq_sdhc_xfr(dev, cmd, data, false);
+			break;
+		case SD_WRITE_MULTIPLE_BLOCK:
+			LOG_DBG("SD_WRITE_MULTIPLE_BLOCK");
 			ret = zynq_sdhc_xfr(dev, cmd, data, false);
 			break;
 
 		case SD_READ_SINGLE_BLOCK:
-		case SD_READ_MULTIPLE_BLOCK:
 			LOG_DBG("SD_READ_SINGLE_BLOCK");
+			ret = zynq_sdhc_xfr(dev, cmd, data, true);
+			break;
+		case SD_READ_MULTIPLE_BLOCK:
+			LOG_DBG("SD_READ_MULTIPLE_BLOCK");
 			ret = zynq_sdhc_xfr(dev, cmd, data, true);
 			break;
 
@@ -1483,7 +1502,7 @@ static void zynq_sdhc_isr(const struct device *dev)
 	}
 
 	if (regs->err_int_stat) {
-		LOG_ERR("err int:%x", regs->err_int_stat);
+		LOG_ERR("in isr err int:%x", regs->err_int_stat);
 		if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
 			k_event_post(&emmc->irq_event, ERR_INTR_STATUS_EVENT(regs->err_int_stat));
 		}
@@ -1502,7 +1521,7 @@ static void zynq_sdhc_isr(const struct device *dev)
 	}
 
 	if (regs->adma_err_stat) {
-		LOG_ERR("adma err:%x", regs->adma_err_stat);
+		LOG_ERR("in isr adma err:%x", regs->adma_err_stat);
 	}
 }
 
@@ -1579,7 +1598,7 @@ static const struct sdhc_driver_api zynq_sdhc_api = {
 BUILD_ASSERT(DT_NODE_HAS_STATUS(DT_NODELABEL(ocm_high), okay));
 #define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
 	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32)                      \
-		__attribute__((section("OCM_HIGH")));
+	__attribute__((section("OCM_HIGH")));
 #else
 #define XLNX_SDHC_ADMA_DESC_DEFINE(port)                                                           \
 	static adma_desc_t adma_desc_tbl_##port[ADMA_DESC_SIZE] __aligned(32);
