@@ -109,6 +109,8 @@ enum net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_RTS_THRESHOLD,
 	/** Configure AP parameter */
 	NET_REQUEST_WIFI_CMD_AP_CONFIG_PARAM,
+	/** Configure STA parameter */
+	NET_REQUEST_WIFI_CMD_CONFIG_PARAM,
 	/** DPP actions */
 	NET_REQUEST_WIFI_CMD_DPP,
 	/** BSS transition management query */
@@ -133,6 +135,8 @@ enum net_request_wifi_cmd {
 	NET_REQUEST_WIFI_CMD_CANDIDATE_SCAN,
 	/** AP WPS config */
 	NET_REQUEST_WIFI_CMD_AP_WPS_CONFIG,
+	/** Configure BSS maximum idle period */
+	NET_REQUEST_WIFI_CMD_BSS_MAX_IDLE_PERIOD,
 	/** @cond INTERNAL_HIDDEN */
 	NET_REQUEST_WIFI_CMD_MAX
 	/** @endcond */
@@ -267,6 +271,12 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_RTS_THRESHOLD);
 
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_AP_CONFIG_PARAM);
 
+/** Request a Wi-Fi STA parameters configuration */
+#define NET_REQUEST_WIFI_CONFIG_PARAM         \
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_CONFIG_PARAM)
+
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_CONFIG_PARAM);
+
 #ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_DPP
 /** Request a Wi-Fi DPP operation */
 #define NET_REQUEST_WIFI_DPP			\
@@ -316,6 +326,11 @@ NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_START_ROAMING);
 	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_NEIGHBOR_REP_COMPLETE)
 
 NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_NEIGHBOR_REP_COMPLETE);
+
+#define NET_REQUEST_WIFI_BSS_MAX_IDLE_PERIOD				\
+	(NET_WIFI_BASE | NET_REQUEST_WIFI_CMD_BSS_MAX_IDLE_PERIOD)
+
+NET_MGMT_DEFINE_REQUEST_HANDLER(NET_REQUEST_WIFI_BSS_MAX_IDLE_PERIOD);
 
 /** @cond INTERNAL_HIDDEN */
 
@@ -788,7 +803,7 @@ struct wifi_iface_status {
 	/** is TWT capable? */
 	bool twt_capable;
 	/** The current 802.11 PHY TX data rate (in Mbps) */
-	int current_phy_tx_rate;
+	float current_phy_tx_rate;
 };
 
 /** @brief Wi-Fi power save parameters */
@@ -1139,6 +1154,14 @@ struct wifi_ap_config_params {
 	/** Parameter used for setting VHT capabilities */
 	char vht_capab[WIFI_AP_IEEE_80211_CAPAB_MAX_LEN + 1];
 #endif
+};
+
+/** @brief Wi-Fi STA configuration parameter */
+struct wifi_config_params {
+	/** Parameter used to identify the different STA parameters */
+	enum wifi_config_param type;
+	/** Parameter used for opportunistic key caching */
+	int okc;
 };
 
 #ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_DPP
@@ -1625,7 +1648,14 @@ struct wifi_mgmt_ops {
 	 * @return 0 if ok, < 0 if error
 	 */
 	int (*ap_config_params)(const struct device *dev, struct wifi_ap_config_params *params);
-
+	/** Configure STA parameter
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param params STA mode parameter configuration parameter info
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*config_params)(const struct device *dev, struct wifi_config_params *params);
 #ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_DPP
 	/** Dispatch DPP operations by action enum, with or without arguments in string format
 	 *
@@ -1685,6 +1715,15 @@ struct wifi_mgmt_ops {
 	 * @return 0 if ok, < 0 if error
 	 */
 	int (*start_11r_roaming)(const struct device *dev);
+	/** Set BSS max idle period
+	 *
+	 * @param dev Pointer to the device structure for the driver instance.
+	 * @param BSS max idle period value
+	 *
+	 * @return 0 if ok, < 0 if error
+	 */
+	int (*set_bss_max_idle_period)(const struct device *dev,
+			unsigned short bss_max_idle_period);
 };
 
 /** Wi-Fi management offload API */

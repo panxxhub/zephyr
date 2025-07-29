@@ -34,6 +34,12 @@ Device Drivers and Devicetree
 
 .. zephyr-keep-sorted-start re(^\w)
 
+Sensors
+=======
+
+* Nodes with compatible property :dtcompatible:`invensense,icm42688` now additionally need to also
+  include :dtcompatible:`invensense,icm4268x` in order to work.
+
 Stepper
 =======
 
@@ -62,6 +68,13 @@ Networking
 
 .. zephyr-keep-sorted-stop
 
+Display
+*******
+
+* The RGB565 and BGR565 pixel formats were used interchangeably in the display sample.
+  This has now been fixed. Boards and applications that were tested or developed based on the
+  previous sample may be affected by this change (see :github:`79996` for more information).
+
 Other subsystems
 ****************
 
@@ -71,6 +84,9 @@ Other subsystems
 
 Modules
 *******
+
+* The TinyCrypt library was removed as the upstream version is no longer maintained.
+  PSA Crypto API is now the recommended cryptographic library for Zephyr.
 
 Architectures
 *************

@@ -1528,13 +1528,26 @@ int supplicant_11k_cfg(const struct device *dev, struct wifi_11k_params *params)
 
 int supplicant_11k_neighbor_request(const struct device *dev, struct wifi_11k_params *params)
 {
+	struct wpa_supplicant *wpa_s;
 	int ssid_len;
 
-	if (params == NULL) {
+	wpa_s = get_wpa_s_handle(dev);
+	if (!wpa_s) {
+		wpa_printf(MSG_ERROR, "Device %s not found", dev->name);
 		return -1;
 	}
 
-	ssid_len = strlen(params->ssid);
+	if (wpa_s->reassociate || (wpa_s->wpa_state >= WPA_AUTHENTICATING &&
+	    wpa_s->wpa_state < WPA_COMPLETED)) {
+		wpa_printf(MSG_INFO, "Reassociation is in progress, skip");
+		return 0;
+	}
+
+	if (params) {
+		ssid_len = strlen(params->ssid);
+	} else {
+		ssid_len = 0;
+	}
 
 	if (ssid_len > 0) {
 		if (ssid_len > WIFI_SSID_MAX_LEN) {
@@ -1800,9 +1813,25 @@ int supplicant_bss_ext_capab(const struct device *dev, int capab)
 
 int supplicant_legacy_roam(const struct device *dev)
 {
+	struct wpa_supplicant *wpa_s;
 	int ret = -1;
 
 	k_mutex_lock(&wpa_supplicant_mutex, K_FOREVER);
+
+	wpa_s = get_wpa_s_handle(dev);
+	if (!wpa_s) {
+		ret = -1;
+		wpa_printf(MSG_ERROR, "Interface %s not found", dev->name);
+		goto out;
+	}
+
+	if (wpa_s->reassociate || (wpa_s->wpa_state >= WPA_AUTHENTICATING &&
+	    wpa_s->wpa_state < WPA_COMPLETED)) {
+		wpa_printf(MSG_INFO, "Reassociation is in progress, skip");
+		ret = 0;
+		goto out;
+	}
+
 	if (!wpa_cli_cmd_v("scan")) {
 		goto out;
 	}
@@ -1813,6 +1842,19 @@ out:
 	k_mutex_unlock(&wpa_supplicant_mutex);
 
 	return ret;
+}
+
+int supplicant_set_bss_max_idle_period(const struct device *dev,
+				       unsigned short bss_max_idle_period)
+{
+	const struct wifi_mgmt_ops *const wifi_mgmt_api = get_wifi_mgmt_api(dev);
+
+	if (!wifi_mgmt_api || !wifi_mgmt_api->set_bss_max_idle_period) {
+		wpa_printf(MSG_ERROR, "set_bss_max_idle_period is not supported");
+		return -ENOTSUP;
+	}
+
+	return wifi_mgmt_api->set_bss_max_idle_period(dev, bss_max_idle_period);
 }
 
 #ifdef CONFIG_WIFI_NM_WPA_SUPPLICANT_WNM
@@ -1827,6 +1869,13 @@ int supplicant_btm_query(const struct device *dev, uint8_t reason)
 	if (!wpa_s) {
 		ret = -1;
 		wpa_printf(MSG_ERROR, "Interface %s not found", dev->name);
+		goto out;
+	}
+
+	if (wpa_s->reassociate || (wpa_s->wpa_state >= WPA_AUTHENTICATING &&
+	    wpa_s->wpa_state < WPA_COMPLETED)) {
+		wpa_printf(MSG_INFO, "Reassociation is in progress, skip");
+		ret = 0;
 		goto out;
 	}
 
@@ -2369,3 +2418,31 @@ int supplicant_dpp_dispatch(const struct device *dev, struct wifi_dpp_params *pa
 	return 0;
 }
 #endif /* CONFIG_WIFI_NM_WPA_SUPPLICANT_DPP */
+
+int supplicant_config_params(const struct device *dev, struct wifi_config_params *params)
+{
+	struct wpa_supplicant *wpa_s;
+	int ret = 0;
+
+	k_mutex_lock(&wpa_supplicant_mutex, K_FOREVER);
+
+	wpa_s = get_wpa_s_handle(dev);
+	if (!wpa_s) {
+		ret = -ENOENT;
+		wpa_printf(MSG_ERROR, "Device %s not found", dev->name);
+		goto out;
+	}
+
+	if (params->type & WIFI_CONFIG_PARAM_OKC) {
+		if (!wpa_cli_cmd_v("set okc %d", params->okc)) {
+			ret = -EINVAL;
+			wpa_printf(MSG_ERROR, "Failed to set OKC");
+			goto out;
+		}
+		wpa_printf(MSG_DEBUG, "Set OKC: %d", params->okc);
+	}
+
+out:
+	k_mutex_unlock(&wpa_supplicant_mutex);
+	return ret;
+}

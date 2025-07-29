@@ -3642,7 +3642,7 @@ Networking:
     - jukkar
     - rlubos
   collaborators:
-    - mrodgers-witekio
+    - matt-rodgers
   files:
     - doc/connectivity/networking/api/http*.rst
     - include/zephyr/net/http/
@@ -3875,6 +3875,7 @@ Open AMP:
     - iuliana-prodan
   collaborators:
     - uLipe
+    - arnopo
   files:
     - lib/open-amp/
     - samples/subsys/ipc/openamp/
@@ -5296,9 +5297,16 @@ West:
   status: maintained
   maintainers:
     - anangl
+    - nika-nordic
+    - masz-nordic
   collaborators:
     - hubertmis
     - nordic-krch
+    - kl-cruz
+    - magp-nordic
+    - jaz1-nordic
+    - mif1-nordic
+    - adamkondraciuk
   files:
     - modules/hal_nordic/
   labels:
@@ -5307,6 +5315,9 @@ West:
 "West project: hal_nuvoton":
   status: maintained
   maintainers:
+    - cyliangtw
+    - ccli8
+  collaborators:
     - ssekar15
   files:
     - modules/Kconfig.nuvoton
@@ -5318,11 +5329,16 @@ West:
   maintainers:
     - dleach02
     - mmahadevan108
-  collaborators:
     - decsny
+  collaborators:
     - manuargue
     - PetervdPerk-NXP
     - bperseghetti
+    - JiafeiPan
+    - ZhaoxiangJin
+    - EmilioCBen
+    - MaochenWang1
+    - axelnxp
   files:
     - modules/hal_nxp/
   labels:
@@ -5773,13 +5789,6 @@ West:
     - "area: Serialization"
   tests:
     - thrift
-
-"West project: tinycrypt":
-  status: odd fixes
-  files:
-    - modules/Kconfig.tinycrypt
-  labels:
-    - "area: Crypto / RNG"
 
 "West project: trusted-firmware-a":
   status: maintained

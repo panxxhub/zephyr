@@ -200,7 +200,7 @@ manifest:
       groups:
         - hal
     - name: hal_nordic
-      revision: 9587b1dcb83d24ab74e89837843a5f7d573f7059
+      revision: 2f5d4e5868ab573eac932fa4bc142565073c3c04
       path: modules/hal/nordic
       groups:
         - hal
@@ -210,7 +210,7 @@ manifest:
       groups:
         - hal
     - name: hal_nxp
-      revision: 7a52cbb7cb56db3a276cbd617db3ea7cc3435d12
+      revision: 1255d8b0da1e836d71531187e8b6c1100172672a
       path: modules/hal/nxp
       groups:
         - hal
@@ -231,7 +231,7 @@ manifest:
         - hal
     - name: hal_rpi_pico
       path: modules/hal/rpi_pico
-      revision: 7b57b24588797e6e7bf18b6bda168e6b96374264
+      revision: 5a981c7c29e3846646549a1902183684f0147e1d
       groups:
         - hal
     - name: hal_silabs
@@ -281,7 +281,7 @@ manifest:
         - hal
     - name: hostap
       path: modules/lib/hostap
-      revision: e942f86e865d5b24bbbe8b0c333f030cbbe62bfb
+      revision: 7fda615fcccd577af7339b4198400c39ac14f8f8
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
       path: modules/lib/liblc3
@@ -331,7 +331,7 @@ manifest:
       revision: 6e5961223f81aa2707c555db138819a5c1b7942c
       path: modules/bsim_hw_models/nrf_hw_models
     - name: nrf_wifi
-      revision: 5f59c2336c69f28ae83f93812a1d726f9fceabfe
+      revision: 787eea1a3c8dd13c86214e204a919e6f9bcebf91
       path: modules/lib/nrf_wifi
     - name: open-amp
       revision: c30a6d8b92fcebdb797fc1a7698e8729e250f637
@@ -352,11 +352,6 @@ manifest:
       path: modules/debug/segger
       groups:
         - debug
-    - name: tinycrypt
-      revision: 1012a3ebee18c15ede5efc8332ee2fc37817670f
-      path: modules/crypto/tinycrypt
-      groups:
-        - crypto
     - name: trusted-firmware-a
       revision: 713ffbf96c5bcbdeab757423f10f73eb304eff07
       path: modules/tee/tf-a/trusted-firmware-a
