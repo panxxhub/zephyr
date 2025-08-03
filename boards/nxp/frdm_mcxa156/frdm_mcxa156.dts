@@ -25,6 +25,7 @@
 		mcuboot-button0 = &user_button_2;
 		watchdog0 = &wwdt0;
 		ambient-temp0 = &p3t1755;
+		die-temp0 = &temp0;
 	};
 
 	chosen {
@@ -243,6 +244,13 @@ zephyr_mipi_dbi_parallel: &flexio0_lcd {
 };
 
 &lptmr0 {
+	status = "okay";
+};
+
+/*
+ * Uses OS timer as the kernel timer
+ */
+&ostimer0 {
 	status = "okay";
 };
 

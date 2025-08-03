@@ -75,6 +75,20 @@ New APIs and options
 
 .. zephyr-keep-sorted-start re(^\* \w)
 
+* Architectures
+
+  * :kconfig:option:`CONFIG_SRAM_SW_ISR_TABLE`
+
+* Bluetooth
+
+  * Audio
+
+    * :c:struct:`bt_audio_codec_cfg` now contains a target_latency and a target_phy option
+
+* Power management
+
+   * :c:func:`pm_device_driver_deinit`
+
 * Settings
 
    * :kconfig:option:`CONFIG_SETTINGS_TFM_ITS`
