@@ -154,7 +154,7 @@ manifest:
       groups:
         - hal
     - name: hal_ambiq
-      revision: 84ccbfc0b6041ba9f5688337c78bad99da5448ce
+      revision: e9212585cd7c4e1cc189f7d530b8a028d5e8ecf5
       path: modules/hal/ambiq
       groups:
         - hal
@@ -169,7 +169,7 @@ manifest:
       groups:
         - hal
     - name: hal_espressif
-      revision: f3453bdeced28642424692aae32cce4eec3f2d7f
+      revision: 883b9e84c86bab3ffef8572330cdaad8c1b289bc
       path: modules/hal/espressif
       west-commands: west/west-commands.yml
       groups:
@@ -195,7 +195,7 @@ manifest:
       groups:
         - hal
     - name: hal_microchip
-      revision: 32a79d481c056b2204a5701d5a5799f9e5130dd7
+      revision: 415c92d3c8bd3d62db35980729df42be1f178023
       path: modules/hal/microchip
       groups:
         - hal
@@ -235,7 +235,7 @@ manifest:
       groups:
         - hal
     - name: hal_silabs
-      revision: 190a144a16bed9a938a94543ed5bbc70c0552e0f
+      revision: 95e957408ddd967ac4b69dc32096bd3793abb76c
       path: modules/hal/silabs
       groups:
         - hal
@@ -328,7 +328,7 @@ manifest:
       groups:
         - tools
     - name: nrf_hw_models
-      revision: 8b6001d6bdd9e2c8bb858fdb26f696f6d5f73db5
+      revision: 40403f5f2805cca210d2a47c8717d89c4e816cda
       path: modules/bsim_hw_models/nrf_hw_models
     - name: nrf_wifi
       revision: 787eea1a3c8dd13c86214e204a919e6f9bcebf91
