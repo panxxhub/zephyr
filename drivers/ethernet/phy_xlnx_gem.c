@@ -186,9 +186,9 @@ static void phy_xlnx_gem_mdio_write(uint32_t base_addr, uint8_t phy_addr, uint8_
 static uint16_t phy_xlnx_gem_motorcomm_ext_mdio_read(uint32_t base_addr, uint8_t phy_addr,
 						     uint16_t reg_addr)
 {
-	// write ext offset 
-	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
-				PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, reg_addr);
+	// write ext offset
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER,
+				reg_addr);
 	// read ext register
 	return phy_xlnx_gem_mdio_read(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_DATA_REGISTER);
 }
@@ -202,20 +202,16 @@ static uint16_t phy_xlnx_gem_motorcomm_ext_mdio_read(uint32_t base_addr, uint8_t
  * @param value     16-bit data word to be written to the target register
  */
 static void phy_xlnx_gem_motorcomm_ext_mdio_write(uint32_t base_addr, uint8_t phy_addr,
-					     uint16_t reg_addr, uint16_t value)
+						  uint16_t reg_addr, uint16_t value)
 {
-	// write ext offset 
-	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
-				PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, reg_addr);
+	// write ext offset
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER,
+				reg_addr);
 	// write ext register
-	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
-				PHY_MOTORCOMM_YT_EXT_DATA_REGISTER, value);
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_DATA_REGISTER, value);
 
-	phy_xlnx_gem_mdio_write(base_addr, phy_addr,
-				PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, 0);
-	
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, 0);
 }
-
 
 static void phy_xlnx_gem_motorcomm_yt_reset(const struct device *dev)
 {
@@ -278,9 +274,8 @@ static void phy_xlnx_gem_motorcomm_yt_cfg(const struct device *dev)
 	/**
 	 * 3. configure the interrupt control/status register
 	 */
-	phy_data = PHY_MRVL_COPPER_SPEED_CHANGED_INT_BIT | PHY_MRVL_COPPER_DUPLEX_CHANGED_INT_BIT |
-		   PHY_MRVL_COPPER_AUTONEG_COMPLETED_INT_BIT |
-		   PHY_MRVL_COPPER_LINK_STATUS_CHANGED_INT_BIT;
+	phy_data = PHY_MOTORCOMM_YT_INT_LINK_UP_BIT | PHY_MOTORCOMM_YT_INT_LINK_DOWN_BIT;
+		
 	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
 				PHY_MRVL_COPPER_INT_ENABLE_REGISTER, phy_data);
 	phy_xlnx_gem_motorcomm_yt_reset(dev);
@@ -289,16 +284,16 @@ static void phy_xlnx_gem_motorcomm_yt_cfg(const struct device *dev)
 	 * Clear the interrupt status register before advertising the
 	 * supported link speed(s).
 	 */
-	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
-					  PHY_MRVL_COPPER_INT_STATUS_REGISTER);
+	phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr, PHY_MRVL_COPPER_INT_STATUS_REGISTER);
 
 	// phy_data = phy_xlnx_gem_mdio_read()
 
-	phy_data = PHY_MRVL_ADV_SELECTOR_802_3;
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr, PHY_MRVL_COPPER_AUTONEG_ADV_REGISTER);
+	phy_data &= ~(PHY_MRVL_ADV_100BASET_FDX_BIT | PHY_MRVL_ADV_10BASET_FDX_BIT | PHY_MRVL_ADV_100BASET_HDX_BIT | PHY_MRVL_ADV_10BASET_HDX_BIT);
+
 	phy_data_gbit = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					       PHY_MRVL_1000BASET_CONTROL_REGISTER);
-	phy_data_gbit &= ~PHY_MRVL_ADV_1000BASET_FDX_BIT;
-	phy_data_gbit &= ~PHY_MRVL_ADV_1000BASET_HDX_BIT;
+	phy_data_gbit &= ~(PHY_MRVL_ADV_1000BASET_FDX_BIT| PHY_MRVL_ADV_1000BASET_HDX_BIT);
 
 	if (dev_conf->enable_fdx) {
 		if (dev_conf->max_link_speed == LINK_1GBIT) {
@@ -400,7 +395,7 @@ static uint16_t phy_xlnx_gem_motorcomm_yt_poll_sc(const struct device *dev)
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
 	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
 	uint16_t phy_data;
-	uint16_t phy_status = 0;
+	uint16_t phy_status=0;
 
 	/*
 	 * PHY status change detection is implemented by reading the
@@ -415,24 +410,19 @@ static uint16_t phy_xlnx_gem_motorcomm_yt_poll_sc(const struct device *dev)
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_MRVL_COPPER_INT_STATUS_REGISTER);
 
-	if ((phy_data & (1 << 15)) != 0) {
+	if ((phy_data & PHY_MOTORCOMM_YT_INT_AUTONEG_COMPLETE_BIT) != 0) {
 		phy_status |= PHY_XLNX_GEM_EVENT_AUTONEG_COMPLETE;
 	}
-	if (((phy_data & PHY_MRVL_COPPER_DUPLEX_CHANGED_INT_BIT) != 0) ||
-	    ((phy_data & PHY_MRVL_COPPER_LINK_STATUS_CHANGED_INT_BIT) != 0)) {
+	if (((phy_data & PHY_MOTORCOMM_YT_INT_LINK_UP_BIT) != 0) || 
+	    ((phy_data & PHY_MOTORCOMM_YT_INT_LINK_DOWN_BIT) != 0)) {
 		phy_status |= PHY_XLNX_GEM_EVENT_LINK_STATE_CHANGED;
 	}
-	if ((phy_data & PHY_MRVL_COPPER_SPEED_CHANGED_INT_BIT) != 0) {
+	if ((phy_data & PHY_MOTORCOMM_YT_INT_SPEED_CHANGED_INT_BIT) != 0) {
 		phy_status |= PHY_XLNX_GEM_EVENT_LINK_SPEED_CHANGED;
 	}
-
 	/*
-	 * Clear the status register, preserve reserved bit [3] as indicated
-	 * by the datasheet
+	 * see ieee 802.3 clause 22, register 0x01
 	 */
-	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
-				PHY_MRVL_COPPER_INT_STATUS_REGISTER, (phy_data & 0x8));
-
 	return phy_status;
 }
 
@@ -450,6 +440,7 @@ static uint8_t phy_xlnx_gem_motorcomm_yt_poll_lsts(const struct device *dev)
 
 	return ((phy_data & PHY_MOTORCOMM_YT_BASIC_STATUS_LINK_STATUS_BIT) != 0);
 }
+
 
 static enum eth_xlnx_link_speed phy_xlnx_gem_motorcomm_yt_poll_lspd(const struct device *dev)
 {

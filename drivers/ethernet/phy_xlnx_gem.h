@@ -202,6 +202,11 @@
 #define PHY_MOTORCOMM_YT_ADV_10BASET_FDX_BIT                BIT(6)
 #define PHY_MOTORCOMM_YT_ADV_10BASET_HDX_BIT                BIT(5)
 
+#define PHY_MOTORCOMM_YT_INT_LINK_UP_BIT                    BIT(10)
+#define PHY_MOTORCOMM_YT_INT_LINK_DOWN_BIT                  BIT(11)
+#define PHY_MOTORCOMM_YT_INT_SPEED_CHANGED_INT_BIT          BIT(14)
+#define PHY_MOTORCOMM_YT_INT_AUTONEG_COMPLETE_BIT           BIT(15)
+
 /**
  * @brief Vendor-specific PHY management function pointer table struct
  *
