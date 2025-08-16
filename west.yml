@@ -122,7 +122,7 @@ manifest:
       groups:
         - hal
     - name: cmsis-dsp
-      revision: d80a49b2bb186317dc1db4ac88da49c0ab77e6e7
+      revision: 2c014e93d75c4896df57f072b3f7d5d06e37f254
       path: modules/lib/cmsis-dsp
     - name: cmsis-nn
       revision: e9328d612ea3ea7d0d210d3ac16ea8667c01abdd
@@ -139,7 +139,7 @@ manifest:
       groups:
         - tools
     - name: fatfs
-      revision: 16245c7c41d2b79e74984f49b5202551786b8a9b
+      revision: 18ad3932f7f18b59abf99cb2f8a6cd5d6746cfe0
       path: modules/fs/fatfs
       groups:
         - fs
@@ -169,7 +169,7 @@ manifest:
       groups:
         - hal
     - name: hal_espressif
-      revision: 883b9e84c86bab3ffef8572330cdaad8c1b289bc
+      revision: aa5443a4eea6a49d58f808f41bceb5de19678fa6
       path: modules/hal/espressif
       west-commands: west/west-commands.yml
       groups:
@@ -195,7 +195,7 @@ manifest:
       groups:
         - hal
     - name: hal_microchip
-      revision: 415c92d3c8bd3d62db35980729df42be1f178023
+      revision: 2c5eb6b7b9ef3a442ff9d9536fbc63b2028c2d0e
       path: modules/hal/microchip
       groups:
         - hal
@@ -210,7 +210,7 @@ manifest:
       groups:
         - hal
     - name: hal_nxp
-      revision: 2de68b601cc95417466707f1b99149820b0556ec
+      revision: 10f1faf465440e48ecad1ab2b5adee8c72f41157
       path: modules/hal/nxp
       groups:
         - hal
@@ -226,7 +226,7 @@ manifest:
         - hal
     - name: hal_renesas
       path: modules/hal/renesas
-      revision: 1ac809b55389ba3ce09dd1fbf2477a034134d112
+      revision: d20c5b895f2eadb16abfcf3e7b3db06bfd0b0b60
       groups:
         - hal
     - name: hal_rpi_pico
@@ -235,7 +235,7 @@ manifest:
       groups:
         - hal
     - name: hal_silabs
-      revision: 95e957408ddd967ac4b69dc32096bd3793abb76c
+      revision: 13343bccf850eb7b6541f6e71a8d2a880209850b
       path: modules/hal/silabs
       groups:
         - hal
@@ -260,7 +260,7 @@ manifest:
       groups:
         - hal
     - name: hal_ti
-      revision: 9c687784a13581c8b7574ccae0b93b35be903fcd
+      revision: 391f7cb740b59c077ddd49411f043161597b10aa
       path: modules/hal/ti
       groups:
         - hal
@@ -293,6 +293,9 @@ manifest:
       path: modules/hal/libmetal
       groups:
         - hal
+    - name: libsbc
+      revision: 8e1beda02acb8972e29e6edbb423f7cafe16e445
+      path: modules/lib/libsbc
     - name: littlefs
       path: modules/fs/littlefs
       groups:
@@ -310,7 +313,7 @@ manifest:
       groups:
         - crypto
     - name: mcuboot
-      revision: 461e060e8687c9a75074effcc61d7f68c5112cfd
+      revision: bf5321bb6906e9e75b4c85b7c98b71c06ae52e90
       path: bootloader/mcuboot
       groups:
         - bootloader
@@ -323,7 +326,7 @@ manifest:
       revision: 7307ce399b81ddcb3c3a5dc862c52d4754328d38
       path: modules/lib/nanopb
     - name: net-tools
-      revision: 64bf49ad9b6d1d1f9d24bf8b94d82d9bcb52f61a
+      revision: 2750d71e28e48865a6fd8a10413f978bb216c59e
       path: tools/net-tools
       groups:
         - tools
