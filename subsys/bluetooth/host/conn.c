@@ -137,7 +137,7 @@ static struct bt_conn sco_conns[CONFIG_BT_MAX_SCO_CONN];
 #endif /* CONFIG_BT_CONN */
 
 #if defined(CONFIG_BT_CONN_TX)
-void frag_destroy(struct net_buf *buf);
+static void frag_destroy(struct net_buf *buf);
 
 /* Storage for fragments (views) into the upper layers' PDUs. */
 /* TODO: remove user-data requirements */
@@ -147,14 +147,14 @@ NET_BUF_POOL_FIXED_DEFINE(fragments, CONFIG_BT_CONN_FRAG_COUNT, 0,
 struct frag_md {
 	struct bt_buf_view_meta view_meta;
 };
-struct frag_md frag_md_pool[CONFIG_BT_CONN_FRAG_COUNT];
+static struct frag_md frag_md_pool[CONFIG_BT_CONN_FRAG_COUNT];
 
-struct frag_md *get_frag_md(struct net_buf *fragment)
+static struct frag_md *get_frag_md(struct net_buf *fragment)
 {
 	return &frag_md_pool[net_buf_id(fragment)];
 }
 
-void frag_destroy(struct net_buf *frag)
+static void frag_destroy(struct net_buf *frag)
 {
 	/* allow next view to be allocated (and unlock the parent buf) */
 	bt_buf_destroy_view(frag, &get_frag_md(frag)->view_meta);
@@ -872,30 +872,33 @@ static bool should_stop_tx(struct bt_conn *conn)
 
 void bt_conn_data_ready(struct bt_conn *conn)
 {
+	bool added;
+
 	LOG_DBG("DR");
 
-	/* The TX processor will call the `pull_cb` to get the buf */
-	if (!atomic_set(&conn->_conn_ready_lock, 1)) {
-		/* Attach a reference to the `bt_dev.le.conn_ready` list.
-		 *
-		 * This reference will be consumed when the conn is popped off
-		 * the list (in `get_conn_ready`).
-		 *
-		 * The `bt_dev.le.conn_ready` list is accessed by the tx_processor
-		 * which runs in a workqueue, but `bt_conn_data_ready` can be called
-		 * from different threads so we need to make sure that nothing will
-		 * trigger a thread switch while we are manipulating the list since
-		 * sys_slist_*() functions are not thread safe.
-		 */
-		bt_conn_ref(conn);
-		k_sched_lock();
-		sys_slist_append(&bt_dev.le.conn_ready,
-				 &conn->_conn_ready);
-		k_sched_unlock();
-		LOG_DBG("raised");
+	bt_conn_ref(conn);
+
+	/* This function is the only function which accesses conn_ready list  that can be called
+	 * from a preemptive thread context, therefore requires a critical section to ensure that
+	 * the conn_ready list is not modified while we are checking and appending to it.
+	 */
+	k_sched_lock();
+
+	if (!sys_slist_find(&bt_dev.le.conn_ready, &conn->_conn_ready, NULL)) {
+		sys_slist_append(&bt_dev.le.conn_ready, &conn->_conn_ready);
+
+		added = true;
 	} else {
-		LOG_DBG("already in list");
+		added = false;
 	}
+
+	k_sched_unlock();
+
+	if (!added) {
+		bt_conn_unref(conn);
+	}
+
+	LOG_DBG("Connection %p %s conn_ready list", conn, added ? "added to" : "already in");
 
 	/* Kick the TX processor */
 	bt_tx_irq_raise();
@@ -932,7 +935,7 @@ __maybe_unused static bool dont_have_methods(struct bt_conn *conn)
 		(conn->has_data == NULL);
 }
 
-struct bt_conn *get_conn_ready(void)
+static struct bt_conn *get_conn_ready(void)
 {
 	struct bt_conn *conn, *tmp;
 	sys_snode_t *prev = NULL;
@@ -977,7 +980,6 @@ struct bt_conn *get_conn_ready(void)
 			/* Move reference off the list */
 			__ASSERT_NO_MSG(prev != &conn->_conn_ready);
 			sys_slist_remove(&bt_dev.le.conn_ready, prev, &conn->_conn_ready);
-			(void)atomic_set(&conn->_conn_ready_lock, 0);
 
 			/* Append connection to list if it is connected and still has data */
 			if (conn->has_data(conn) && (conn->state == BT_CONN_CONNECTED)) {
@@ -1123,8 +1125,8 @@ static void process_unack_tx(struct bt_conn *conn)
 	}
 }
 
-struct bt_conn *conn_lookup_handle(struct bt_conn *conns, size_t size,
-				   uint16_t handle)
+static struct bt_conn *conn_lookup_handle(struct bt_conn *conns, size_t size,
+					  uint16_t handle)
 {
 	int i;
 
@@ -1930,7 +1932,7 @@ static void notify_disconnected(struct bt_conn *conn)
 }
 
 #if defined(CONFIG_BT_REMOTE_INFO)
-void notify_remote_info(struct bt_conn *conn)
+void bt_conn_notify_remote_info(struct bt_conn *conn)
 {
 	struct bt_conn_remote_info remote_info;
 	int err;
@@ -1955,7 +1957,7 @@ void notify_remote_info(struct bt_conn *conn)
 }
 #endif /* defined(CONFIG_BT_REMOTE_INFO) */
 
-void notify_le_param_updated(struct bt_conn *conn)
+void bt_conn_notify_le_param_updated(struct bt_conn *conn)
 {
 	/* If new connection parameters meet requirement of pending
 	 * parameters don't send peripheral conn param request anymore on timeout
@@ -1986,7 +1988,7 @@ void notify_le_param_updated(struct bt_conn *conn)
 }
 
 #if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
-void notify_le_data_len_updated(struct bt_conn *conn)
+void bt_conn_notify_le_data_len_updated(struct bt_conn *conn)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_data_len_updated) {
@@ -2003,7 +2005,7 @@ void notify_le_data_len_updated(struct bt_conn *conn)
 #endif
 
 #if defined(CONFIG_BT_USER_PHY_UPDATE)
-void notify_le_phy_updated(struct bt_conn *conn)
+void bt_conn_notify_le_phy_updated(struct bt_conn *conn)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_phy_updated) {
@@ -2019,7 +2021,7 @@ void notify_le_phy_updated(struct bt_conn *conn)
 }
 #endif
 
-bool le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
+bool bt_conn_le_param_req(struct bt_conn *conn, struct bt_le_conn_param *param)
 {
 	if (!bt_le_conn_params_valid(param)) {
 		return false;
@@ -2977,8 +2979,7 @@ static int bt_conn_get_tx_power_level(struct bt_conn *conn, uint8_t type,
 }
 
 #if defined(CONFIG_BT_TRANSMIT_POWER_CONTROL)
-void notify_tx_power_report(struct bt_conn *conn,
-			    struct bt_conn_le_tx_power_report report)
+void bt_conn_notify_tx_power_report(struct bt_conn *conn, struct bt_conn_le_tx_power_report report)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->tx_power_report) {
@@ -3120,8 +3121,8 @@ int bt_conn_le_get_tx_power_level(struct bt_conn *conn,
 }
 
 #if defined(CONFIG_BT_PATH_LOSS_MONITORING)
-void notify_path_loss_threshold_report(struct bt_conn *conn,
-				       struct bt_conn_le_path_loss_threshold_report report)
+void bt_conn_notify_path_loss_threshold_report(struct bt_conn *conn,
+					       struct bt_conn_le_path_loss_threshold_report report)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->path_loss_threshold_report) {
@@ -3189,8 +3190,8 @@ int bt_conn_le_set_path_loss_mon_enable(struct bt_conn *conn, bool reporting_ena
 #endif /* CONFIG_BT_PATH_LOSS_MONITORING */
 
 #if defined(CONFIG_BT_SUBRATING)
-void notify_subrate_change(struct bt_conn *conn,
-			   const struct bt_conn_le_subrate_changed params)
+void bt_conn_notify_subrate_change(struct bt_conn *conn,
+				   const struct bt_conn_le_subrate_changed params)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->subrate_changed) {
@@ -3295,8 +3296,8 @@ int bt_conn_le_subrate_request(struct bt_conn *conn,
 #endif /* CONFIG_BT_SUBRATING */
 
 #if defined(CONFIG_BT_LE_EXTENDED_FEAT_SET)
-void notify_read_all_remote_feat_complete(struct bt_conn *conn,
-					  struct bt_conn_le_read_all_remote_feat_complete *params)
+void bt_conn_notify_read_all_remote_feat_complete(struct bt_conn *conn,
+					struct bt_conn_le_read_all_remote_feat_complete *params)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->read_all_remote_feat_complete != NULL) {
@@ -3340,8 +3341,8 @@ int bt_conn_le_read_all_remote_features(struct bt_conn *conn, uint8_t pages_requ
 #endif /* CONFIG_BT_LE_EXTENDED_FEAT_SET */
 
 #if defined(CONFIG_BT_FRAME_SPACE_UPDATE)
-void notify_frame_space_update_complete(struct bt_conn *conn,
-					struct bt_conn_le_frame_space_updated *params)
+void bt_conn_notify_frame_space_update_complete(struct bt_conn *conn,
+						struct bt_conn_le_frame_space_updated *params)
 {
 	if (IS_ENABLED(CONFIG_BT_CONN_DYNAMIC_CALLBACKS)) {
 		struct bt_conn_cb *callback;
@@ -3412,8 +3413,8 @@ int bt_conn_le_frame_space_update(struct bt_conn *conn,
 #endif /* CONFIG_BT_FRAME_SPACE_UPDATE */
 
 #if defined(CONFIG_BT_CHANNEL_SOUNDING)
-void notify_remote_cs_capabilities(struct bt_conn *conn, uint8_t status,
-				   struct bt_conn_le_cs_capabilities *params)
+void bt_conn_notify_remote_cs_capabilities(struct bt_conn *conn, uint8_t status,
+					   struct bt_conn_le_cs_capabilities *params)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_cs_read_remote_capabilities_complete) {
@@ -3429,8 +3430,8 @@ void notify_remote_cs_capabilities(struct bt_conn *conn, uint8_t status,
 	}
 }
 
-void notify_remote_cs_fae_table(struct bt_conn *conn, uint8_t status,
-				struct bt_conn_le_cs_fae_table *params)
+void bt_conn_notify_remote_cs_fae_table(struct bt_conn *conn, uint8_t status,
+					struct bt_conn_le_cs_fae_table *params)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_cs_read_remote_fae_table_complete) {
@@ -3446,8 +3447,8 @@ void notify_remote_cs_fae_table(struct bt_conn *conn, uint8_t status,
 	}
 }
 
-void notify_cs_config_created(struct bt_conn *conn, uint8_t status,
-			      struct bt_conn_le_cs_config *params)
+void bt_conn_notify_cs_config_created(struct bt_conn *conn, uint8_t status,
+				      struct bt_conn_le_cs_config *params)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_cs_config_complete) {
@@ -3462,7 +3463,7 @@ void notify_cs_config_created(struct bt_conn *conn, uint8_t status,
 	}
 }
 
-void notify_cs_config_removed(struct bt_conn *conn, uint8_t config_id)
+void bt_conn_notify_cs_config_removed(struct bt_conn *conn, uint8_t config_id)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_cs_config_removed) {
@@ -3477,7 +3478,7 @@ void notify_cs_config_removed(struct bt_conn *conn, uint8_t config_id)
 	}
 }
 
-void notify_cs_security_enable_available(struct bt_conn *conn, uint8_t status)
+void bt_conn_notify_cs_security_enable_available(struct bt_conn *conn, uint8_t status)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_cs_security_enable_complete) {
@@ -3492,8 +3493,8 @@ void notify_cs_security_enable_available(struct bt_conn *conn, uint8_t status)
 	}
 }
 
-void notify_cs_procedure_enable_available(struct bt_conn *conn, uint8_t status,
-					  struct bt_conn_le_cs_procedure_enable_complete *params)
+void bt_conn_notify_cs_procedure_enable_available(struct bt_conn *conn, uint8_t status,
+					struct bt_conn_le_cs_procedure_enable_complete *params)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_cs_procedure_enable_complete) {
@@ -3508,7 +3509,8 @@ void notify_cs_procedure_enable_available(struct bt_conn *conn, uint8_t status,
 	}
 }
 
-void notify_cs_subevent_result(struct bt_conn *conn, struct bt_conn_le_cs_subevent_result *result)
+void bt_conn_notify_cs_subevent_result(struct bt_conn *conn,
+				       struct bt_conn_le_cs_subevent_result *result)
 {
 	BT_CONN_CB_DYNAMIC_FOREACH(callback) {
 		if (callback->le_cs_subevent_data_available) {

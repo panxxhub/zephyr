@@ -569,7 +569,14 @@ static void stream_stopped(struct bt_bap_stream *stream, uint8_t reason)
 
 static void stream_started(struct bt_bap_stream *stream)
 {
-	printk("Audio Stream %p started\n", stream);
+	struct bt_iso_info info;
+	int err;
+
+	err = bt_iso_chan_get_info(stream->iso, &info);
+	__ASSERT(err == 0, "Failed to get ISO chan info: %d", err);
+
+	printk("Audio Stream %p started  with CIG_ID %u and CIS_ID %u\n", stream,
+	       info.unicast.cig_id, info.unicast.cis_id);
 
 	if (stream_dir(stream) == BT_AUDIO_DIR_SINK) {
 		struct audio_sink *sink_stream = CONTAINER_OF(stream, struct audio_sink, stream);
@@ -657,7 +664,8 @@ static int set_location(void)
 
 	if (IS_ENABLED(CONFIG_BT_PAC_SNK_LOC)) {
 		err = bt_pacs_set_location(BT_AUDIO_DIR_SINK,
-					   BT_AUDIO_LOCATION_FRONT_CENTER);
+					   (BT_AUDIO_LOCATION_FRONT_LEFT |
+					    BT_AUDIO_LOCATION_FRONT_RIGHT));
 		if (err != 0) {
 			printk("Failed to set sink location (err %d)\n", err);
 			return err;
@@ -666,8 +674,7 @@ static int set_location(void)
 
 	if (IS_ENABLED(CONFIG_BT_PAC_SRC_LOC)) {
 		err = bt_pacs_set_location(BT_AUDIO_DIR_SOURCE,
-					   (BT_AUDIO_LOCATION_FRONT_LEFT |
-					    BT_AUDIO_LOCATION_FRONT_RIGHT));
+					   BT_AUDIO_LOCATION_FRONT_CENTER);
 		if (err != 0) {
 			printk("Failed to set source location (err %d)\n", err);
 			return err;

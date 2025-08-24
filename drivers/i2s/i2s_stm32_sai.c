@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2024 ZAL Zentrum für Angewandte Luftfahrtforschung GmbH
- * Copyright (c) 2024 Mario Paja
+ * Copyright (c) 2024-2025 ZAL Zentrum für Angewandte Luftfahrtforschung GmbH
+ * Copyright (c) 2024-2025 Mario Paja
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -134,7 +134,6 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
 	struct i2s_stm32_sai_data *dev_data = CONTAINER_OF(hsai, struct i2s_stm32_sai_data, hsai);
 	struct stream *stream = &dev_data->stream;
 	struct queue_item item;
-	void *mem_block_tmp;
 	int ret;
 
 	if (stream->state == I2S_STATE_ERROR) {
@@ -154,6 +153,7 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
 
 	if (stream->last_block) {
 		LOG_DBG("TX Stopped ...");
+		stream->state = I2S_STATE_READY;
 		goto exit;
 	}
 
@@ -171,8 +171,6 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
 		goto exit;
 	}
 
-	mem_block_tmp = stream->mem_block;
-
 	stream->mem_block = item.buffer;
 	stream->mem_block_len = item.size;
 
@@ -183,9 +181,9 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai)
 		LOG_ERR("HAL_SAI_Transmit_DMA: <FAILED>");
 	}
 
-	k_mem_slab_free(stream->i2s_cfg.mem_slab, mem_block_tmp);
 exit:
-	/* EXIT */
+	/* Free memory slab & exit */
+	k_mem_slab_free(stream->i2s_cfg.mem_slab, stream->mem_block);
 }
 
 void HAL_SAI_ErrorCallback(SAI_HandleTypeDef *hsai)
@@ -276,8 +274,8 @@ static int i2s_stm32_sai_dma_init(const struct device *dev)
 	/* HACK: This field is used to inform driver that it is overridden */
 	dma_cfg.linked_channel = STM32_DMA_HAL_OVERRIDE;
 
-	/* Because of the STREAM OFFSET, the DMA channel given here is from 1 -  */
-	ret = dma_config(stream->dma_dev, stream->dma_channel, &dma_cfg);
+	/* Because of the STREAM OFFSET, the DMA channel given here is from 1 - 8 */
+	ret = dma_config(stream->dma_dev, stream->dma_channel + STM32_DMA_STREAM_OFFSET, &dma_cfg);
 
 	if (ret != 0) {
 		LOG_ERR("Failed to configure DMA channel %d",
@@ -285,8 +283,14 @@ static int i2s_stm32_sai_dma_init(const struct device *dev)
 		return ret;
 	}
 
+#if defined(CONFIG_SOC_SERIES_STM32H7X)
+	hdma->Instance = __LL_DMA_GET_STREAM_INSTANCE(stream->reg, stream->dma_channel);
+	hdma->Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+	hdma->Init.MemDataAlignment = DMA_PDATAALIGN_HALFWORD;
+	hdma->Init.Priority = DMA_PRIORITY_HIGH;
+	hdma->Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+#else
 	hdma->Instance = LL_DMA_GET_CHANNEL_INSTANCE(stream->reg, stream->dma_channel);
-	hdma->Init.Request = dma_cfg.dma_slot;
 	hdma->Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
 	hdma->Init.SrcDataWidth = DMA_SRC_DATAWIDTH_HALFWORD;
 	hdma->Init.DestDataWidth = DMA_DEST_DATAWIDTH_HALFWORD;
@@ -295,17 +299,34 @@ static int i2s_stm32_sai_dma_init(const struct device *dev)
 	hdma->Init.DestBurstLength = 1;
 	hdma->Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0 | DMA_DEST_ALLOCATED_PORT0;
 	hdma->Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
+#endif
+
+	hdma->Init.Request = dma_cfg.dma_slot;
 	hdma->Init.Mode = DMA_NORMAL;
 
 	if (stream->dma_cfg.channel_direction == (enum dma_channel_direction)MEMORY_TO_PERIPHERAL) {
 		hdma->Init.Direction = DMA_MEMORY_TO_PERIPH;
+
+#if defined(CONFIG_SOC_SERIES_STM32H7X)
+		hdma->Init.PeriphInc = DMA_PINC_DISABLE;
+		hdma->Init.MemInc = DMA_MINC_ENABLE;
+#else
 		hdma->Init.SrcInc = DMA_SINC_INCREMENTED;
 		hdma->Init.DestInc = DMA_DINC_FIXED;
+#endif
+
 		__HAL_LINKDMA(hsai, hdmatx, dev_data->hdma);
 	} else {
 		hdma->Init.Direction = DMA_PERIPH_TO_MEMORY;
+
+#if defined(CONFIG_SOC_SERIES_STM32H7X)
+		hdma->Init.PeriphInc = DMA_PINC_ENABLE;
+		hdma->Init.MemInc = DMA_MINC_DISABLE;
+#else
 		hdma->Init.SrcInc = DMA_SINC_FIXED;
 		hdma->Init.DestInc = DMA_DINC_INCREMENTED;
+#endif
+
 		__HAL_LINKDMA(hsai, hdmarx, dev_data->hdma);
 	}
 
@@ -314,10 +335,18 @@ static int i2s_stm32_sai_dma_init(const struct device *dev)
 		return -EIO;
 	}
 
+#if defined(CONFIG_SOC_SERIES_STM32N6X)
+	if (HAL_DMA_ConfigChannelAttributes(&dev_data->hdma, DMA_CHANNEL_SEC | DMA_CHANNEL_PRIV |
+					    DMA_CHANNEL_SRC_SEC | DMA_CHANNEL_DEST_SEC) != HAL_OK) {
+		LOG_ERR("HAL_DMA_ConfigChannelAttributes: <Failed>");
+		return -EIO;
+	}
+#elif !defined(CONFIG_SOC_SERIES_STM32H7X)
 	if (HAL_DMA_ConfigChannelAttributes(&dev_data->hdma, DMA_CHANNEL_NPRIV) != HAL_OK) {
 		LOG_ERR("HAL_DMA_ConfigChannelAttributes: <Failed>");
 		return -EIO;
 	}
+#endif
 
 	return 0;
 }

@@ -8,6 +8,7 @@
 
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/disk.h>
+#include <zephyr/drivers/disks/sdmmc_stm32.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
 #include <zephyr/drivers/pinctrl.h>
@@ -816,6 +817,13 @@ err_card_detect:
 	return err;
 }
 
+void stm32_sdmmc_get_card_cid(const struct device *dev, uint32_t cid[4])
+{
+	const struct stm32_sdmmc_priv *priv = dev->data;
+
+	memcpy(cid, &priv->hsd.CID, sizeof(priv->hsd.CID));
+}
+
 #if DT_NODE_HAS_STATUS_OKAY(DT_DRV_INST(0))
 
 #if STM32_SDMMC_USE_DMA
@@ -872,10 +880,16 @@ static struct stm32_sdmmc_priv stm32_sdmmc_priv_1 = {
 	.irq_config = stm32_sdmmc_irq_config_func,
 	.hsd = {
 		.Instance = (MMC_TypeDef *)DT_INST_REG_ADDR(0),
-		.Init.BusWide = SDMMC_BUS_WIDTH,
-#if DT_INST_NODE_HAS_PROP(0, clk_div)
-		.Init.ClockDiv = DT_INST_PROP(0, clk_div),
+		.Init.ClockEdge = SDMMC_CLOCK_EDGE_RISING,
+#ifdef SDMMC_CLOCK_BYPASS_DISABLE
+		.Init.ClockBypass = DT_INST_PROP(0, clk_bypass)
+						? SDMMC_CLOCK_BYPASS_ENABLE
+						: SDMMC_CLOCK_BYPASS_DISABLE,
 #endif
+		.Init.ClockPowerSave = SDMMC_CLOCK_POWER_SAVE_DISABLE,
+		.Init.BusWide = SDMMC_BUS_WIDTH,
+		.Init.HardwareFlowControl = SDMMC_HARDWARE_FLOW_CONTROL_DISABLE,
+		.Init.ClockDiv = DT_INST_PROP_OR(0, clk_div, 0),
 	},
 #if DT_INST_NODE_HAS_PROP(0, cd_gpios)
 	.cd = GPIO_DT_SPEC_INST_GET(0, cd_gpios),

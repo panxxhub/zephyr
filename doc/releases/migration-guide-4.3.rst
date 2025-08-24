@@ -31,10 +31,21 @@ Boards
 
 * mimxrt11x0: renamed lpadc1 to lpadc2 and renamed lpadc0 to lpadc1.
 
+* NXP ``frdm_mcxa166`` is renamed to ``frdm_mcxa346``.
+* NXP ``frdm_mcxa276`` is renamed to ``frdm_mcxa266``.
+
 Device Drivers and Devicetree
 *****************************
 
 .. zephyr-keep-sorted-start re(^\w)
+
+Phy
+===
+
+* Nodes with compatible property :dtcompatible:`st,stm32u5-otghs-phy` now need to select the
+  CLKSEL (phy reference clock) in the SYSCFG_OTGHSPHYCR register using the new property
+  clock-reference. The selection directly depends on the value on OTGHSSEL (OTG_HS PHY kernel
+  clock source selection) located in the RCC_CCIPR2 register.
 
 Sensors
 =======
@@ -52,6 +63,20 @@ Stepper
 Bluetooth
 *********
 
+* :c:struct:`bt_le_cs_test_param` and :c:struct:`bt_le_cs_create_config_params` now require
+  providing both the main and sub mode as a single parameter.
+* :c:struct:`bt_conn_le_cs_config` now reports both the main and sub mode as a single parameter.
+* :c:struct:`bt_conn_le_cs_main_mode` and :c:struct:`bt_conn_le_cs_sub_mode` have been replaced
+  with :c:struct:`bt_conn_le_cs_mode`.
+
+Bluetooth Controller
+====================
+
+* The following Kconfig option have been renamed:
+
+    * :kconfig:option:`CONFIG_BT_CTRL_ADV_ADI_IN_SCAN_RSP` to
+      :kconfig:option:`CONFIG_BT_CTLR_ADV_ADI_IN_SCAN_RSP`
+
 .. zephyr-keep-sorted-start re(^\w)
 
 Bluetooth Audio
@@ -64,6 +89,9 @@ Bluetooth Audio
   :c:enumerator:`BT_AUDIO_CODEC_CFG_TARGET_PHY_2M`.
   The :c:macro:`BT_AUDIO_CODEC_CFG` macro defaults to these values.
   (:github:`93825``)
+* Setting the BGS role for GMAP now requires also supporting and implementing the
+  :kconfig:option:`CONFIG_BT_BAP_BROADCAST_ASSISTANT`.
+  See the :zephyr:code-sample:`bluetooth_bap_broadcast_assistant` sample as a reference.
 
 .. zephyr-keep-sorted-stop
 
@@ -109,6 +137,15 @@ Other subsystems
 
 .. zephyr-keep-sorted-start re(^\w)
 
+Logging
+=======
+
+* The UART dictionary log parsing script
+  :zephyr_file:`scripts/logging/dictionary/log_parser_uart.py` has been deprecated. Instead, the
+  more generic script of :zephyr_file:`scripts/logging/dictionary/live_log_parser.py` should be
+  used. The new script supports the same functionality (and more), but requires different command
+  line arguments when invoked.
+
 .. zephyr-keep-sorted-stop
 
 Modules
@@ -131,6 +168,9 @@ Silabs
 
 * Fixed name of the :kconfig:option:`CONFIG_SOC_*`. These option contained PART_NUMBER in their
   while they shouldn't.
+
+* The separate ``em3`` power state was removed from Series 2 SoCs. The system automatically
+  transitions to EM2 or EM3 depending on hardware peripheral requests for the oscillators.
 
 Architectures
 *************
