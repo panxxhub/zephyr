@@ -118,6 +118,14 @@ function(zephyr_mcuboot_tasks)
     set(imgtool_args --key "${keyfile}" ${imgtool_args})
   endif()
 
+  if(CONFIG_MCUBOOT_IMGTOOL_UUID_VID)
+    set(imgtool_args ${imgtool_args} --vid "${CONFIG_MCUBOOT_IMGTOOL_UUID_VID_NAME}")
+  endif()
+
+  if(CONFIG_MCUBOOT_IMGTOOL_UUID_CID)
+    set(imgtool_args ${imgtool_args} --cid "${CONFIG_MCUBOOT_IMGTOOL_UUID_CID_NAME}")
+  endif()
+
   if(CONFIG_MCUBOOT_IMGTOOL_OVERWRITE_ONLY)
     # Use overwrite-only instead of swap upgrades.
     set(imgtool_args --overwrite-only --align 1 ${imgtool_args})
@@ -159,6 +167,13 @@ function(zephyr_mcuboot_tasks)
     set(imgtool_args --pure ${imgtool_args})
   elseif(CONFIG_MCUBOOT_BOOTLOADER_USES_SHA512)
     set(imgtool_args --sha 512 ${imgtool_args})
+  endif()
+
+  if(NOT "${keyfile_enc}" STREQUAL "")
+    if(CONFIG_MCUBOOT_ENCRYPTION_ALG_AES_256)
+      # Note: this overrides the default behavior of using AES-128
+      set(imgtool_args ${imgtool_args} --encrypt-keylen 256)
+    endif()
   endif()
 
   # Extensionless prefix of any output file.
