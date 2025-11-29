@@ -435,6 +435,8 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 	.max_link_speed			= (enum eth_xlnx_link_speed)\
 		(DT_INST_PROP(port, link_speed)),\
 	.init_phy			= DT_INST_PROP(port, init_mdio_phy),\
+	.rgmii_tx_skew			= DT_INST_PROP(port, rgmii_tx_skew),\
+	.rgmii_rx_skew			= DT_INST_PROP(port, rgmii_rx_skew),\
 	.phy_mdio_addr_fix		= DT_INST_PROP(port, mdio_phy_address),\
 	.phy_advertise_lower		= DT_INST_PROP(port, advertise_lower_link_speeds),\
 	.phy_poll_interval		= DT_INST_PROP(port, phy_poll_interval),\
@@ -683,6 +685,8 @@ struct eth_xlnx_gem_dev_cfg {
 
 	enum eth_xlnx_link_speed	max_link_speed;
 	bool				init_phy;
+	uint16_t 			rgmii_tx_skew;
+	uint16_t 			rgmii_rx_skew;
 	uint8_t				phy_mdio_addr_fix;
 	uint8_t				phy_advertise_lower;
 	uint32_t			phy_poll_interval;

@@ -16,9 +16,10 @@
 #include <zephyr/device.h>
 
 #include "eth_xlnx_gem_priv.h"
+#include "phy_xlnx_gem.h"
 
 #define LOG_MODULE_NAME phy_xlnx_gem
-#define LOG_LEVEL CONFIG_ETHERNET_LOG_LEVEL
+#define LOG_LEVEL       CONFIG_ETHERNET_LOG_LEVEL
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
@@ -33,9 +34,7 @@ LOG_MODULE_REGISTER(LOG_MODULE_NAME);
  * @param reg_addr  Index of the PHY register to be read
  * @return          16-bit data word received from the PHY
  */
-static uint16_t phy_xlnx_gem_mdio_read(
-	uint32_t base_addr, uint8_t phy_addr,
-	uint8_t reg_addr)
+static uint16_t phy_xlnx_gem_mdio_read(uint32_t base_addr, uint8_t phy_addr, uint8_t reg_addr)
 {
 	uint32_t reg_val;
 	uint32_t poll_cnt = 0;
@@ -65,15 +64,15 @@ static uint16_t phy_xlnx_gem_mdio_read(
 	/* Assemble & write the read command to the gem.phy_maint register */
 
 	/* Set the bits constant for any operation */
-	reg_val  = ETH_XLNX_GEM_PHY_MAINT_CONST_BITS;
+	reg_val = ETH_XLNX_GEM_PHY_MAINT_CONST_BITS;
 	/* Indicate a read operation */
 	reg_val |= ETH_XLNX_GEM_PHY_MAINT_READ_OP_BIT;
 	/* PHY address */
-	reg_val |= (((uint32_t)phy_addr & ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_MASK) <<
-		   ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_SHIFT);
+	reg_val |= (((uint32_t)phy_addr & ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_MASK)
+		    << ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_SHIFT);
 	/* Register address */
-	reg_val |= (((uint32_t)reg_addr & ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_MASK) <<
-		   ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_SHIFT);
+	reg_val |= (((uint32_t)reg_addr & ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_MASK)
+		    << ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_SHIFT);
 
 	sys_write32(reg_val, base_addr + ETH_XLNX_GEM_PHY_MAINTENANCE_OFFSET);
 
@@ -112,9 +111,8 @@ static uint16_t phy_xlnx_gem_mdio_read(
  * @param reg_addr  Index of the PHY register to be written to
  * @param value     16-bit data word to be written to the target register
  */
-static void phy_xlnx_gem_mdio_write(
-	uint32_t base_addr, uint8_t phy_addr,
-	uint8_t reg_addr, uint16_t value)
+static void phy_xlnx_gem_mdio_write(uint32_t base_addr, uint8_t phy_addr, uint8_t reg_addr,
+				    uint16_t value)
 {
 	uint32_t reg_val;
 	uint32_t poll_cnt = 0;
@@ -144,15 +142,15 @@ static void phy_xlnx_gem_mdio_write(
 	/* Assemble & write the read command to the gem.phy_maint register */
 
 	/* Set the bits constant for any operation */
-	reg_val  = ETH_XLNX_GEM_PHY_MAINT_CONST_BITS;
+	reg_val = ETH_XLNX_GEM_PHY_MAINT_CONST_BITS;
 	/* Indicate a read operation */
 	reg_val |= ETH_XLNX_GEM_PHY_MAINT_WRITE_OP_BIT;
 	/* PHY address */
-	reg_val |= (((uint32_t)phy_addr & ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_MASK) <<
-		   ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_SHIFT);
+	reg_val |= (((uint32_t)phy_addr & ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_MASK)
+		    << ETH_XLNX_GEM_PHY_MAINT_PHY_ADDRESS_SHIFT);
 	/* Register address */
-	reg_val |= (((uint32_t)reg_addr & ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_MASK) <<
-		   ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_SHIFT);
+	reg_val |= (((uint32_t)reg_addr & ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_MASK)
+		    << ETH_XLNX_GEM_PHY_MAINT_REGISTER_ID_SHIFT);
 	/* 16 bits of data for the destination register */
 	reg_val |= ((uint32_t)value & ETH_XLNX_GEM_PHY_MAINT_DATA_MASK);
 
@@ -174,6 +172,515 @@ static void phy_xlnx_gem_mdio_write(
 			"register address %hhu timed out",
 			base_addr, phy_addr, reg_addr);
 	}
+}
+
+/**
+ * @brief Read from the MotorComm YT PHY's extended register
+ * Reads data from a MotorComm YT PHY's extended register via the MDIO interface
+ *
+ * @param base_addr Base address of the GEM's register space
+ * @param phy_addr  MDIO address of the PHY to be accessed
+ * @param reg_addr  Index of the PHY register to be read
+ * @return          16-bit data word received from the PHY
+ */
+static uint16_t phy_xlnx_gem_motorcomm_ext_mdio_read(uint32_t base_addr, uint8_t phy_addr,
+						     uint16_t reg_addr)
+{
+	// write ext offset
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER,
+				reg_addr);
+	// read ext register
+	return phy_xlnx_gem_mdio_read(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_DATA_REGISTER);
+}
+/**
+ * @brief Write to the MotorComm YT PHY's extended register
+ * Writes data to a MotorComm YT PHY's extended register via the MDIO interface
+ *
+ * @param base_addr Base address of the GEM's register space
+ * @param phy_addr  MDIO address of the PHY to be accessed
+ * @param reg_addr  Index of the PHY register to be written to
+ * @param value     16-bit data word to be written to the target register
+ */
+static void phy_xlnx_gem_motorcomm_ext_mdio_write(uint32_t base_addr, uint8_t phy_addr,
+						  uint16_t reg_addr, uint16_t value)
+{
+	// write ext offset
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER,
+				reg_addr);
+	// write ext register
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_DATA_REGISTER, value);
+
+	phy_xlnx_gem_mdio_write(base_addr, phy_addr, PHY_MOTORCOMM_YT_EXT_OFFSET_REGISTER, 0);
+}
+
+static void phy_xlnx_gem_motorcomm_yt_reset(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data = 0;
+	uint32_t retries = 0;
+	/*
+	 * IEEE 802.3 Clause 22 compliant PHYs have a reset bit in the
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER);
+	phy_data |= PHY_MOTORCOMM_YT_BASIC_CONTROL_RESET_BIT;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER, phy_data);
+	/* Bit [15] reverts to 0 once the reset is complete. */
+	while (((phy_data & PHY_MOTORCOMM_YT_BASIC_CONTROL_RESET_BIT) != 0) && (retries++ < 10)) {
+		phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+						  PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER);
+	}
+	if (retries == 10) {
+		LOG_ERR("%s reset PHY address %hhu (MotorComm YT) timed out", dev->name,
+			dev_data->phy_addr);
+	}
+}
+
+/**
+ * @brief MotorComm YT PHY configuration function
+ * Configuration function for the MotorComm YT PHY series
+ *
+ * @param dev Pointer to the device data
+ */
+static void phy_xlnx_gem_motorcomm_yt_cfg(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data = 0;
+	uint16_t phy_data_gbit = 0;
+
+	/*
+	 * 1. disable auto-negotiation, then trigger a PHY reset.
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER);
+	phy_data &= ~PHY_MOTORCOMM_YT_BASIC_CONTROL_AUTONEG_ENABLE_BIT; // bit 12
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MOTORCOMM_YT_BASIC_CONTROL_REGISTER, phy_data);
+	phy_xlnx_gem_motorcomm_yt_reset(dev);
+
+	/*
+	 * 2. configure the auto mdi/mdi-x
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MOTORCOMM_YT_COPPER_CONTROL_REGISTER);
+	phy_data |= (0b11 << 5);
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MOTORCOMM_YT_COPPER_CONTROL_REGISTER, phy_data);
+	phy_xlnx_gem_motorcomm_yt_reset(dev);
+
+	/**
+	 * 3. configure the interrupt control/status register
+	 */
+	phy_data = PHY_MOTORCOMM_YT_INT_LINK_UP_BIT | PHY_MOTORCOMM_YT_INT_LINK_DOWN_BIT;
+		
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MRVL_COPPER_INT_ENABLE_REGISTER, phy_data);
+	phy_xlnx_gem_motorcomm_yt_reset(dev);
+
+	/*
+	 * Clear the interrupt status register before advertising the
+	 * supported link speed(s).
+	 */
+	phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr, PHY_MRVL_COPPER_INT_STATUS_REGISTER);
+
+	// phy_data = phy_xlnx_gem_mdio_read()
+
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr, PHY_MRVL_COPPER_AUTONEG_ADV_REGISTER);
+	phy_data &= ~(PHY_MRVL_ADV_100BASET_FDX_BIT | PHY_MRVL_ADV_10BASET_FDX_BIT | PHY_MRVL_ADV_100BASET_HDX_BIT | PHY_MRVL_ADV_10BASET_HDX_BIT);
+
+	phy_data_gbit = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					       PHY_MRVL_1000BASET_CONTROL_REGISTER);
+	phy_data_gbit &= ~(PHY_MRVL_ADV_1000BASET_FDX_BIT| PHY_MRVL_ADV_1000BASET_HDX_BIT);
+
+	if (dev_conf->enable_fdx) {
+		if (dev_conf->max_link_speed == LINK_1GBIT) {
+			/* Advertise 1 GBit/s, full duplex */
+			phy_data_gbit |= PHY_MRVL_ADV_1000BASET_FDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 100 MBit/s, full duplex */
+				phy_data |= PHY_MRVL_ADV_100BASET_FDX_BIT;
+				/* + 10 MBit/s, full duplex */
+				phy_data |= PHY_MRVL_ADV_10BASET_FDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_100MBIT) {
+			/* Advertise 100 MBit/s, full duplex */
+			phy_data |= PHY_MRVL_ADV_100BASET_FDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 10 MBit/s, full duplex */
+				phy_data |= PHY_MRVL_ADV_10BASET_FDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_10MBIT) {
+			/* Advertise 10 MBit/s, full duplex */
+			phy_data |= PHY_MRVL_ADV_10BASET_FDX_BIT;
+		}
+	} else {
+		if (dev_conf->max_link_speed == LINK_1GBIT) {
+			/* Advertise 1 GBit/s, half duplex */
+			phy_data_gbit = PHY_MRVL_ADV_1000BASET_HDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 100 MBit/s, half duplex */
+				phy_data |= PHY_MRVL_ADV_100BASET_HDX_BIT;
+				/* + 10 MBit/s, half duplex */
+				phy_data |= PHY_MRVL_ADV_10BASET_HDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_100MBIT) {
+			/* Advertise 100 MBit/s, half duplex */
+			phy_data |= PHY_MRVL_ADV_100BASET_HDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 10 MBit/s, half duplex */
+				phy_data |= PHY_MRVL_ADV_10BASET_HDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_10MBIT) {
+			/* Advertise 10 MBit/s, half duplex */
+			phy_data |= PHY_MRVL_ADV_10BASET_HDX_BIT;
+		}
+	}
+
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MRVL_1000BASET_CONTROL_REGISTER, phy_data_gbit);
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MRVL_COPPER_AUTONEG_ADV_REGISTER, phy_data);
+
+	/**
+	 * 4. configure RGMII skew
+	 */
+	phy_data = phy_xlnx_gem_motorcomm_ext_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+							PHY_MOTORCOMM_YT_EXT_RGMII_CFG1);
+	// phy_data &= ~PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_TX_SKEW_MASK;
+	phy_data &= ~(PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_TX_SKEW_MASK |
+		      PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_RX_SKEW_MASK);
+	uint16_t tx_skew_steps =
+		(dev_conf->rgmii_tx_skew / 150) & PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_TX_SKEW_MASK;
+	uint16_t rx_skew_steps =
+		((dev_conf->rgmii_rx_skew / 150) << PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_RX_SKEW_SHIFT) &
+		PHY_MOTORCOMM_YT_EXT_RGMII_CFG1_RX_SKEW_MASK;
+	phy_data |= (tx_skew_steps | rx_skew_steps);
+	LOG_DBG("motorcomm ext write 0x%x", phy_data);
+	phy_xlnx_gem_motorcomm_ext_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+					      PHY_MOTORCOMM_YT_EXT_RGMII_CFG1, phy_data);
+
+	/*
+	 * Trigger a PHY reset, affecting pages 0, 2, 3, 5, 7.
+	 * Afterwards, set the auto-negotiation enable bit [12] in the
+	 * Copper Control Register.
+	 */
+	phy_xlnx_gem_motorcomm_yt_reset(dev);
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MRVL_COPPER_CONTROL_REGISTER);
+	phy_data |= PHY_MRVL_COPPER_CONTROL_AUTONEG_ENABLE_BIT;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MRVL_COPPER_CONTROL_REGISTER, phy_data);
+
+	/*
+	 * Set the link speed to 'link down' for now, once auto-negotiation
+	 * is complete, the result will be handled by the system work queue.
+	 */
+	dev_data->eff_link_speed = LINK_DOWN;
+}
+
+/**
+ * @brief MotorComm YT PHY status change polling function
+ * Status change polling function for the Marvell Alaska PHY series
+ *
+ * @param dev Pointer to the device data
+ * @return A set of bits indicating whether one or more of the following
+ *         events has occurred: auto-negotiation completed, link state
+ *         changed, link speed changed.
+ */
+static uint16_t phy_xlnx_gem_motorcomm_yt_poll_sc(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+	uint16_t phy_status=0;
+
+	/*
+	 * PHY status change detection is implemented by reading the
+	 * interrupt status register.
+	 * Page 0, register address 19 = Copper Interrupt Status Register
+	 * bit [14] = Speed changed interrupt,
+	 * bit [13] = Duplex changed interrupt,
+	 * bit [11] = Auto-negotiation completed interrupt,
+	 * bit [10] = Link status changed interrupt.
+	 * Comp. datasheet table 79
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MRVL_COPPER_INT_STATUS_REGISTER);
+
+	if ((phy_data & PHY_MOTORCOMM_YT_INT_AUTONEG_COMPLETE_BIT) != 0) {
+		phy_status |= PHY_XLNX_GEM_EVENT_AUTONEG_COMPLETE;
+	}
+	if (((phy_data & PHY_MOTORCOMM_YT_INT_LINK_UP_BIT) != 0) || 
+	    ((phy_data & PHY_MOTORCOMM_YT_INT_LINK_DOWN_BIT) != 0)) {
+		phy_status |= PHY_XLNX_GEM_EVENT_LINK_STATE_CHANGED;
+	}
+	if ((phy_data & PHY_MOTORCOMM_YT_INT_SPEED_CHANGED_INT_BIT) != 0) {
+		phy_status |= PHY_XLNX_GEM_EVENT_LINK_SPEED_CHANGED;
+	}
+	/*
+	 * see ieee 802.3 clause 22, register 0x01
+	 */
+	return phy_status;
+}
+
+static uint8_t phy_xlnx_gem_motorcomm_yt_poll_lsts(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+
+	/*
+	 * see ieee 802.3 clause 22, register 0x01
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MOTORCOMM_YT_BASIC_STATUS_REGISTER);
+
+	return ((phy_data & PHY_MOTORCOMM_YT_BASIC_STATUS_LINK_STATUS_BIT) != 0);
+}
+
+
+static enum eth_xlnx_link_speed phy_xlnx_gem_motorcomm_yt_poll_lspd(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	enum eth_xlnx_link_speed link_speed;
+	uint16_t phy_data;
+
+	/*
+	 * Current link speed is obtained from:
+	 * Page 0, register address 17 = Copper Specific Status Register 1
+	 * bits [15 .. 14] = Speed.
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MRVL_COPPER_STATUS_1_REGISTER);
+	phy_data >>= PHY_MRVL_LINK_SPEED_SHIFT;
+	phy_data &= PHY_MRVL_LINK_SPEED_MASK;
+
+	/*
+	 * Link speed bit masks: comp. datasheet, table 77 @ description
+	 * of the 'Speed' bits.
+	 */
+	switch (phy_data) {
+	case PHY_MRVL_LINK_SPEED_10MBIT:
+		link_speed = LINK_10MBIT;
+		break;
+	case PHY_MRVL_LINK_SPEED_100MBIT:
+		link_speed = LINK_100MBIT;
+		break;
+	case PHY_MRVL_LINK_SPEED_1GBIT:
+		link_speed = LINK_1GBIT;
+		break;
+	default:
+		link_speed = LINK_DOWN;
+		break;
+	};
+
+	return link_speed;
+}
+
+/**
+ * @brief Microchip KSZ family PHY reset function
+ *
+ * @param dev
+ */
+static void phy_xlnx_gem_microchip_ksz_reset(const struct device *dev)
+{
+	//
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data = 0;
+	uint32_t retries = 0;
+	/*
+	 * IEEE 802.3 Clause 22 compliant PHYs have a reset bit in the
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	phy_data |= PHY_MC_KSZ_BASIC_CONTROL_RESET_BIT;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_BASIC_CONTROL_REGISTER, phy_data);
+	/* Bit [15] reverts to 0 once the reset is complete. */
+	while (((phy_data & PHY_TI_BASIC_MODE_CONTROL_RESET_BIT) != 0) && (retries++ < 10)) {
+		phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+						  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	}
+	if (retries == 10) {
+		LOG_ERR("%s reset PHY address %hhu (Marvell Alaska) timed out", dev->name,
+			dev_data->phy_addr);
+	}
+}
+
+/**
+ * @brief MicroChip KSZ PHY configuration function
+ * Configuration function for the MicroChip KSZ PHY series
+ *
+ * @param dev Pointer to the device data
+ */
+static void phy_xlnx_gem_microchip_ksz_cfg(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data = 0;
+	uint16_t phy_data_g = 0;
+
+	/*
+	 * 1. disable auto-negotiation, then trigger a PHY reset.
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	phy_data &= ~PHY_MC_KSZ_BASIC_CONTROL_AUTONEG_ENABLE_BIT;
+	phy_xlnx_gem_microchip_ksz_reset(dev);
+
+	/*
+	 * 2. configure the auto mdi/mdi-x
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_AUTO_MDIX_CONTROL_REGISTER);
+	phy_data |= PHY_MC_KSZ_AUTO_MDIX_SWAP_OFF;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_AUTO_MDIX_CONTROL_REGISTER, phy_data);
+
+	/**
+	 * 3. configure the interrupt control/status register
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER);
+	phy_data |= (PHY_MC_KSZ_LINK_UP_INT_ENABLE_BIT | PHY_MC_KSZ_LINK_DOWN_INT_ENABLE_BIT);
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER, phy_data);
+
+	/*
+	 * 4. configure the auto-neg advertisement register
+	 */
+	phy_data_g = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					    PHY_MC_KSZ_1000BASET_CONTROL_REGISTER);
+	phy_data_g &= ~PHY_MC_KSZ_ADV_1000BASET_FDX_BIT;
+	phy_data_g &= ~PHY_MC_KSZ_ADV_1000BASET_HDX_BIT;
+
+	if (dev_conf->enable_fdx) {
+		if (dev_conf->max_link_speed == LINK_1GBIT) {
+			/* Advertise 1 GBit/s, full duplex */
+			phy_data_g |= PHY_MC_KSZ_ADV_1000BASET_FDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 100 MBit/s, full duplex */
+				phy_data |= PHY_MC_KSZ_ADV_100BASET_FDX_BIT;
+				/* + 10 MBit/s, full duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_FDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_100MBIT) {
+			/* Advertise 100 MBit/s, full duplex */
+			phy_data |= PHY_MC_KSZ_ADV_100BASET_FDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 10 MBit/s, full duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_FDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_10MBIT) {
+			/* Advertise 10 MBit/s, full duplex */
+			phy_data |= PHY_MC_KSZ_ADV_10BASET_FDX_BIT;
+		}
+	} else {
+		if (dev_conf->max_link_speed == LINK_1GBIT) {
+			/* Advertise 1 GBit/s, half duplex */
+			phy_data_g = PHY_MC_KSZ_ADV_1000BASET_HDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 100 MBit/s, half duplex */
+				phy_data |= PHY_MC_KSZ_ADV_100BASET_HDX_BIT;
+				/* + 10 MBit/s, half duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_HDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_100MBIT) {
+			/* Advertise 100 MBit/s, half duplex */
+			phy_data |= PHY_MC_KSZ_ADV_100BASET_HDX_BIT;
+			if (dev_conf->phy_advertise_lower) {
+				/* + 10 MBit/s, half duplex */
+				phy_data |= PHY_MC_KSZ_ADV_10BASET_HDX_BIT;
+			}
+		} else if (dev_conf->max_link_speed == LINK_10MBIT) {
+			/* Advertise 10 MBit/s, half duplex */
+			phy_data |= PHY_MC_KSZ_ADV_10BASET_HDX_BIT;
+		}
+	}
+
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_1000BASET_CONTROL_REGISTER, phy_data_g);
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_AUTONEG_ADV_REGISTER, phy_data);
+
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_CONTROL_REGISTER);
+	phy_data |= PHY_MC_KSZ_BASIC_CONTROL_AUTONEG_ENABLE_BIT;
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
+				PHY_MC_KSZ_BASIC_CONTROL_REGISTER, phy_data);
+
+	phy_xlnx_gem_microchip_ksz_reset(dev);
+
+	/*
+	 * Set the link speed to 'link down' for now, once auto-negotiation
+	 * is complete, the result will be handled by the system work queue.
+	 */
+	dev_data->eff_link_speed = LINK_DOWN;
+}
+
+static uint16_t phy_xlnx_gem_microchip_ksz_poll_sc(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+	uint16_t phy_status = 0;
+
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_INT_CONTROL_STATUS_REGISTER);
+	if (phy_data & (PHY_MC_KSZ_LINK_UP_BIT | PHY_MC_KSZ_LINK_DOWN_BIT)) {
+		phy_status |= PHY_XLNX_GEM_EVENT_LINK_STATE_CHANGED;
+	}
+
+	return phy_status;
+}
+
+static uint8_t phy_xlnx_gem_microchip_ksz_poll_lsts(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+
+	/*
+	 * see ieee 802.3 clause 22, register 0x01
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_BASIC_STATUS_REGISTER);
+
+	return ((phy_data & PHY_MC_KSZ_BASIC_STATUS_LINK_STATUS_BIT) != 0);
+}
+
+static enum eth_xlnx_link_speed phy_xlnx_gem_microchip_ksz_poll_lspd(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	uint16_t phy_data;
+
+	/*
+	 * Current link speed is obtained from:
+	 * Page 0, register address 17 = Copper Specific Status Register 1
+	 * bits [15 .. 14] = Speed.
+	 */
+	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+					  PHY_MC_KSZ_VS_CONTROL_REGISTER);
+
+	/*
+	 * vendor specific 1F.[6:4] = speed
+	 */
+	if (phy_data & PHY_MC_KSZ_FINAL_SPEED_1000BASET) {
+		return LINK_1GBIT;
+	}
+	if (phy_data & PHY_MC_KSZ_FINAL_SPEED_100BASET) {
+		return LINK_100MBIT;
+	}
+	if (phy_data & PHY_MC_KSZ_FINAL_SPEED_10BASET) {
+		return LINK_10MBIT;
+	}
+	return LINK_DOWN;
 }
 
 /*
@@ -218,8 +725,8 @@ static void phy_xlnx_gem_marvell_alaska_reset(const struct device *dev)
 						  PHY_MRVL_COPPER_CONTROL_REGISTER);
 	}
 	if (retries == 10) {
-		LOG_ERR("%s reset PHY address %hhu (Marvell Alaska) timed out",
-			dev->name, dev_data->phy_addr);
+		LOG_ERR("%s reset PHY address %hhu (Marvell Alaska) timed out", dev->name,
+			dev_data->phy_addr);
 	}
 }
 
@@ -251,8 +758,7 @@ static void phy_xlnx_gem_marvell_alaska_cfg(const struct device *dev)
 				PHY_MRVL_COPPER_CONTROL_REGISTER, phy_data);
 	phy_xlnx_gem_marvell_alaska_reset(dev);
 
-	if ((dev_data->phy_id & PHY_MRVL_PHY_ID_MODEL_MASK) ==
-			PHY_MRVL_PHY_ID_MODEL_88E151X) {
+	if ((dev_data->phy_id & PHY_MRVL_PHY_ID_MODEL_MASK) == PHY_MRVL_PHY_ID_MODEL_88E151X) {
 		/*
 		 * 88E151x only: configure the system interface and media type
 		 * (i.e. "RGMII to Copper", 0x0). On the 88E1111, this setting
@@ -286,10 +792,9 @@ static void phy_xlnx_gem_marvell_alaska_cfg(const struct device *dev)
 
 		/* Bit [15] reverts to 0 once the reset is complete. */
 		while (((phy_data & PHY_MRVL_GENERAL_CONTROL_1_RESET_BIT) != 0) &&
-				(retries++ < 10)) {
-			phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr,
-				dev_data->phy_addr,
-				PHY_MRVL_GENERAL_CONTROL_1_REGISTER);
+		       (retries++ < 10)) {
+			phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
+							  PHY_MRVL_GENERAL_CONTROL_1_REGISTER);
 		}
 		if (retries == 10) {
 			LOG_ERR("%s configure PHY address %hhu (Marvell Alaska) timed out",
@@ -299,8 +804,8 @@ static void phy_xlnx_gem_marvell_alaska_cfg(const struct device *dev)
 
 		/* Revert to register page 0 */
 		phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
-			PHY_MRVL_COPPER_PAGE_SWITCH_REGISTER,
-			PHY_MRVL_BASE_REGISTERS_PAGE);
+					PHY_MRVL_COPPER_PAGE_SWITCH_REGISTER,
+					PHY_MRVL_BASE_REGISTERS_PAGE);
 	}
 
 	/*
@@ -343,10 +848,9 @@ static void phy_xlnx_gem_marvell_alaska_cfg(const struct device *dev)
 	 * bit [10] = Link status changed interrupt enable.
 	 * Comp. datasheet table 78
 	 */
-	phy_data = PHY_MRVL_COPPER_SPEED_CHANGED_INT_BIT |
-		PHY_MRVL_COPPER_DUPLEX_CHANGED_INT_BIT |
-		PHY_MRVL_COPPER_AUTONEG_COMPLETED_INT_BIT |
-		PHY_MRVL_COPPER_LINK_STATUS_CHANGED_INT_BIT;
+	phy_data = PHY_MRVL_COPPER_SPEED_CHANGED_INT_BIT | PHY_MRVL_COPPER_DUPLEX_CHANGED_INT_BIT |
+		   PHY_MRVL_COPPER_AUTONEG_COMPLETED_INT_BIT |
+		   PHY_MRVL_COPPER_LINK_STATUS_CHANGED_INT_BIT;
 	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
 				PHY_MRVL_COPPER_INT_ENABLE_REGISTER, phy_data);
 
@@ -390,8 +894,7 @@ static void phy_xlnx_gem_marvell_alaska_cfg(const struct device *dev)
 	 * Register 4, bits [4..0] = Selector field, 00001 = 802.3. Those bits
 	 * are reserved in other Marvell PHYs.
 	 */
-	if ((dev_data->phy_id & PHY_MRVL_PHY_ID_MODEL_MASK) ==
-			PHY_MRVL_PHY_ID_MODEL_88E151X) {
+	if ((dev_data->phy_id & PHY_MRVL_PHY_ID_MODEL_MASK) == PHY_MRVL_PHY_ID_MODEL_88E151X) {
 		phy_data = PHY_MRVL_ADV_SELECTOR_802_3;
 	} else {
 		phy_data = 0x0000;
@@ -508,7 +1011,7 @@ static uint16_t phy_xlnx_gem_marvell_alaska_poll_sc(const struct device *dev)
 		phy_status |= PHY_XLNX_GEM_EVENT_AUTONEG_COMPLETE;
 	}
 	if (((phy_data & PHY_MRVL_COPPER_DUPLEX_CHANGED_INT_BIT) != 0) ||
-		((phy_data & PHY_MRVL_COPPER_LINK_STATUS_CHANGED_INT_BIT) != 0)) {
+	    ((phy_data & PHY_MRVL_COPPER_LINK_STATUS_CHANGED_INT_BIT) != 0)) {
 		phy_status |= PHY_XLNX_GEM_EVENT_LINK_STATE_CHANGED;
 	}
 	if ((phy_data & PHY_MRVL_COPPER_SPEED_CHANGED_INT_BIT) != 0) {
@@ -556,11 +1059,10 @@ static uint8_t phy_xlnx_gem_marvell_alaska_poll_lsts(const struct device *dev)
  * @param dev Pointer to the device data
  * @return    Enum containing the current link speed reported by the PHY
  */
-static enum eth_xlnx_link_speed phy_xlnx_gem_marvell_alaska_poll_lspd(
-	const struct device *dev)
+static enum eth_xlnx_link_speed phy_xlnx_gem_marvell_alaska_poll_lspd(const struct device *dev)
 {
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data  = dev->data;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
 	enum eth_xlnx_link_speed link_speed;
 	uint16_t phy_data;
 
@@ -572,7 +1074,7 @@ static enum eth_xlnx_link_speed phy_xlnx_gem_marvell_alaska_poll_lspd(
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_MRVL_COPPER_STATUS_1_REGISTER);
 	phy_data >>= PHY_MRVL_LINK_SPEED_SHIFT;
-	phy_data  &= PHY_MRVL_LINK_SPEED_MASK;
+	phy_data &= PHY_MRVL_LINK_SPEED_MASK;
 
 	/*
 	 * Link speed bit masks: comp. datasheet, table 77 @ description
@@ -630,8 +1132,8 @@ static void phy_xlnx_gem_ti_dp83822_reset(const struct device *dev)
 						  PHY_TI_BASIC_MODE_CONTROL_REGISTER);
 	}
 	if (retries == 10) {
-		LOG_ERR("%s reset PHY address %hhu (TI TLK105/DP83822) timed out",
-			dev->name, dev_data->phy_addr);
+		LOG_ERR("%s reset PHY address %hhu (TI TLK105/DP83822) timed out", dev->name,
+			dev_data->phy_addr);
 	}
 }
 
@@ -687,8 +1189,8 @@ static void phy_xlnx_gem_ti_dp83822_cfg(const struct device *dev)
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_TI_CONTROL_REGISTER_1);
 	phy_data |= PHY_TI_CR1_ROBUST_AUTO_MDIX_BIT;
-	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
-				PHY_TI_CONTROL_REGISTER_1, phy_data);
+	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr, PHY_TI_CONTROL_REGISTER_1,
+				phy_data);
 
 	phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, dev_data->phy_addr,
 					  PHY_TI_PHY_CONTROL_REGISTER);
@@ -702,8 +1204,7 @@ static void phy_xlnx_gem_ti_dp83822_cfg(const struct device *dev)
 				PHY_TI_PHY_CONTROL_REGISTER, phy_data);
 
 	/* Set blink rate to 5 Hz */
-	phy_data = (PHY_TI_LED_CONTROL_BLINK_RATE_5HZ <<
-		    PHY_TI_LED_CONTROL_BLINK_RATE_SHIFT);
+	phy_data = (PHY_TI_LED_CONTROL_BLINK_RATE_5HZ << PHY_TI_LED_CONTROL_BLINK_RATE_SHIFT);
 	phy_xlnx_gem_mdio_write(dev_conf->base_addr, dev_data->phy_addr,
 				PHY_TI_LED_CONTROL_REGISTER, phy_data);
 
@@ -790,8 +1291,7 @@ static uint8_t phy_xlnx_gem_ti_dp83822_poll_lsts(const struct device *dev)
  * @param dev Pointer to the device data
  * @return    Enum containing the current link speed reported by the PHY
  */
-static enum eth_xlnx_link_speed phy_xlnx_gem_ti_dp83822_poll_lspd(
-	const struct device *dev)
+static enum eth_xlnx_link_speed phy_xlnx_gem_ti_dp83822_poll_lspd(const struct device *dev)
 {
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
 	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
@@ -822,11 +1322,11 @@ static enum eth_xlnx_link_speed phy_xlnx_gem_ti_dp83822_poll_lspd(
  * specific management functions
  */
 static struct phy_xlnx_gem_api phy_xlnx_gem_marvell_alaska_api = {
-	.phy_reset_func              = phy_xlnx_gem_marvell_alaska_reset,
-	.phy_configure_func          = phy_xlnx_gem_marvell_alaska_cfg,
+	.phy_reset_func = phy_xlnx_gem_marvell_alaska_reset,
+	.phy_configure_func = phy_xlnx_gem_marvell_alaska_cfg,
 	.phy_poll_status_change_func = phy_xlnx_gem_marvell_alaska_poll_sc,
-	.phy_poll_link_status_func   = phy_xlnx_gem_marvell_alaska_poll_lsts,
-	.phy_poll_link_speed_func    = phy_xlnx_gem_marvell_alaska_poll_lspd
+	.phy_poll_link_status_func = phy_xlnx_gem_marvell_alaska_poll_lsts,
+	.phy_poll_link_speed_func = phy_xlnx_gem_marvell_alaska_poll_lspd,
 };
 
 /**
@@ -835,11 +1335,27 @@ static struct phy_xlnx_gem_api phy_xlnx_gem_marvell_alaska_api = {
  * series specific management functions
  */
 static struct phy_xlnx_gem_api phy_xlnx_gem_ti_dp83822_api = {
-	.phy_reset_func              = phy_xlnx_gem_ti_dp83822_reset,
-	.phy_configure_func          = phy_xlnx_gem_ti_dp83822_cfg,
+	.phy_reset_func = phy_xlnx_gem_ti_dp83822_reset,
+	.phy_configure_func = phy_xlnx_gem_ti_dp83822_cfg,
 	.phy_poll_status_change_func = phy_xlnx_gem_ti_dp83822_poll_sc,
-	.phy_poll_link_status_func   = phy_xlnx_gem_ti_dp83822_poll_lsts,
-	.phy_poll_link_speed_func    = phy_xlnx_gem_ti_dp83822_poll_lspd
+	.phy_poll_link_status_func = phy_xlnx_gem_ti_dp83822_poll_lsts,
+	.phy_poll_link_speed_func = phy_xlnx_gem_ti_dp83822_poll_lspd,
+};
+
+static struct phy_xlnx_gem_api phy_xlnx_gem_microchip_ksz_api = {
+	.phy_reset_func = phy_xlnx_gem_microchip_ksz_reset,
+	.phy_configure_func = phy_xlnx_gem_microchip_ksz_cfg,
+	.phy_poll_status_change_func = phy_xlnx_gem_microchip_ksz_poll_sc,
+	.phy_poll_link_status_func = phy_xlnx_gem_microchip_ksz_poll_lsts,
+	.phy_poll_link_speed_func = phy_xlnx_gem_microchip_ksz_poll_lspd,
+};
+
+static struct phy_xlnx_gem_api phy_xlnx_gem_motorcomm_yt_api = {
+	.phy_reset_func = phy_xlnx_gem_motorcomm_yt_reset,
+	.phy_configure_func = phy_xlnx_gem_motorcomm_yt_cfg,
+	.phy_poll_status_change_func = phy_xlnx_gem_motorcomm_yt_poll_sc,
+	.phy_poll_link_status_func = phy_xlnx_gem_motorcomm_yt_poll_lsts,
+	.phy_poll_link_speed_func = phy_xlnx_gem_motorcomm_yt_poll_lspd,
 };
 
 /*
@@ -858,29 +1374,42 @@ static struct phy_xlnx_gem_api phy_xlnx_gem_ti_dp83822_api = {
  */
 static struct phy_xlnx_gem_supported_dev phy_xlnx_gem_supported_devs[] = {
 	{
-		.phy_id      = PHY_MRVL_PHY_ID_MODEL_88E1111,
+		.phy_id = PHY_MRVL_PHY_ID_MODEL_88E1111,
 		.phy_id_mask = PHY_MRVL_PHY_ID_MODEL_MASK,
-		.api         = &phy_xlnx_gem_marvell_alaska_api,
-		.identifier  = "Marvell Alaska 88E1111"
+		.api = &phy_xlnx_gem_marvell_alaska_api,
+		.identifier = "Marvell Alaska 88E1111",
 	},
 	{
-		.phy_id      = PHY_MRVL_PHY_ID_MODEL_88E151X,
+		.phy_id = PHY_MRVL_PHY_ID_MODEL_88E151X,
 		.phy_id_mask = PHY_MRVL_PHY_ID_MODEL_MASK,
-		.api         = &phy_xlnx_gem_marvell_alaska_api,
-		.identifier  = "Marvell Alaska 88E151x"
+		.api = &phy_xlnx_gem_marvell_alaska_api,
+		.identifier = "Marvell Alaska 88E151x",
 	},
 	{
-		.phy_id      = PHY_TI_PHY_ID_MODEL_DP83822,
+		.phy_id = PHY_TI_PHY_ID_MODEL_DP83822,
 		.phy_id_mask = PHY_TI_PHY_ID_MODEL_MASK,
-		.api         = &phy_xlnx_gem_ti_dp83822_api,
-		.identifier  = "Texas Instruments DP83822"
+		.api = &phy_xlnx_gem_ti_dp83822_api,
+		.identifier = "Texas Instruments DP83822",
 	},
 	{
-		.phy_id      = PHY_TI_PHY_ID_MODEL_TLK105,
+		.phy_id = PHY_TI_PHY_ID_MODEL_TLK105,
 		.phy_id_mask = PHY_TI_PHY_ID_MODEL_MASK,
-		.api         = &phy_xlnx_gem_ti_dp83822_api,
-		.identifier  = "Texas Instruments TLK105"
+		.api = &phy_xlnx_gem_ti_dp83822_api,
+		.identifier = "Texas Instruments TLK105",
+	},
+	{
+		.phy_id = PHY_MC_KSZ_PHY_ID_MODEL_KSZ9031,
+		.phy_id_mask = PHY_MC_KSZ_PHY_ID_MODEL_MASK,
+		.api = &phy_xlnx_gem_microchip_ksz_api,
+		.identifier = "Microchip KSZ Family",
+	},
+	{
+		.phy_id = PHY_MOTORCOMM_YT_PHY_ID_MODEL_YT8511,
+		.phy_id_mask = PHY_MOTORCOMM_YT_PHY_ID_MODEL_MASK,
+		.api = &phy_xlnx_gem_motorcomm_yt_api,
+		.identifier = "Motorcomm YT8511",
 	}
+
 };
 
 /**
@@ -902,8 +1431,8 @@ int phy_xlnx_gem_detect(const struct device *dev)
 
 	uint8_t phy_curr_addr;
 	uint8_t phy_first_addr = dev_conf->phy_mdio_addr_fix;
-	uint8_t phy_last_addr = (dev_conf->phy_mdio_addr_fix != 0) ?
-		dev_conf->phy_mdio_addr_fix : 31;
+	uint8_t phy_last_addr =
+		(dev_conf->phy_mdio_addr_fix != 0) ? dev_conf->phy_mdio_addr_fix : 31;
 	uint32_t phy_id;
 	uint16_t phy_data;
 	uint32_t list_iter;
@@ -921,29 +1450,25 @@ int phy_xlnx_gem_detect(const struct device *dev)
 	if (!dev_conf->init_phy) {
 		return -ENOTSUP;
 	}
+	LOG_DBG("%s PHY detection", dev->name);
 
 	/*
 	 * PHY detection as described in Zynq-7000 TRM, chapter 16.3.4,
 	 * p. 517
 	 */
-	for (phy_curr_addr = phy_first_addr;
-		phy_curr_addr <= phy_last_addr;
-		phy_curr_addr++) {
+	for (phy_curr_addr = phy_first_addr; phy_curr_addr <= phy_last_addr; phy_curr_addr++) {
 		/* Read the upper & lower PHY ID 16-bit words */
-		phy_data = phy_xlnx_gem_mdio_read(
-			dev_conf->base_addr, phy_curr_addr,
-			PHY_IDENTIFIER_1_REGISTER);
+		phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, phy_curr_addr,
+						  PHY_IDENTIFIER_1_REGISTER);
 		phy_id = (((uint32_t)phy_data << 16) & 0xFFFF0000);
-		phy_data = phy_xlnx_gem_mdio_read(
-			dev_conf->base_addr, phy_curr_addr,
-			PHY_IDENTIFIER_2_REGISTER);
+		phy_data = phy_xlnx_gem_mdio_read(dev_conf->base_addr, phy_curr_addr,
+						  PHY_IDENTIFIER_2_REGISTER);
 		phy_id |= ((uint32_t)phy_data & 0x0000FFFF);
 
 		if (phy_id != 0x00000000 && phy_id != 0xFFFFFFFF) {
 			LOG_DBG("%s detected PHY at address %hhu: "
 				"ID 0x%08X",
-				dev->name,
-				phy_curr_addr, phy_id);
+				dev->name, phy_curr_addr, phy_id);
 
 			/*
 			 * Iterate the list of all supported PHYs -> if the
@@ -951,12 +1476,10 @@ int phy_xlnx_gem_detect(const struct device *dev)
 			 * in the device's run-time data struct.
 			 */
 			for (list_iter = 0; list_iter < ARRAY_SIZE(phy_xlnx_gem_supported_devs);
-					list_iter++) {
+			     list_iter++) {
 				if (phy_xlnx_gem_supported_devs[list_iter].phy_id ==
-					(phy_xlnx_gem_supported_devs[list_iter].phy_id_mask
-					& phy_id)) {
-					LOG_DBG("%s identified supported PHY: %s",
-						dev->name,
+				    (phy_xlnx_gem_supported_devs[list_iter].phy_id_mask & phy_id)) {
+					LOG_DBG("%s identified supported PHY: %s", dev->name,
 						phy_xlnx_gem_supported_devs[list_iter].identifier);
 
 					/*
