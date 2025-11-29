@@ -13,6 +13,7 @@
 #include "zephyr/kernel/thread_stack.h"
 #include "zephyr/toolchain/gcc.h"
 #include <zephyr/platform/hooks.h>
+#include <zephyr/sys/sys_io.h>
 
 #define INV_MPID	UINT32_MAX
 
@@ -57,6 +58,62 @@ struct boot_params {
 	void *arg;
 	int cpu_num;
 };
+
+#if defined(CONFIG_CPU_HAS_FPU) && defined(CONFIG_FPU)
+#define CPACR_CP10_FULL_ACCESS_BITS	(3U << 20)
+#define CPACR_CP11_FULL_ACCESS_BITS	(3U << 22)
+#define FPEXC_ENABLE_BIT		(1U << 30)
+
+static void z_arm_enable_secondary_fpu(void)
+{
+	uint32_t reg_val;
+
+	reg_val = __get_CPACR();
+	reg_val |= (CPACR_CP10_FULL_ACCESS_BITS | CPACR_CP11_FULL_ACCESS_BITS);
+	__set_CPACR(reg_val);
+	barrier_isync_fence_full();
+
+	__set_FPEXC(FPEXC_ENABLE_BIT);
+}
+#undef CPACR_CP10_FULL_ACCESS_BITS
+#undef CPACR_CP11_FULL_ACCESS_BITS
+#undef FPEXC_ENABLE_BIT
+#endif
+
+#define ZYNQ_SLCR_BASE		0xF8000000U
+#define ZYNQ_SLCR_LOCK		(ZYNQ_SLCR_BASE + 0x0004U)
+#define ZYNQ_SLCR_UNLOCK	(ZYNQ_SLCR_BASE + 0x0008U)
+#define ZYNQ_SLCR_A9_CPU_RST	(ZYNQ_SLCR_BASE + 0x0240U)
+#define ZYNQ_SLCR_A9_CPU_CLK	(ZYNQ_SLCR_BASE + 0x0244U)
+#define ZYNQ_SLCR_UNLOCK_KEY	0x0000DF0DU
+#define ZYNQ_SLCR_LOCK_KEY	0x0000767BU
+#define ZYNQ_SPIN_TABLE_ADDR	0xFFFFFFF0U
+#define ZYNQ_SECONDARY_ENTRY	0x001032B4U
+
+static void zynq_release_secondary_cpu(void)
+{
+	uint32_t sctlr;
+
+	__asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));
+	__asm__ volatile("dsb sy" ::: "memory");
+	__asm__ volatile("isb sy");
+	__asm__ volatile("mcr p15, 0, %0, c1, c0, 0" :: "r"(sctlr & ~0x1U));
+	__asm__ volatile("dsb sy" ::: "memory");
+	__asm__ volatile("isb sy");
+
+	sys_write32(ZYNQ_SLCR_UNLOCK_KEY, ZYNQ_SLCR_UNLOCK);
+	sys_write32(ZYNQ_SECONDARY_ENTRY, ZYNQ_SPIN_TABLE_ADDR);
+	sys_write32(0U, ZYNQ_SPIN_TABLE_ADDR + 4U);
+	sys_cache_data_flush_range((void *)ZYNQ_SPIN_TABLE_ADDR, 8U);
+	sys_write32(0U, ZYNQ_SLCR_A9_CPU_RST);
+	sys_write32(0U, ZYNQ_SLCR_A9_CPU_CLK);
+	sys_write32(ZYNQ_SLCR_LOCK_KEY, ZYNQ_SLCR_LOCK);
+	__asm__ volatile("sev" ::: "memory");
+
+	__asm__ volatile("mcr p15, 0, %0, c1, c0, 0" :: "r"(sctlr));
+	__asm__ volatile("dsb sy" ::: "memory");
+	__asm__ volatile("isb sy");
+}
 
 /* Offsets used in reset.S */
 BUILD_ASSERT(offsetof(struct boot_params, mpid) == BOOT_PARAM_MPID_OFFSET);
@@ -152,6 +209,9 @@ void arch_cpu_start(int cpu_num, k_thread_stack_t *stack, int sz, arch_cpustart_
 			(void *)&arm_cpu_boot_params,
 			sizeof(arm_cpu_boot_params));
 
+
+	zynq_release_secondary_cpu();
+
 	/*! TODO: Support PSCI
 	 *  \todo Support PSCI
 	 */
@@ -202,6 +262,10 @@ void arch_secondary_cpu_init(void)
 #ifdef CONFIG_SOC_PER_CORE_INIT_HOOK
 	soc_per_core_init_hook();
 #endif /* CONFIG_SOC_PER_CORE_INIT_HOOK */
+
+#if defined(CONFIG_CPU_HAS_FPU) && defined(CONFIG_FPU)
+	z_arm_enable_secondary_fpu();
+#endif
 
 	fn = arm_cpu_boot_params.fn;
 	arg = arm_cpu_boot_params.arg;
