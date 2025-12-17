@@ -429,7 +429,14 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 	.base_addr			= DT_REG_ADDR_BY_IDX(DT_INST(port, xlnx_gem), 0),\
 	.config_func			= eth_xlnx_gem##port##_irq_config,\
 	.pll_clock_frequency		= DT_INST_PROP(port, clock_frequency),\
+	IF_ENABLED(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000, (\
+	.syscon_dev			= DEVICE_DT_GET(DT_INST_PHANDLE(port, syscon)),\
+	.clk_ctrl_reg_offset		= (uint16_t)(DT_REG_ADDR_BY_IDX(DT_INST(port, xlnx_gem), 1) -\
+						     DT_REG_ADDR(DT_INST_PHANDLE(port, syscon))),\
+	))\
+	IF_DISABLED(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000, (\
 	.clk_ctrl_reg_address		= DT_REG_ADDR_BY_IDX(DT_INST(port, xlnx_gem), 1),\
+	))\
 	.mdc_divider			= (enum eth_xlnx_mdc_clock_divider)\
 		(DT_INST_PROP(port, mdc_divider)),\
 	.max_link_speed			= (enum eth_xlnx_link_speed)\
@@ -680,7 +687,12 @@ struct eth_xlnx_gem_dev_cfg {
 	eth_xlnx_gem_config_irq_t	config_func;
 
 	uint32_t			pll_clock_frequency;
+#if defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
+	const struct device		*syscon_dev;
+	uint16_t			clk_ctrl_reg_offset;
+#else
 	uint32_t			clk_ctrl_reg_address;
+#endif
 	enum eth_xlnx_mdc_clock_divider	mdc_divider;
 
 	enum eth_xlnx_link_speed	max_link_speed;

@@ -25,6 +25,9 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/__assert.h>
+#if defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
+#include <zephyr/drivers/syscon.h>
+#endif
 
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/ethernet.h>
@@ -911,7 +914,12 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 		sys_write32(tmp, ETH_XLNX_CRL_APB_WPROT_REGISTER_ADDRESS);
 	}
 # elif defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
-	clk_ctrl_reg  = sys_read32(dev_conf->clk_ctrl_reg_address);
+	if (!device_is_ready(dev_conf->syscon_dev)) {
+		LOG_ERR("%s: SLCR syscon device not ready", dev->name);
+		return;
+	}
+
+	syscon_read_reg(dev_conf->syscon_dev, dev_conf->clk_ctrl_reg_offset, &clk_ctrl_reg);
 	clk_ctrl_reg &= ~((ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
 			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR0_SHIFT) |
 			(ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
@@ -921,7 +929,7 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 			((div1 & ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK) <<
 			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR1_SHIFT);
 
-	sys_write32(clk_ctrl_reg, dev_conf->clk_ctrl_reg_address);
+	syscon_write_reg(dev_conf->syscon_dev, dev_conf->clk_ctrl_reg_offset, clk_ctrl_reg);
 #endif /* CONFIG_SOC_XILINX_ZYNQMP / CONFIG_SOC_FAMILY_XILINX_ZYNQ7000 */
 
 	LOG_DBG("%s set clock dividers div0/1 %u/%u for target "

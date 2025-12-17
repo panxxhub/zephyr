@@ -58,6 +58,7 @@
 				     <GIC_SPI 23 IRQ_TYPE_LEVEL
 				      IRQ_DEFAULT_PRIORITY>;
 			interrupt-names = "irq_0", "irq_1";
+			syscon = <&slcr>;
 			mdio-phy-address = <XLNX_GEM_PHY_AUTO_DETECT>;
 			phy-poll-interval = <1000>;
 			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
@@ -84,6 +85,7 @@
 				     <GIC_SPI 46 IRQ_TYPE_LEVEL
 				      IRQ_DEFAULT_PRIORITY>;
 			interrupt-names = "irq_0", "irq_1";
+			syscon = <&slcr>;
 			mdio-phy-address = <XLNX_GEM_PHY_AUTO_DETECT>;
 			phy-poll-interval = <1000>;
 			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
