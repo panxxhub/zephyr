@@ -55,7 +55,7 @@
 };
 
 uart2: &scb2 {
-	compatible = "infineon,cat1-uart-pdl";
+	compatible = "infineon,cat1-uart";
 	status = "okay";
 	current-speed = <115200>;
 
@@ -101,9 +101,5 @@ uart2: &scb2 {
 };
 
 &gpio_prt20 {
-	status = "okay";
-};
-
-&dpll_hp {
 	status = "okay";
 };

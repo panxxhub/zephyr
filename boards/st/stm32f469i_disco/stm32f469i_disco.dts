@@ -19,7 +19,7 @@
 		zephyr,shell-uart = &usart3;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
-		zephyr,ccm = &ccm0;
+		zephyr,dtcm = &ccm0;
 		zephyr,display = &ltdc;
 		zephyr,touch = &ft5336;
 	};
@@ -53,12 +53,6 @@
 			gpios = <&gpiok 3 GPIO_ACTIVE_HIGH>;
 			label = "User LD4";
 		};
-	};
-
-	lvgl_pointer {
-		compatible = "zephyr,lvgl-pointer-input";
-		input = <&ft5336>;
-		invert-y;
 	};
 
 	gpio_keys {
@@ -141,6 +135,9 @@
 		reg = <0x2a>;
 		int-gpios = <&gpioj 5 0>;
 		status = "okay";
+		inverted-y;
+		screen-width = <800>;
+		screen-height = <480>;
 	};
 };
 

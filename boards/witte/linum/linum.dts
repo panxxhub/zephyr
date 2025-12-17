@@ -57,12 +57,6 @@
 		led0 = &green_led;
 		led1 = &blue_led;
 	};
-
-	lvgl_pointer {
-		compatible = "zephyr,lvgl-pointer-input";
-		input = <&ft5446>;
-		swap-xy;
-	};
 };
 
 &gpiod {
@@ -222,6 +216,9 @@ zephyr_udc0: &usbotg_fs {
 		compatible = "focaltech,ft5336";
 		reg = <0x38>;
 		int-gpios = <&gpioh 9 0>;
+		swapped-x-y;
+		screen-width = <1024>;
+		screen-height = <600>;
 	};
 };
 
@@ -392,7 +389,7 @@ zephyr_udc0: &usbotg_fs {
 	status = "okay";
 	width = <1024>;
 	height = <600>;
-	pixel-format = <PANEL_PIXEL_FORMAT_RGB_565>;
+	pixel-format = <PANEL_PIXEL_FORMAT_RGB_888>;
 
 	display-timings {
 		compatible = "zephyr,panel-timing";
@@ -407,6 +404,7 @@ zephyr_udc0: &usbotg_fs {
 		hfront-porch = <160>;
 		vfront-porch = <12>;
 	};
+
 	def-back-color-red = <0xFF>;
 	def-back-color-green = <0xFF>;
 	def-back-color-blue = <0xFF>;

@@ -37,17 +37,18 @@ BUILD_ASSERT(DT_REG_SIZE(DT_CHOSEN(zephyr_sram)) == KB(195) ||
 	     DT_REG_SIZE(DT_CHOSEN(zephyr_sram)) == KB(319));
 
 struct siwx91x_nwp_data {
+	uint8_t power_profile;
 	char current_country_code[WIFI_COUNTRY_CODE_LEN];
 };
 
 struct siwx91x_nwp_config {
 	void (*config_irq)(const struct device *dev);
 	uint32_t stack_size;
-	uint8_t power_profile;
 	uint8_t antenna_selection;
 	bool support_1p8v;
 	bool enable_xtal_correction;
 	bool qspi_80mhz_clk;
+	uint32_t clock_frequency;
 };
 
 typedef struct {
@@ -203,7 +204,7 @@ static void siwx91x_configure_sta_mode(sl_si91x_boot_configuration_t *boot_confi
 	} else if (wifi_enabled) {
 		boot_config->coex_mode = SL_SI91X_WLAN_ONLY_MODE;
 	} else if (bt_enabled) {
-		boot_config->coex_mode = SL_SI91X_BLE_MODE;
+		boot_config->coex_mode = SL_SI91X_WLAN_BLE_MODE;
 	} else {
 		/*
 		 * Even if neither WiFi or BLE is used we have to specify a Coex mode
@@ -300,7 +301,6 @@ static void siwx91x_configure_network_stack(sl_si91x_boot_configuration_t *boot_
 
 static int siwx91x_check_nwp_version(void)
 {
-	sl_wifi_firmware_version_t expected_version;
 	sl_wifi_firmware_version_t version;
 	int ret;
 
@@ -309,38 +309,29 @@ static int siwx91x_check_nwp_version(void)
 		return -EINVAL;
 	}
 
-	sscanf(SIWX91X_NWP_FW_EXPECTED_VERSION, "%hhX.%hhd.%hhd.%hhd.%hhd.%hhd.%hd",
-	       &expected_version.rom_id,
-	       &expected_version.major,
-	       &expected_version.minor,
-	       &expected_version.security_version,
-	       &expected_version.patch_num,
-	       &expected_version.customer_id,
-	       &expected_version.build_num);
-
 	/* Ignore rom_id:
-	 * B is parsed as an hex value and we get 11 in expected_version.rom_id
-	 * We received rom_id=17 in version.rom_id, we suspect a double hex->decimal conversion
+	 * the right value is 0x0B but we received 17 in version.rom_id, we suspect a double
+	 * hex->decimal conversion
 	 */
-	if (expected_version.major != version.major) {
+	if (siwx91x_nwp_fw_expected_version.major != version.major) {
 		return -EINVAL;
 	}
-	if (expected_version.minor != version.minor) {
+	if (siwx91x_nwp_fw_expected_version.minor != version.minor) {
 		return -EINVAL;
 	}
-	if (expected_version.security_version != version.security_version) {
+	if (siwx91x_nwp_fw_expected_version.security_version != version.security_version) {
 		return -EINVAL;
 	}
-	if (expected_version.patch_num != version.patch_num) {
+	if (siwx91x_nwp_fw_expected_version.patch_num != version.patch_num) {
 		return -EINVAL;
 	}
-	if (expected_version.customer_id != version.customer_id) {
-		LOG_DBG("customer_id diverge: expected %d, actual %d", expected_version.customer_id,
-			version.customer_id);
+	if (siwx91x_nwp_fw_expected_version.customer_id != version.customer_id) {
+		LOG_DBG("customer_id diverge: expected %d, actual %d",
+			siwx91x_nwp_fw_expected_version.customer_id, version.customer_id);
 	}
-	if (expected_version.build_num != version.build_num) {
-		LOG_DBG("build_num diverge: expected %d, actual %d", expected_version.build_num,
-			version.build_num);
+	if (siwx91x_nwp_fw_expected_version.build_num != version.build_num) {
+		LOG_DBG("build_num diverge: expected %d, actual %d",
+			siwx91x_nwp_fw_expected_version.build_num, version.build_num);
 	}
 
 	return 0;
@@ -350,8 +341,9 @@ static int siwx91x_get_nwp_config(const struct device *dev,
 				  sl_wifi_device_configuration_t *get_config,
 				  uint8_t wifi_oper_mode, bool hidden_ssid, uint8_t max_num_sta)
 {
+	const struct siwx91x_nwp_config *config = dev->config;
 	sl_wifi_device_configuration_t default_config = {
-		.region_code = siwx91x_map_country_code_to_region(DEFAULT_COUNTRY_CODE),
+		.region_code = siwx91x_map_country_code_to_region(siwx91x_get_country_code(dev)),
 		.band = SL_SI91X_WIFI_BAND_2_4GHZ,
 		.boot_option = LOAD_NWP_FW,
 		.boot_config = {
@@ -360,6 +352,11 @@ static int siwx91x_get_nwp_config(const struct device *dev,
 			.custom_feature_bit_map = SL_SI91X_CUSTOM_FEAT_EXTENSION_VALID |
 						  SL_SI91X_CUSTOM_FEAT_ASYNC_CONNECTION_STATUS,
 			.ext_custom_feature_bit_map = SL_SI91X_EXT_FEAT_XTAL_CLK,
+		},
+		.ta_pool = {
+			.tx_ratio_in_buffer_pool     = 1,
+			.rx_ratio_in_buffer_pool     = 1,
+			.global_ratio_in_buffer_pool = 1
 		}
 	};
 
@@ -377,9 +374,24 @@ static int siwx91x_get_nwp_config(const struct device *dev,
 	if (IS_ENABLED(CONFIG_WIFI_SILABS_SIWX91X_FEAT_HIDE_PSK_CREDENTIALS)) {
 		boot_config->feature_bit_map |= SL_SI91X_FEAT_HIDE_PSK_CREDENTIALS;
 	}
-	siwx91x_store_country_code(dev, DEFAULT_COUNTRY_CODE);
 	siwx91x_apply_sram_config(boot_config);
 	siwx91x_apply_boot_config(dev, boot_config);
+
+	/* Apply TA clock configuration based on DT property */
+	switch (config->clock_frequency) {
+	case 80000000:
+		/* no configuration bit needed */
+		break;
+	case 120000000:
+		boot_config->custom_feature_bit_map |= SL_SI91X_CUSTOM_FEAT_SOC_CLK_CONFIG_120MHZ;
+		break;
+	case 160000000:
+		boot_config->custom_feature_bit_map |= SL_SI91X_CUSTOM_FEAT_SOC_CLK_CONFIG_160MHZ;
+		break;
+	default:
+		__ASSERT(0, "Corrupted DT configuration");
+		break;
+	}
 
 	switch (wifi_oper_mode) {
 	case WIFI_STA_MODE:
@@ -425,15 +437,51 @@ int siwx91x_nwp_mode_switch(const struct device *dev, uint8_t oper_mode, bool hi
 	return 0;
 }
 
+int siwx91x_nwp_apply_power_profile(const struct device *dev)
+{
+	struct siwx91x_nwp_data *data = dev->data;
+	sl_wifi_performance_profile_t performance_profile = {
+		.profile = data->power_profile
+	};
+	sl_bt_performance_profile_t bt_performance_profile = {
+		.profile = data->power_profile
+	};
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_SOC_SIWX91X_PM_BACKEND_PMGR)) {
+		/* no_op if PM is not enabled*/
+		return 0;
+	}
+
+	if (IS_ENABLED(CONFIG_BT_SILABS_SIWX91X)) {
+		ret = sl_si91x_bt_set_performance_profile(&bt_performance_profile);
+		if (ret) {
+			LOG_ERR("Failed to initiate power save in BLE mode");
+			return -EINVAL;
+		}
+	}
+
+	ret = sl_wifi_set_performance_profile(&performance_profile);
+	if (ret) {
+		return -EINVAL;
+	}
+
+	/* Remove the previously added PS4 power state requirement */
+	sl_si91x_power_manager_remove_ps_requirement(SL_SI91X_POWER_MANAGER_PS4);
+
+	return 0;
+}
+
 static int siwx91x_nwp_init(const struct device *dev)
 {
 	const struct siwx91x_nwp_config *config = dev->config;
-	__maybe_unused sl_wifi_performance_profile_t performance_profile = {
-		.profile = config->power_profile};
-	__maybe_unused sl_bt_performance_profile_t bt_performance_profile = {
-		.profile = config->power_profile};
+	struct siwx91x_nwp_data *data = dev->data;
 	sl_wifi_device_configuration_t network_config;
 	int ret;
+
+	if (IS_ENABLED(CONFIG_BT_SILABS_SIWX91X) || IS_ENABLED(CONFIG_WIFI_SILABS_SIWX91X)) {
+		data->power_profile = ASSOCIATED_POWER_SAVE;
+	}
 
 	siwx91x_get_nwp_config(dev, &network_config, WIFI_STA_MODE, false, 0);
 	/* TODO: If sl_net_*_profile() functions will be needed for WiFi then call
@@ -448,32 +496,31 @@ static int siwx91x_nwp_init(const struct device *dev)
 	/* Check if the NWP firmware version is correct */
 	ret = siwx91x_check_nwp_version();
 	if (ret < 0) {
-		LOG_ERR("Unexpected NWP firmware version (expected: %s)",
-			SIWX91X_NWP_FW_EXPECTED_VERSION);
+		LOG_ERR("Unexpected NWP firmware version (expected: %X.%d.%d.%d.%d.%d.%d)",
+			siwx91x_nwp_fw_expected_version.rom_id,
+			siwx91x_nwp_fw_expected_version.major,
+			siwx91x_nwp_fw_expected_version.minor,
+			siwx91x_nwp_fw_expected_version.security_version,
+			siwx91x_nwp_fw_expected_version.patch_num,
+			siwx91x_nwp_fw_expected_version.customer_id,
+			siwx91x_nwp_fw_expected_version.build_num);
+		return -EINVAL;
 	}
 
-	if (IS_ENABLED(CONFIG_SOC_SIWX91X_PM_BACKEND_PMGR)) {
-		if (IS_ENABLED(CONFIG_BT_SILABS_SIWX91X)) {
-			ret = sl_si91x_bt_set_performance_profile(&bt_performance_profile);
-			if (ret) {
-				LOG_ERR("Failed to initiate power save in BLE mode");
-				return -EINVAL;
-			}
-		}
-		/*
-		 * Note: the WiFi related sources are always imported (because of
-		 * CONFIG_SILABS_SIWX91X_NWP) whatever the value of CONFIG_WIFI. However,
-		 * because of boot_config->coex_mode, sl_wifi_set_performance_profile() is a no-op
-		 * if CONFIG_WIFI=n and CONFIG_BT=y. We could probably remove the dependency to the
-		 * WiFi sources in this case. However, outside of the code size, this dependency
-		 * does not hurt.
-		 */
-		ret = sl_wifi_set_performance_profile(&performance_profile);
+	/* WORKAROUND:
+	 * Only set the power profile if Bluetooth is not enabled.
+	 *
+	 * If bt is enabled, we need to wait for the bt setup to complete
+	 * before setting the power profile.
+	 *
+	 * Because of that, if CONFIG_BT_SILABS_SIWX91X is enabled and
+	 * bt_enable() is not called, you will never go in sleep.
+	 */
+	if (!IS_ENABLED(CONFIG_BT_SILABS_SIWX91X)) {
+		ret = siwx91x_nwp_apply_power_profile(dev);
 		if (ret) {
 			return -EINVAL;
 		}
-		/* Remove the previously added PS4 power state requirement */
-		sl_si91x_power_manager_remove_ps_requirement(SL_SI91X_POWER_MANAGER_PS4);
 	}
 
 	config->config_irq(dev);
@@ -496,16 +543,18 @@ BUILD_ASSERT(CONFIG_SIWX91X_NWP_INIT_PRIORITY < CONFIG_KERNEL_INIT_PRIORITY_DEFA
 		irq_enable(DT_INST_IRQ_BY_NAME(inst, nwp_irq, irq));                               \
 	};                                                                                         \
                                                                                                    \
-	static struct siwx91x_nwp_data siwx91x_nwp_data_##inst = {};                               \
+	static struct siwx91x_nwp_data siwx91x_nwp_data_##inst = {                                 \
+		.power_profile = DEEP_SLEEP_WITH_RAM_RETENTION,                                    \
+	};                                                                                         \
                                                                                                    \
 	static const struct siwx91x_nwp_config siwx91x_nwp_config_##inst = {                       \
 		.config_irq = silabs_siwx91x_nwp_irq_configure_##inst,                             \
-		.power_profile = DT_ENUM_IDX(DT_DRV_INST(inst), power_profile),                    \
 		.stack_size = DT_INST_PROP(inst, stack_size),                                      \
 		.support_1p8v = DT_INST_PROP(inst, support_1p8v),                                  \
 		.enable_xtal_correction = DT_INST_PROP(inst, enable_xtal_correction),              \
 		.qspi_80mhz_clk = DT_INST_PROP(inst, qspi_80mhz_clk),                              \
 		.antenna_selection = DT_INST_ENUM_IDX(inst, antenna_selection),                    \
+		.clock_frequency = DT_INST_PROP(inst, clock_frequency)                             \
 	};                                                                                         \
                                                                                                    \
 	/* Coprocessor uses value stored in IVT to store its stack. We can't use Z_ISR_DECLARE() */\

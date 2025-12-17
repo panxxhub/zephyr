@@ -143,11 +143,11 @@ flexcan5         | PTC11  | PTC11_CAN0_RX  P22/P23
    and support maximum 32 message buffers for concurrent active instances with 8 bytes
    payload. We need to pay attention to configuration options:
 
-   1. :kconfig:option:`CONFIG_CAN_MAX_MB` must be less or equal than the
+   1. :kconfig:option:`CONFIG_CAN_MCUX_FLEXCAN_MAX_MB` must be less or equal than the
       maximum number of message buffers that is according to the table below.
 
-   2. :kconfig:option:`CONFIG_CAN_MAX_FILTER` must be less or equal than
-      :kconfig:option:`CONFIG_CAN_MAX_MB`.
+   2. :kconfig:option:`CONFIG_CAN_MCUX_FLEXCAN_MAX_FILTERS` must be less or equal than
+      :kconfig:option:`CONFIG_CAN_MCUX_FLEXCAN_MAX_MB`.
 
 ===============  ==========  ================  ================
 Devicetree node  Payload     Hardware support  Software support
@@ -295,6 +295,37 @@ For example, to erase and verify flash content:
 .. code-block:: console
 
    west flash -r trace32 --startup-args elfFile=build/zephyr/zephyr.elf loadTo=flash eraseFlash=yes verifyFlash=yes
+
+MCUboot
+=======
+
+This board supports app chain-loading using MCUboot.
+
+Build & Flash
+-------------
+
+To build MCUboot and the ``flash_shell`` sample application together and
+generate HEX files suitable for flashing, run:
+
+.. code-block:: console
+
+   west build -p -b mr_canhubk3/s32k344/mcuboot samples/drivers/flash_shell --sysbuild
+   west flash
+
+The resulting artifacts are:
+
+* MCUboot: ``build/mcuboot/zephyr/zephyr.hex``
+* App (unsigned): ``build/flash_shell/zephyr/zephyr.hex``
+
+Troubleshooting
+---------------
+
+    If MCUboot prints “Image in the primary slot is not valid” or stalls after
+    “Jumping to the first image slot”, the app was likely signed with a 512-byte header.
+    Re-sign with --header-size 0x400 and re-flash.
+
+    Do not add an IVT to MCUboot-chainloaded applications;
+    it’s only emitted for standalone/XIP images or MCUboot itself.
 
 Debugging
 =========
