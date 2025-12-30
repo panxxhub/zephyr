@@ -455,7 +455,6 @@ static int lan9250_read_buf(const struct device *dev, uint8_t *data_buffer, uint
 
 static int lan9250_rx(const struct device *dev)
 {
-	const struct lan9250_config *config = dev->config;
 	struct lan9250_runtime *ctx = dev->data;
 	const uint16_t buf_rx_size = CONFIG_NET_BUF_DATA_SIZE;
 	struct net_pkt *pkt;
@@ -487,7 +486,7 @@ static int lan9250_rx(const struct device *dev)
 
 	/* Get the frame from the buffer */
 	pkt = net_pkt_rx_alloc_with_buffer(ctx->iface, pkt_len, NET_AF_UNSPEC, 0,
-					   K_MSEC(config->timeout));
+					   K_MSEC(CONFIG_ETH_LAN9250_BUF_ALLOC_TIMEOUT));
 	if (!pkt) {
 		LOG_ERR("%s: Could not allocate rx buffer", dev->name);
 		eth_stats_update_errors_rx(ctx->iface);
@@ -744,7 +743,6 @@ static int lan9250_init(const struct device *dev)
 
 #define LAN9250_DEFINE(inst)                                                                       \
 	static struct lan9250_runtime lan9250_##inst##_runtime = {                                 \
-		.mac_address = DT_INST_PROP_OR(inst, local_mac_address, {0}),                      \
 		.tx_rx_sem = Z_SEM_INITIALIZER(lan9250_##inst##_runtime.tx_rx_sem, 1, UINT_MAX),   \
 		.int_sem = Z_SEM_INITIALIZER(lan9250_##inst##_runtime.int_sem, 0, UINT_MAX),       \
 	};                                                                                         \
@@ -753,7 +751,6 @@ static int lan9250_init(const struct device *dev)
 		.spi = SPI_DT_SPEC_INST_GET(inst, SPI_WORD_SET(8)),                                \
 		.interrupt = GPIO_DT_SPEC_INST_GET(inst, int_gpios),                               \
 		.reset = GPIO_DT_SPEC_INST_GET_OR(inst, reset_gpios, {0}),                         \
-		.timeout = CONFIG_ETH_LAN9250_BUF_ALLOC_TIMEOUT,                                   \
 		.mac_cfg = NET_ETH_MAC_DT_INST_CONFIG_INIT(inst),                                  \
 	};                                                                                         \
                                                                                                    \
