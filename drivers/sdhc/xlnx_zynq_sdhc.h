@@ -164,8 +164,10 @@
 #define GET_BITS(reg_name, start, width) ((reg_name) & (((1 << (width)) - 1) << (start)))
 
 #define SET_BITS(reg, pos, bit_width, val)                                                         \
-	reg &= ~((bit_width) << (pos));                                                            \
-	reg |= (((val) & (bit_width)) << (pos))
+	do {                                                                                       \
+		(reg) &= ~((bit_width) << (pos));                                                  \
+		(reg) |= (((val) & (bit_width)) << (pos));                                         \
+	} while (0)
 
 #define ADDRESS_32BIT_MASK 0xFFFFFFFF
 
