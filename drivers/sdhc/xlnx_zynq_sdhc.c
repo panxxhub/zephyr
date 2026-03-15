@@ -1452,9 +1452,9 @@ static int zynq_sdhc_get_host_props(const struct device *dev, struct sdhc_host_p
 	props->host_caps.sdr104_support = (bool)(cap & BIT64(33U));
 	props->host_caps.sdr50_support = (bool)(cap & BIT64(32U));
 	props->host_caps.bus_8_bit_support = data->bus_width == SDHC_BUS_WIDTH8BIT;
-	props->host_caps.bus_4_bit_support = data->bus_width == SDHC_BUS_WIDTH4BIT;
-	props->host_caps.hs200_support = (bool)(cfg->hs200_mode);
-	props->host_caps.hs400_support = (bool)(cfg->hs400_mode);
+	props->bus_4_bit_support = data->bus_width == SDHC_BUS_WIDTH4BIT;
+	props->hs200_support = (bool)(cfg->hs200_mode);
+	props->hs400_support = (bool)(cfg->hs400_mode);
 
 	data->props = *props;
 
