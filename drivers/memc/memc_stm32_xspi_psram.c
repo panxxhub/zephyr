@@ -229,11 +229,6 @@ static int memc_stm32_xspi_psram_init(const struct device *dev)
 		return ret;
 	}
 
-	if (!device_is_ready(DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE))) {
-		LOG_ERR("clock control device not ready");
-		return -ENODEV;
-	}
-
 	/* Clock configuration */
 	if (clock_control_on(DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE),
 			     (clock_control_subsys_t) &dev_cfg->pclken) != 0) {
@@ -413,7 +408,7 @@ static struct memc_stm32_xspi_psram_data memc_stm32_xspi_data = {
 			.DelayHoldQuarterCycle = HAL_XSPI_DHQC_ENABLE,
 			.ChipSelectBoundary = DT_INST_PROP(0, st_csbound),
 			.MaxTran = 0U,
-			.Refresh = 0x81U,
+			.Refresh = DT_INST_PROP(0, st_refresh),
 			.MemorySelect = HAL_XSPI_CSSEL_NCS1,
 		},
 	},

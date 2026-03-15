@@ -13,6 +13,7 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/led/led.h>
 #include "arduino_r3_connector.dtsi"
+#include "grove_connectors.dtsi"
 #include "maker_uno_rp2040-pinctrl.dtsi"
 
 / {
@@ -57,24 +58,17 @@
 			label = "LED GP3";
 		};
 	};
-
-	stemma_connector: stemma_connector {
-		compatible = "stemma-qt-connector";
-		#gpio-cells = <2>;
-		gpio-map-mask = <0xffffffff 0xffffffc0>;
-		gpio-map-pass-thru = <0 0x3f>;
-		gpio-map = <0 0 &gpio0 21 0>, /* SCL */
-			   <1 0 &gpio0 20 0>; /* SDA */
-	};
 };
 
 &flash0 {
 	reg = <0x10000000 DT_SIZE_M(2)>;
+	ranges = <0x0 0x10000000 DT_SIZE_M(2)>;
 
 	partitions {
 		compatible = "fixed-partitions";
 		#address-cells = <1>;
 		#size-cells = <1>;
+		ranges;
 
 		/* Reserved memory for the second stage bootloader */
 		second_stage_bootloader: partition@0 {

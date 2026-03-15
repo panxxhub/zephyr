@@ -228,7 +228,7 @@ SECTION_FUNC(exception.entry, _isr_wrapper)
 	bne t1, t2, no_fp
 	/* determine if we trapped on an FP instruction. */
 	csrr t2, mtval		/* get faulting instruction */
-#ifdef RISCV_NO_MTVAL_ON_FP_TRAP
+#ifdef CONFIG_RISCV_NO_MTVAL_ON_FP_TRAP
 	/*
 	 * Some implementations may not support MTVAL in this capacity.
 	 * Notably QEMU when a CSR instruction is involved.
@@ -479,7 +479,8 @@ do_fault:
 	addi sp, sp, -__callee_saved_t_SIZEOF
 	STORE_CALLEE_SAVED(a1)
 #endif /* CONFIG_EXCEPTION_DEBUG */
-	tail z_riscv_fatal_error
+	call z_riscv_fatal_error
+	j check_reschedule
 
 #if defined(CONFIG_IRQ_OFFLOAD)
 do_irq_offload:

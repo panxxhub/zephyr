@@ -187,6 +187,11 @@ static int stm32_sdmmc_clock_enable(struct stm32_sdmmc_priv *priv)
 	if (IS_ENABLED(CONFIG_SDMMC_STM32_CLOCK_CHECK)) {
 		uint32_t sdmmc_clock_rate;
 
+		if (DT_INST_NUM_CLOCKS(0) <= 1) {
+			LOG_ERR("No domain clock provided on SDMMC DT node!");
+			return -ENOTSUP;
+		}
+
 		if (clock_control_get_rate(clock,
 					   (clock_control_subsys_t)&priv->pclken[1],
 					   &sdmmc_clock_rate) != 0) {
@@ -704,9 +709,13 @@ static int stm32_sdmmc_access_erase(struct disk_info *disk, uint32_t sector, uin
 
 	k_sem_take(&priv->thread_lock, K_FOREVER);
 
+#ifdef CONFIG_SDMMC_STM32_EMMC
+	err = HAL_MMC_Erase(&priv->hsd, sector, sector + count);
+#else
 	err = HAL_SD_Erase(&priv->hsd, sector, sector + count);
+#endif
 	if (err != HAL_OK) {
-		LOG_ERR("sd erase block failed %d", err);
+		LOG_ERR("sdmmc erase block failed %d", err);
 		err = -EIO;
 		goto end;
 	}
@@ -928,12 +937,6 @@ static void stm32_sdmmc_pwr_off(struct stm32_sdmmc_priv *priv)
 static int disk_stm32_sdmmc_init(const struct device *dev)
 {
 	struct stm32_sdmmc_priv *priv = dev->data;
-	const struct device *const clk = DEVICE_DT_GET(STM32_CLOCK_CONTROL_NODE);
-
-	if (!device_is_ready(clk)) {
-		LOG_ERR("clock control device not ready");
-		return -ENODEV;
-	}
 
 	if (!device_is_ready(priv->reset.dev)) {
 		LOG_ERR("reset control device not ready");

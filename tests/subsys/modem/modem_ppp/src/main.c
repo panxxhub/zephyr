@@ -107,7 +107,8 @@ static struct net_l2 test_net_l2 = {
 	.recv = test_net_l2_recv,
 };
 static struct ppp_context test_net_l2_data = {
-	.lcp.peer_options.async_map = 0xffffffff,
+	.phase = PPP_RUNNING,
+	.lcp.peer_options.async_map = NET_PPP_DEFAULT_ASYNC_MAP,
 };
 
 /* This emulates the network interface device which will receive unwrapped network packets */
@@ -341,7 +342,7 @@ ZTEST(modem_ppp, test_ppp_frame_receive)
 	net_pkt_read(pkt, buffer, pkt_len);
 
 	zassert_true(memcmp(buffer, ppp_frame_unwrapped, pkt_len) == 0,
-		     "Recevied net pkt data incorrect");
+		     "Received net pkt data incorrect");
 }
 
 ZTEST(modem_ppp, test_corrupt_start_end_ppp_frame_receive)
@@ -368,7 +369,7 @@ ZTEST(modem_ppp, test_corrupt_start_end_ppp_frame_receive)
 	net_pkt_cursor_init(pkt);
 	net_pkt_read(pkt, buffer, pkt_len);
 	zassert_true(memcmp(buffer, ppp_frame_unwrapped, pkt_len) == 0,
-		     "Recevied net pkt data incorrect");
+		     "Received net pkt data incorrect");
 }
 
 ZTEST(modem_ppp, test_ppp_frame_send)
@@ -486,7 +487,7 @@ ZTEST(modem_ppp, test_ip_frame_receive)
 	net_pkt_cursor_init(pkt);
 	net_pkt_read(pkt, buffer, pkt_len);
 	zassert_true(memcmp(buffer, ip_frame_unwrapped_with_protocol, pkt_len) == 0,
-		     "Recevied net pkt data incorrect");
+		     "Received net pkt data incorrect");
 }
 
 ZTEST(modem_ppp, test_ip_frame_send)

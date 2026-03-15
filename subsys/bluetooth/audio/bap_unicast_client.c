@@ -34,7 +34,6 @@
 #include <zephyr/sys/__assert.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/byteorder.h>
-#include <zephyr/sys/check.h>
 #include <zephyr/sys/slist.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/util_macro.h>
@@ -458,6 +457,39 @@ bool bt_bap_unicast_client_has_ep(const struct bt_bap_ep *ep)
 	}
 
 	return false;
+}
+
+struct bt_conn *bt_bap_unicast_client_ep_get_conn(const struct bt_bap_ep *ep)
+{
+	for (size_t i = 0U; i < ARRAY_SIZE(uni_cli_insts); i++) {
+#if CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SNK_COUNT > 0
+		if (PART_OF_ARRAY(uni_cli_insts[i].snks, ep)) {
+			struct bt_bap_unicast_client_ep *client_ep =
+				CONTAINER_OF(ep, struct bt_bap_unicast_client_ep, ep);
+
+			if (client_ep->handle == BAP_HANDLE_UNUSED) {
+				return NULL;
+			}
+
+			return bt_conn_lookup_index((uint8_t)i);
+		}
+#endif /* CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SNK_COUNT > 0 */
+
+#if CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SRC_COUNT > 0
+		if (PART_OF_ARRAY(uni_cli_insts[i].srcs, ep)) {
+			struct bt_bap_unicast_client_ep *client_ep =
+				CONTAINER_OF(ep, struct bt_bap_unicast_client_ep, ep);
+
+			if (client_ep->handle == BAP_HANDLE_UNUSED) {
+				return NULL;
+			}
+
+			return bt_conn_lookup_index((uint8_t)i);
+		}
+#endif /* CONFIG_BT_BAP_UNICAST_CLIENT_ASE_SRC_COUNT > 0 */
+	}
+
+	return NULL;
 }
 
 static void unicast_client_ep_init(struct bt_bap_ep *ep, uint16_t handle, uint8_t dir)
@@ -1626,6 +1658,8 @@ static uint8_t unicast_client_cp_notify(struct bt_conn *conn,
 		stream = audio_stream_by_ep_id(conn, ase_rsp->id);
 		if (stream == NULL) {
 			LOG_DBG("Could not find stream by id %u", ase_rsp->id);
+
+			continue;
 		} else {
 			client_ep = CONTAINER_OF(stream->ep, struct bt_bap_unicast_client_ep, ep);
 			client_ep->cp_ntf_pending = false;
@@ -2727,12 +2761,12 @@ static void unicast_group_free(struct bt_bap_unicast_group *group)
 
 static int stream_param_check(const struct bt_bap_unicast_group_stream_param *param)
 {
-	CHECKIF(param->stream == NULL) {
+	if (param->stream == NULL) {
 		LOG_DBG("param->stream is NULL");
 		return -EINVAL;
 	}
 
-	CHECKIF(param->qos == NULL) {
+	if (param->qos == NULL) {
 		LOG_DBG("param->qos is NULL");
 		return -EINVAL;
 	}
@@ -2742,7 +2776,7 @@ static int stream_param_check(const struct bt_bap_unicast_group_stream_param *pa
 		return -EALREADY;
 	}
 
-	CHECKIF(bt_audio_verify_qos(param->qos) != BT_BAP_ASCS_REASON_NONE) {
+	if (bt_audio_verify_qos(param->qos) != BT_BAP_ASCS_REASON_NONE) {
 		LOG_DBG("Invalid QoS");
 		return -EINVAL;
 	}
@@ -2754,7 +2788,7 @@ static int stream_pair_param_check(const struct bt_bap_unicast_group_stream_pair
 {
 	int err;
 
-	CHECKIF(param->rx_param == NULL && param->tx_param == NULL) {
+	if (param->rx_param == NULL && param->tx_param == NULL) {
 		LOG_DBG("Invalid stream parameters");
 		return -EINVAL;
 	}
@@ -2789,7 +2823,7 @@ static bool valid_unicast_group_stream_param(const struct bt_bap_unicast_group *
 		return false;
 	}
 
-	CHECKIF(param->qos == NULL) {
+	if (param->qos == NULL) {
 		LOG_DBG("param->qos is NULL");
 		return false;
 	}
@@ -2810,7 +2844,7 @@ static bool valid_unicast_group_stream_param(const struct bt_bap_unicast_group *
 		}
 	}
 
-	CHECKIF(bt_audio_verify_qos(param->qos) != BT_BAP_ASCS_REASON_NONE) {
+	if (bt_audio_verify_qos(param->qos) != BT_BAP_ASCS_REASON_NONE) {
 		LOG_DBG("Invalid QoS");
 		return false;
 	}
@@ -2868,7 +2902,7 @@ valid_group_stream_pair_param(const struct bt_bap_unicast_group *unicast_group,
 {
 	struct bt_bap_unicast_group_cig_param cig_param = {0};
 
-	CHECKIF(pair_param == NULL) {
+	if (pair_param == NULL) {
 		LOG_DBG("pair_param is NULL");
 		return false;
 	}
@@ -2893,12 +2927,12 @@ valid_group_stream_pair_param(const struct bt_bap_unicast_group *unicast_group,
 static bool valid_unicast_group_param(struct bt_bap_unicast_group *unicast_group,
 				      const struct bt_bap_unicast_group_param *param)
 {
-	CHECKIF(param == NULL) {
+	if (param == NULL) {
 		LOG_DBG("streams is NULL");
 		return false;
 	}
 
-	CHECKIF(param->params_count > UNICAST_GROUP_STREAM_CNT) {
+	if (param->params_count > UNICAST_GROUP_STREAM_CNT) {
 		LOG_DBG("Too many streams provided: %u/%u", param->params_count,
 			UNICAST_GROUP_STREAM_CNT);
 		return false;
@@ -2930,7 +2964,7 @@ int bt_bap_unicast_group_create(struct bt_bap_unicast_group_param *param,
 	struct bt_bap_unicast_group *unicast_group;
 	int err;
 
-	CHECKIF(out_unicast_group == NULL) {
+	if (out_unicast_group == NULL) {
 		LOG_DBG("out_unicast_group is NULL");
 		return -EINVAL;
 	}
@@ -2996,7 +3030,7 @@ int bt_bap_unicast_group_reconfig(struct bt_bap_unicast_group *unicast_group,
 	IF_ENABLED(CONFIG_BT_ISO_TEST_PARAMS,
 		   (uint8_t num_subevents_backup[UNICAST_GROUP_STREAM_CNT]));
 
-	CHECKIF(unicast_group == NULL) {
+	if (unicast_group == NULL) {
 		LOG_DBG("unicast_group is NULL");
 		return -EINVAL;
 	}
@@ -3047,7 +3081,7 @@ int bt_bap_unicast_group_reconfig(struct bt_bap_unicast_group *unicast_group,
 				CONTAINER_OF(tx_param->stream->iso, struct bt_bap_iso, chan);
 
 			unicast_group_set_iso_stream_param(unicast_group, bap_iso, tx_param->qos,
-							   BT_AUDIO_DIR_SOURCE);
+							   BT_AUDIO_DIR_SINK);
 		}
 	}
 
@@ -3088,7 +3122,7 @@ int bt_bap_unicast_group_add_streams(struct bt_bap_unicast_group *unicast_group,
 	size_t num_added;
 	int err;
 
-	CHECKIF(unicast_group == NULL) {
+	if (unicast_group == NULL) {
 		LOG_DBG("unicast_group is NULL");
 		return -EINVAL;
 	}
@@ -3098,12 +3132,12 @@ int bt_bap_unicast_group_add_streams(struct bt_bap_unicast_group *unicast_group,
 		return -EINVAL;
 	}
 
-	CHECKIF(params == NULL) {
+	if (params == NULL) {
 		LOG_DBG("params is NULL");
 		return -EINVAL;
 	}
 
-	CHECKIF(num_param == 0) {
+	if (num_param == 0) {
 		LOG_DBG("num_param is 0");
 		return -EINVAL;
 	}
@@ -3172,7 +3206,7 @@ int bt_bap_unicast_group_delete(struct bt_bap_unicast_group *unicast_group)
 {
 	struct bt_bap_stream *stream;
 
-	CHECKIF(unicast_group == NULL) {
+	if (unicast_group == NULL) {
 		LOG_DBG("unicast_group is NULL");
 		return -EINVAL;
 	}
@@ -4634,7 +4668,7 @@ int bt_bap_unicast_client_discover(struct bt_conn *conn, enum bt_audio_dir dir)
 	}
 
 	role = conn->role;
-	if (role != BT_HCI_ROLE_CENTRAL) {
+	if (role != BT_CONN_ROLE_CENTRAL) {
 		LOG_DBG("Invalid conn role: %u, shall be central", role);
 		return -EINVAL;
 	}
@@ -4671,7 +4705,7 @@ int bt_bap_unicast_client_discover(struct bt_conn *conn, enum bt_audio_dir dir)
 
 int bt_bap_unicast_client_register_cb(struct bt_bap_unicast_client_cb *cb)
 {
-	CHECKIF(cb == NULL) {
+	if (cb == NULL) {
 		LOG_DBG("cb is NULL");
 		return -EINVAL;
 	}

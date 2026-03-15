@@ -13,6 +13,7 @@ from pathlib import Path, PureWindowsPath
 
 from west.commands import WestCommand
 from west.util import quote_sh_list
+
 from zephyr_ext_common import ZEPHYR_BASE
 
 sys.path.append(os.fspath(Path(__file__).parent.parent))
@@ -27,15 +28,14 @@ class Packages(WestCommand):
     def __init__(self):
         super().__init__(
             "packages",
-            "manage packages for Zephyr",
-            "List and Install packages for Zephyr and modules",
+            "",
+            description="List and Install packages for Zephyr and modules",
             accepts_unknown_args=True,
         )
 
     def do_add_parser(self, parser_adder):
         parser = parser_adder.add_parser(
             self.name,
-            help=self.help,
             description=self.description,
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog=textwrap.dedent(
@@ -115,7 +115,9 @@ class Packages(WestCommand):
             )
 
         # Store the zephyr modules for easier access
-        self.zephyr_modules = zephyr_module.parse_modules(ZEPHYR_BASE, self.manifest)
+        self.zephyr_modules = zephyr_module.parse_modules(
+            ZEPHYR_BASE, self.manifest, require_yaml_validation=False
+        )
 
         if args.modules:
             # Check for unknown module names

@@ -29,6 +29,8 @@
 #define TEST_AREA_DEV_NODE DT_INST(0, renesas_rz_qspi_xspi)
 #elif defined(CONFIG_FLASH_RENESAS_RZ_QSPI_SPIBSC)
 #define TEST_AREA_DEV_NODE DT_INST(0, renesas_rz_qspi_spibsc)
+#elif defined(CONFIG_FLASH_RENESAS_RZA2M_QSPI_SPIBSC)
+#define TEST_AREA_DEV_NODE DT_INST(0, renesas_rza2m_qspi_spibsc)
 #else
 #define TEST_AREA	storage_partition
 #endif
@@ -64,7 +66,7 @@
 #error "Unsupported configuration"
 #endif
 
-#define EXPECTED_SIZE	512
+#define EXPECTED_SIZE	MAX(256, CONFIG_FLASH_FILL_BUFFER_SIZE)
 
 #if !defined(CONFIG_FLASH_HAS_EXPLICIT_ERASE) &&		\
 	!defined(CONFIG_FLASH_HAS_NO_EXPLICIT_ERASE)

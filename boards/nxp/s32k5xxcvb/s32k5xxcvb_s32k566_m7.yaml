@@ -10,6 +10,14 @@ flash: 32768
 toolchain:
   - zephyr
 supported:
+  - adc
   - can
+  - spi
+  - dma
   - gpio
+  - pwm
+  - counter
+  - i2c
+  - watchdog
+  - flash
 vendor: nxp

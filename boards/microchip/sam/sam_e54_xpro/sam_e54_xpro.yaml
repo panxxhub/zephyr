@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Microchip Technology Inc.
+# Copyright (c) 2025-2026 Microchip Technology Inc.
 # SPDX-License-Identifier: Apache-2.0
 
 identifier: sam_e54_xpro
@@ -13,17 +13,21 @@ supported:
   - adc
   - clock_control
   - comparator
+  - counter
+  - dac
   - dma
   - entropy
   - flash
   - gpio
   - hwinfo
   - i2c
+  - interrupt_controller
   - mcuboot
   - pinctrl
   - pwm
   - reset
   - rtc
-  - shell
+  - spi
   - uart
+  - watchdog
 vendor: microchip

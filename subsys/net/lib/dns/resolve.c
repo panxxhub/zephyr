@@ -83,7 +83,6 @@ DNS_CACHE_DEFINE(dns_cache, CONFIG_DNS_RESOLVER_CACHE_MAX_ENTRIES);
 #endif /* CONFIG_DNS_RESOLVER_CACHE */
 
 static K_MUTEX_DEFINE(lock);
-static int init_called;
 static struct dns_resolve_context dns_default_ctx;
 
 /* Must be invoked with context lock held */
@@ -158,7 +157,7 @@ static void join_ipv4_mcast_group(struct net_if *iface, void *user_data)
 	int ret;
 
 	ret = net_ipv4_igmp_join(iface, &net_sin(addr)->sin_addr, NULL);
-	if (ret < 0 && ret != -EALREADY) {
+	if (ret < 0) {
 		NET_DBG("Cannot join %s mDNS group (%d)", "IPv4", ret);
 	} else {
 		NET_DBG("Joined %s mDNS group %s", "IPv4",
@@ -172,7 +171,7 @@ static void join_ipv6_mcast_group(struct net_if *iface, void *user_data)
 	int ret;
 
 	ret = net_ipv6_mld_join(iface, &net_sin6(addr)->sin6_addr);
-	if (ret < 0 && ret != -EALREADY) {
+	if (ret < 0) {
 		NET_DBG("Cannot join %s mDNS group (%d)", "IPv6", ret);
 	} else {
 		NET_DBG("Joined %s mDNS group %s", "IPv6",
@@ -318,6 +317,11 @@ static int dispatcher_cb(struct dns_socket_dispatcher *my_ctx, int sock,
 			goto free_buf;
 		}
 
+		if (ctx->queries[i].additional_queries >= CONFIG_DNS_RESOLVER_ADDITIONAL_QUERIES) {
+			ret = DNS_EAI_FAIL;
+			goto quit;
+		}
+
 		for (j = 0; j < SERVER_COUNT; j++) {
 			if (ctx->servers[j].sock < 0) {
 				continue;
@@ -331,6 +335,8 @@ static int dispatcher_cb(struct dns_socket_dispatcher *my_ctx, int sock,
 				nfail++;
 			}
 		}
+
+		ctx->queries[i].additional_queries++;
 
 		if (nfail > 0) {
 			NET_DBG("DNS cname query %d fails on %d attempts",
@@ -880,7 +886,7 @@ skip_event:
 		goto fail;
 	}
 
-	init_called++;
+	ctx->init_called++;
 	ctx->state = DNS_RESOLVE_CONTEXT_ACTIVE;
 	ctx->buf_timeout = DNS_BUF_TIMEOUT;
 	ret = 0;
@@ -903,16 +909,18 @@ int dns_resolve_init_with_svc(struct dns_resolve_context *ctx, const char *serve
 	k_mutex_lock(&lock, K_FOREVER);
 
 	/* Do cleanup only if we are starting the context for the first time */
-	if (init_called == 0) {
+	if (ctx->init_called == 0) {
 		(void)memset(ctx, 0, sizeof(*ctx));
 
 		(void)k_mutex_init(&ctx->lock);
 		ctx->state = DNS_RESOLVE_CONTEXT_INACTIVE;
 	}
 
+	k_mutex_lock(&ctx->lock, K_FOREVER);
 	ret = dns_resolve_init_locked(ctx, servers, servers_sa, svc, port,
 				      interfaces, true, DNS_SOURCE_UNKNOWN);
 
+	k_mutex_unlock(&ctx->lock);
 	k_mutex_unlock(&lock);
 
 	return ret;
@@ -1395,15 +1403,28 @@ int dns_validate_msg(struct dns_resolve_context *ctx,
 			goto quit;
 		}
 
+
+		if (answer_type == DNS_RR_TYPE_CNAME) {
+			/* Don't report CNAME records to the application, they're used internally
+			 * for query redirection.
+			 */
+			continue;
+		}
+
 		invoke_query_callback(DNS_EAI_INPROGRESS, &info, &ctx->queries[*query_idx]);
 
-		if (dns_msg->response_type == DNS_RESPONSE_IP ||
-		    dns_msg->response_type == DNS_RESPONSE_SRV) {
+		switch (dns_msg->response_type) {
+		case DNS_RESPONSE_IP:
+		case DNS_RESPONSE_SRV:
+		case DNS_RESPONSE_DATA:
 #ifdef CONFIG_DNS_RESOLVER_CACHE
 			dns_cache_add(&dns_cache,
 				ctx->queries[*query_idx].query, &info, ttl);
 #endif /* CONFIG_DNS_RESOLVER_CACHE */
 			items++;
+			break;
+		default:
+			break;
 		}
 	}
 
@@ -1482,12 +1503,12 @@ static int dns_read(struct dns_resolve_context *ctx,
 	ret = dns_validate_msg(ctx, &dns_msg, dns_id, &query_idx,
 			       dns_cname, query_hash);
 	if (ret == DNS_EAI_AGAIN) {
-		goto finished;
+		return ret;
 	}
 
 	if ((ret < 0 && ret != DNS_EAI_ALLDONE) || query_idx < 0 ||
 	    query_idx > CONFIG_DNS_NUM_CONCUR_QUERIES) {
-		goto quit;
+		return ret;
 	}
 
 #if defined(CONFIG_DNS_RESOLVER_PACKET_FORWARDING)
@@ -1510,13 +1531,6 @@ static int dns_read(struct dns_resolve_context *ctx,
 	}
 
 	return 0;
-
-finished:
-	dns_resolve_cancel_with_name(ctx, *dns_id,
-				     ctx->queries[query_idx].query,
-				     ctx->queries[query_idx].query_type);
-quit:
-	return ret;
 }
 
 static int set_ttl_hop_limit(int sock, int level, int option, int new_limit)
@@ -2040,6 +2054,7 @@ try_resolve:
 	ctx->queries[i].user_data = user_data;
 	ctx->queries[i].ctx = ctx;
 	ctx->queries[i].query_hash = 0;
+	ctx->queries[i].additional_queries = 0;
 	ctx->queries[i].cb_called = false;
 
 	k_work_init_delayable(&ctx->queries[i].timer, query_timeout);
@@ -2248,8 +2263,8 @@ static int dns_resolve_close_locked(struct dns_resolve_context *ctx)
 		}
 	}
 
-	if (--init_called <= 0) {
-		init_called = 0;
+	if (--ctx->init_called <= 0) {
+		ctx->init_called = 0;
 	}
 
 	k_mutex_lock(&ctx->lock, K_FOREVER);
@@ -2351,7 +2366,7 @@ static int do_dns_resolve_reconfigure(struct dns_resolve_context *ctx,
 	}
 
 	if (ctx->state == DNS_RESOLVE_CONTEXT_ACTIVE &&
-	    (do_close || init_called == 0)) {
+	    (do_close || ctx->init_called == 0)) {
 		dns_resolve_cancel_all(ctx);
 
 		err = dns_resolve_close_locked(ctx);

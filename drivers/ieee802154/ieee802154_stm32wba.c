@@ -46,6 +46,14 @@
 
 LOG_MODULE_REGISTER(LOG_MODULE_NAME, LOG_LEVEL);
 
+#if (SUPPORT_RADIO_SECURITY_OT_1_2 == 1)
+#define STM32WBA_MAC_KEY_SIZE           16
+#define STM32WBA_MAC_KEYS_ENTRIES_MAX   3
+#define STM32WBA_MAC_KEY_PREV_INDEX     0
+#define STM32WBA_MAC_KEY_CURR_INDEX     1
+#define STM32WBA_MAC_KEY_NEXT_INDEX     2
+#endif /* SUPPORT_RADIO_SECURITY_OT_1_2 */
+
 extern uint32_t llhwc_cmn_is_dp_slp_enabled(void);
 
 static struct stm32wba_802154_data_t stm32wba_802154_data;
@@ -58,6 +66,11 @@ IEEE802154_DEFINE_PHY_SUPPORTED_CHANNELS(drv_attr, 11, 26);
 #define MAX_CSMA_BACKOFF 4
 #define MAX_FRAME_RETRY  3
 #define CCA_THRESHOLD    (-70)
+/* Default maximum of energy detection */
+#define DEFAULT_MAX_ED   (-36)
+/* Default minimum of energy detection */
+#define DEFAULT_MIN_ED   (-75)
+
 
 static void stm32wba_802154_receive_done(uint8_t *p_buffer,
 					 stm32wba_802154_ral_receive_done_metadata_t *p_metadata);
@@ -67,7 +80,7 @@ static void stm32wba_802154_transmit_done(
 				stm32wba_802154_ral_tx_error_t error,
 				const stm32wba_802154_ral_transmit_done_metadata_t *p_metadata);
 static void stm32wba_802154_cca_done(uint8_t error);
-static void stm32wba_802154_energy_scan_done(int8_t rssi_result);
+static void stm32wba_802154_energy_scan_done(int8_t ed_result);
 
 static const struct device *stm32wba_802154_get_device(void)
 {
@@ -327,6 +340,9 @@ static enum ieee802154_hw_caps stm32wba_802154_get_capabilities(const struct dev
 #if (STM32WBA_802154_CSL_RECEIVER_ENABLE == 1)
 		IEEE802154_HW_RXTIME |
 #endif
+#if (SUPPORT_RADIO_SECURITY_OT_1_2 == 1)
+		IEEE802154_HW_TX_SEC |
+#endif
 		IEEE802154_HW_SLEEP_TO_TX |
 		IEEE802154_RX_ON_WHEN_IDLE;
 }
@@ -364,6 +380,8 @@ static int stm32wba_802154_set_channel(const struct device *dev, uint16_t channe
 
 	LOG_DBG("Setting channel %u", channel);
 	stm32wba_802154_ral_set_channel(channel);
+
+	stm32wba_802154_data.channel = channel;
 
 	return 0;
 }
@@ -616,8 +634,15 @@ static int stm32wba_802154_start(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 
+	/* Set Channel */
+	stm32wba_802154_ral_set_channel(stm32wba_802154_data.channel);
+
 	stm32wba_802154_ral_tx_power_set(stm32wba_802154_data.txpwr);
 
+	/* Configure continuous reception mode */
+	stm32wba_802154_ral_set_continuous_reception(stm32wba_802154_data.rx_on_when_idle);
+
+	/* Set the radio in Receive State */
 	if (stm32wba_802154_ral_receive() != STM32WBA_802154_RAL_ERROR_NONE) {
 		LOG_ERR("Failed to enter receive state");
 		return -EIO;
@@ -633,6 +658,10 @@ static int stm32wba_802154_stop(const struct device *dev)
 {
 	ARG_UNUSED(dev);
 
+	/* Disable continuous reception mode */
+	stm32wba_802154_ral_set_continuous_reception(false);
+
+	/* Set the radio in Sleep state */
 	if (stm32wba_802154_ral_sleep() != STM32WBA_802154_RAL_ERROR_NONE) {
 		LOG_ERR("Error while stopping radio");
 		return -EIO;
@@ -663,6 +692,8 @@ static int stm32wba_802154_driver_init(const struct device *dev)
 	stm32wba_802154_data.rx_on_when_idle = false;
 #endif /* CONFIG_NET_L2_CUSTOM_IEEE802154_STM32WBA && CONFIG_NET_L2_OPENTHREAD */
 	stm32wba_802154_ral_set_continuous_reception(stm32wba_802154_data.rx_on_when_idle);
+
+	stm32wba_802154_data.channel = 0;
 
 	k_thread_create(&stm32wba_802154_data.rx_thread, stm32wba_802154_data.rx_stack,
 			CONFIG_IEEE802154_STM32WBA_RX_STACK_SIZE,
@@ -826,6 +857,38 @@ static int stm32wba_802154_configure_ack_fpb(const struct ieee802154_config *con
 	return ret;
 }
 
+#if (SUPPORT_RADIO_SECURITY_OT_1_2 == 1)
+
+static void stm32wba_802154_configure_mac_key(struct ieee802154_key *mac_keys)
+{
+	uint8_t aPrevKey[STM32WBA_MAC_KEY_SIZE] = {0};
+	uint8_t aCurrKey[STM32WBA_MAC_KEY_SIZE] = {0};
+	uint8_t aNextKey[STM32WBA_MAC_KEY_SIZE] = {0};
+	uint8_t aKeyIdMode = 0;
+	uint8_t aKeyId = 0;
+	uint8_t *keys[] = {aPrevKey, aCurrKey, aNextKey};
+
+	for (uint8_t i = 0; i < STM32WBA_MAC_KEYS_ENTRIES_MAX; mac_keys++, i++) {
+
+		if (mac_keys->key_value == NULL) {
+			break;
+		}
+
+		if (i == STM32WBA_MAC_KEY_CURR_INDEX) {
+			aKeyIdMode = mac_keys->key_id_mode;
+			aKeyId = *(mac_keys->key_id);
+		}
+		memcpy(keys[i], mac_keys->key_value, STM32WBA_MAC_KEY_SIZE);
+	}
+
+	stm32wba_802154_ral_set_mac_key(aKeyIdMode,
+					aKeyId,
+					aPrevKey,
+					aCurrKey,
+					aNextKey);
+}
+#endif /* SUPPORT_RADIO_SECURITY_OT_1_2 */
+
 static int stm32wba_802154_configure(const struct device *dev,
 				     enum ieee802154_config_type type,
 				     const struct ieee802154_config *config)
@@ -860,10 +923,24 @@ static int stm32wba_802154_configure(const struct device *dev,
 		break;
 
 	case IEEE802154_CONFIG_RX_ON_WHEN_IDLE:
+		LOG_DBG("Setting IEEE802154_CONFIG_RX_ON_WHEN_IDLE: enabled = %d",
+			config->rx_on_when_idle);
 		stm32wba_802154_data.rx_on_when_idle = config->rx_on_when_idle;
 		stm32wba_802154_ral_set_continuous_reception(config->rx_on_when_idle);
 		break;
+#if (SUPPORT_RADIO_SECURITY_OT_1_2 == 1)
+	case IEEE802154_CONFIG_FRAME_COUNTER_IF_LARGER:
+		stm32wba_802154_ral_set_mac_frame_counter_if_larger(config->frame_counter);
+		break;
 
+	case IEEE802154_CONFIG_FRAME_COUNTER:
+		stm32wba_802154_ral_set_mac_frame_counter(config->frame_counter);
+		break;
+
+	case IEEE802154_CONFIG_MAC_KEYS:
+		stm32wba_802154_configure_mac_key(config->mac_keys);
+		break;
+#endif
 	default:
 #if defined(CONFIG_NET_L2_CUSTOM_IEEE802154)
 		ret = stm32wba_802154_configure_extended(
@@ -975,10 +1052,31 @@ static void stm32wba_802154_cca_done(uint8_t error)
 	k_sem_give(&stm32wba_802154_data.cca_wait);
 }
 
-static void stm32wba_802154_energy_scan_done(int8_t rssi_result)
+static int8_t stm32wba_802154_convert_ed_to_rssi(uint8_t ed_result)
+{
+	int8_t rssi_result;
+
+	if (ed_result == 0xFF) {
+		/*  Max dBm */
+		rssi_result = DEFAULT_MAX_ED;
+	} else if (ed_result == 0) {
+		/* Min dBm */
+		rssi_result = DEFAULT_MIN_ED;
+	} else {
+		rssi_result = (((uint32_t)(ed_result * 5) >> 5) + DEFAULT_MIN_ED);
+	}
+
+	return rssi_result;
+}
+
+static void stm32wba_802154_energy_scan_done(int8_t ed_result)
 {
 	if (stm32wba_802154_data.energy_scan_done_cb != NULL) {
 		energy_scan_done_cb_t callback = stm32wba_802154_data.energy_scan_done_cb;
+		int8_t rssi_result;
+
+		/* Convert the normalized energy detected in dBm */
+		rssi_result = stm32wba_802154_convert_ed_to_rssi((uint8_t)ed_result);
 
 		stm32wba_802154_data.energy_scan_done_cb = NULL;
 		callback(stm32wba_802154_get_device(), rssi_result);
@@ -992,23 +1090,24 @@ static int radio_pm_action(const struct device *dev, enum pm_device_action actio
 	case PM_DEVICE_ACTION_RESUME:
 		LL_AHB5_GRP1_EnableClock(LL_AHB5_GRP1_PERIPH_RADIO);
 #if defined(CONFIG_PM_S2RAM)
-		if (LL_PWR_IsActiveFlag_SB() == 1U) {
-			/* Put the radio in active state */
-			LL_AHB5_GRP1_EnableClock(LL_AHB5_GRP1_PERIPH_RADIO);
-			link_layer_register_isr(true);
+		if (ll_sys_dp_slp_get_state() == LL_SYS_DP_SLP_ENABLED) {
+			if (LL_PWR_IsActiveFlag_SB() == 1U) {
+				/* Restore NVIC configuration for radio */
+				link_layer_register_isr(true);
+				ll_sys_dp_slp_exit();
+			}
 		}
+#endif /* CONFIG_PM_S2RAM */
 		LINKLAYER_PLAT_NotifyWFIExit();
-		ll_sys_dp_slp_exit();
-#endif
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
 #if defined(CONFIG_PM_S2RAM)
-		uint64_t next_radio_evt;
-		enum pm_state state = pm_state_next_get(_current_cpu->id)->state;
+		if (ll_sys_dp_slp_get_state() == LL_SYS_DP_SLP_DISABLED) {
+			uint64_t next_radio_evt;
+			enum pm_state state = pm_state_next_get(_current_cpu->id)->state;
 
-		if (state == PM_STATE_SUSPEND_TO_RAM) {
-			next_radio_evt = os_timer_get_earliest_time();
-			if (llhwc_cmn_is_dp_slp_enabled() == 0) {
+			if (state == PM_STATE_SUSPEND_TO_RAM) {
+				next_radio_evt = os_timer_get_earliest_time();
 				if (next_radio_evt > CFG_LPM_STDBY_WAKEUP_TIME) {
 					/* No event in a "near" futur */
 					next_radio_evt -= CFG_LPM_STDBY_WAKEUP_TIME;
@@ -1016,7 +1115,7 @@ static int radio_pm_action(const struct device *dev, enum pm_device_action actio
 				}
 			}
 		}
-#endif
+#endif /* CONFIG_PM_S2RAM */
 		LINKLAYER_PLAT_NotifyWFIEnter();
 		break;
 	default:

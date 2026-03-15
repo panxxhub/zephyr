@@ -6,7 +6,7 @@
 
 /dts-v1/;
 
-#include <nxp/nxp_mcxe247.dtsi>
+#include <nxp/mcx/nxp_mcxe247.dtsi>
 #include "frdm_mcxe247-pinctrl.dtsi"
 #include <zephyr/dt-bindings/gpio/arduino-header-r3.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
@@ -153,11 +153,17 @@
 };
 
 &fircdiv1_clk {
-	clock-div = <1>;
+	clock-div = <8>;
 };
 
 &fircdiv2_clk {
 	clock-div = <1>;
+};
+
+&flexcan0 {
+	pinctrl-0 = <&pinmux_flexcan0>;
+	pinctrl-names = "default";
+	status = "okay";
 };
 
 &soscdiv2_clk {
@@ -259,5 +265,13 @@
 };
 
 &crc {
+	status = "okay";
+};
+
+&ftm0 {
+	status = "okay";
+};
+
+&wdog {
 	status = "okay";
 };

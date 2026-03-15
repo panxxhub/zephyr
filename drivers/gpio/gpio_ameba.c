@@ -250,7 +250,7 @@ static void gpio_ameba_isr(const struct device *dev)
 	gpio_fire_callbacks(&data->callbacks, dev, int_status);
 }
 
-static const struct gpio_driver_api gpio_ameba_driver_api = {
+static DEVICE_API(gpio, gpio_ameba_driver_api) = {
 	.pin_configure = gpio_ameba_configure,
 	.port_get_raw = gpio_ameba_port_get_raw,
 	.port_set_masked_raw = gpio_ameba_port_set_masked_raw,
@@ -274,10 +274,7 @@ static const struct gpio_driver_api gpio_ameba_driver_api = {
 	static struct gpio_ameba_data gpio_ameba_port##n##_data;                                   \
                                                                                                    \
 	static const struct gpio_ameba_config gpio_ameba_port##n##_config = {                      \
-		.common =                                                                          \
-			{                                                                          \
-				.port_pin_mask = GPIO_PORT_PIN_MASK_FROM_DT_INST(n),               \
-			},                                                                         \
+		.common = GPIO_COMMON_CONFIG_FROM_DT_INST(n),                                      \
 		.base = DT_INST_REG_ADDR(n),                                                       \
 		.port = n,                                                                         \
 	};                                                                                         \

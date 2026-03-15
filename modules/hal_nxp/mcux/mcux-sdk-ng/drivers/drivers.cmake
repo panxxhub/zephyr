@@ -1,4 +1,4 @@
-# Copyright 2025 NXP
+# Copyright 2025-2026 NXP
 #
 # SPDX-License-Identifier: Apache-2.0
 
@@ -19,6 +19,11 @@ set_variable_ifdef(CONFIG_COUNTER_MCUX_LPC_RTC  CONFIG_MCUX_COMPONENT_driver.lpc
 set_variable_ifdef(CONFIG_GLIKEY_MCUX_GLIKEY    CONFIG_MCUX_COMPONENT_driver.glikey)
 
 if(CONFIG_NXP_LP_FLEXCOMM)
+  # The Zephyr MFD shim driver unconditionally includes <fsl_lpflexcomm.h>.
+  # Ensure the base LPFLEXCOMM MCUX component (and its include directory) is
+  # enabled even in build-only configurations that don't enable LPI2C/LPUART.
+  set(CONFIG_MCUX_COMPONENT_driver.lpflexcomm ON)
+
   set_variable_ifdef(CONFIG_I2C_MCUX_LPI2C      CONFIG_MCUX_COMPONENT_driver.lpflexcomm)
   set_variable_ifdef(CONFIG_I2C_MCUX_LPI2C      CONFIG_MCUX_COMPONENT_driver.lpflexcomm_lpi2c)
   set_variable_ifdef(CONFIG_UART_MCUX_LPUART    CONFIG_MCUX_COMPONENT_driver.lpflexcomm)
@@ -57,19 +62,19 @@ set_variable_ifdef(CONFIG_COUNTER_MCUX_RTC_JDP  CONFIG_MCUX_COMPONENT_driver.rtc
 set_variable_ifdef(CONFIG_DAC_MCUX_DAC          CONFIG_MCUX_COMPONENT_driver.dac)
 set_variable_ifdef(CONFIG_DAC_MCUX_DAC12        CONFIG_MCUX_COMPONENT_driver.dac12)
 set_variable_ifdef(CONFIG_DAC_MCUX_DAC32        CONFIG_MCUX_COMPONENT_driver.dac32)
-set_variable_ifdef(CONFIG_DMA_MCUX_EDMA         CONFIG_MCUX_COMPONENT_driver.dmamux)
 set_variable_ifdef(CONFIG_DMA_MCUX_EDMA         CONFIG_MCUX_COMPONENT_driver.edma)
 set_variable_ifdef(CONFIG_DMA_MCUX_EDMA_V3      CONFIG_MCUX_COMPONENT_driver.dma3)
 set_variable_ifdef(CONFIG_DMA_MCUX_EDMA_V4      CONFIG_MCUX_COMPONENT_driver.edma4)
+set_variable_ifdef(CONFIG_DMA_MCUX_EDMA_DMAMUX  CONFIG_MCUX_COMPONENT_driver.dmamux)
 set_variable_ifdef(CONFIG_DMA_NXP_EDMA          CONFIG_MCUX_COMPONENT_driver.edma_rev2)
-set_variable_ifdef(CONFIG_DMA_MCUX_EDMA_V5      CONFIG_MCUX_COMPONENT_driver.edma4)
 set_variable_ifdef(CONFIG_EDAC_NXP_EIM          CONFIG_MCUX_COMPONENT_driver.eim)
 set_variable_ifdef(CONFIG_EDAC_NXP_ERM          CONFIG_MCUX_COMPONENT_driver.erm)
 set_variable_ifdef(CONFIG_ENTROPY_MCUX_RNGA     CONFIG_MCUX_COMPONENT_driver.rnga)
 set_variable_ifdef(CONFIG_ENTROPY_MCUX_TRNG     CONFIG_MCUX_COMPONENT_driver.trng)
 set_variable_ifdef(CONFIG_ENTROPY_MCUX_CAAM     CONFIG_MCUX_COMPONENT_driver.caam)
 set_variable_ifdef(CONFIG_ETH_NXP_ENET          CONFIG_MCUX_COMPONENT_driver.enet)
-set_variable_ifdef(CONFIG_SOC_SERIES_KINETIS_K2X          CONFIG_MCUX_COMPONENT_driver.smc)
+set_variable_ifdef(CONFIG_SOC_SERIES_K2X        CONFIG_MCUX_COMPONENT_driver.smc)
+set_variable_ifdef(CONFIG_SOC_SERIES_KE1XZ      CONFIG_MCUX_COMPONENT_driver.smc)
 set_variable_ifdef(CONFIG_I2C_MCUX              CONFIG_MCUX_COMPONENT_driver.i2c)
 set_variable_ifdef(CONFIG_I2C_NXP_II2C          CONFIG_MCUX_COMPONENT_driver.ii2c)
 set_variable_ifdef(CONFIG_I3C_MCUX              CONFIG_MCUX_COMPONENT_driver.i3c)
@@ -124,6 +129,7 @@ set_variable_ifdef(CONFIG_MIPI_DSI_NXP_DWC      CONFIG_MCUX_COMPONENT_driver.mip
 set_variable_ifdef(CONFIG_MCUX_SDIF             CONFIG_MCUX_COMPONENT_driver.sdif)
 set_variable_ifdef(CONFIG_MCUX_XBARA            CONFIG_MCUX_COMPONENT_driver.xbara)
 set_variable_ifdef(CONFIG_MCUX_XBARB            CONFIG_MCUX_COMPONENT_driver.xbarb)
+set_variable_ifdef(CONFIG_QDC_MCUX              CONFIG_MCUX_COMPONENT_driver.qdc)
 set_variable_ifdef(CONFIG_QDEC_MCUX             CONFIG_MCUX_COMPONENT_driver.enc)
 set_variable_ifdef(CONFIG_CRYPTO_MCUX_DCP       CONFIG_MCUX_COMPONENT_driver.dcp)
 set_variable_ifdef(CONFIG_DAC_MCUX_LPDAC        CONFIG_MCUX_COMPONENT_driver.dac_1)
@@ -152,6 +158,8 @@ set_variable_ifdef(CONFIG_NXP_TMPSNS                CONFIG_MCUX_COMPONENT_driver
 set_variable_ifdef(CONFIG_OPAMP_MCUX_OPAMP          CONFIG_MCUX_COMPONENT_driver.opamp)
 set_variable_ifdef(CONFIG_OPAMP_MCUX_OPAMP_FAST     CONFIG_MCUX_COMPONENT_driver.opamp_fast)
 set_variable_ifdef(CONFIG_CRC_DRIVER_NXP        CONFIG_MCUX_COMPONENT_driver.crc)
+set_variable_ifdef(CONFIG_CRC_DRIVER_NXP_LPC    CONFIG_MCUX_COMPONENT_driver.lpc_crc)
+set_variable_ifdef(CONFIG_WUC_MCUX_LLWU         CONFIG_MCUX_COMPONENT_driver.llwu)
 
 if(NOT CONFIG_SOC_MIMX9596)
   set_variable_ifdef(CONFIG_ETH_NXP_IMX_NETC          CONFIG_MCUX_COMPONENT_driver.netc_switch)
@@ -205,7 +213,10 @@ if(CONFIG_DT_HAS_NXP_VBAT_ENABLED)
   if(CONFIG_SOC_FAMILY_MCXN OR CONFIG_SOC_FAMILY_MCXA)
     set(CONFIG_MCUX_COMPONENT_driver.mcx_vbat ON)
   else() # KW, MCXW
-    set(CONFIG_MCUX_COMPONENT_driver.vbat ON)
+    if(NOT CONFIG_SOC_MCXW70AC)
+      # MCX W70 does not support VBAT
+      set(CONFIG_MCUX_COMPONENT_driver.vbat ON)
+    endif()
   endif()
 endif()
 
@@ -243,7 +254,7 @@ if(CONFIG_SOC_MK82F25615 OR CONFIG_SOC_MK64F12 OR CONFIG_SOC_MK66F18 OR
   set(CONFIG_MCUX_COMPONENT_driver.sysmpu ON)
 endif()
 
-if(CONFIG_SOC_MCXW716C OR CONFIG_SOC_MCXW727C OR CONFIG_SOC_MCXN947 OR CONFIG_SOC_MCXN547)
+if(CONFIG_SOC_MCXW716C OR CONFIG_SOC_MCXW727C OR CONFIG_SOC_MCXW70AC OR CONFIG_SOC_MCXN947 OR CONFIG_SOC_MCXN547)
   set_variable_ifdef(CONFIG_SOC_FLASH_MCUX CONFIG_MCUX_COMPONENT_driver.flash_k4)
 endif()
 
@@ -255,7 +266,7 @@ if(CONFIG_SOC_MCXW716C OR CONFIG_SOC_MCXW727C)
   endif()
 endif()
 
-if(CONFIG_SOC_S32K344)
+if(CONFIG_SOC_S32K344 OR CONFIG_SOC_SERIES_MCXE31X)
   set_variable_ifdef(CONFIG_SOC_FLASH_MCUX_C40 CONFIG_MCUX_COMPONENT_driver.flash_c40)
 endif()
 
@@ -322,7 +333,7 @@ if(CONFIG_SOC_SERIES_IMXRT118X)
   set_variable_ifdef(CONFIG_WDT_MCUX_RTWDOG	CONFIG_MCUX_COMPONENT_driver.src_3)
 endif()
 
-if(CONFIG_SOC_SERIES_S32K3 OR CONFIG_SOC_SERIES_S32ZE)
+if(CONFIG_SOC_SERIES_S32K3 OR CONFIG_SOC_SERIES_S32ZE OR CONFIG_SOC_SERIES_S32K5)
   if(CONFIG_DMA)
     zephyr_include_directories(${MCUX_SDK_NG_DIR}/drivers/dmamux)
     set(CONFIG_MCUX_COMPONENT_driver.dmamux ON)
@@ -330,7 +341,11 @@ if(CONFIG_SOC_SERIES_S32K3 OR CONFIG_SOC_SERIES_S32ZE)
 endif()
 
 if(CONFIG_SOC_FAMILY_MCXA)
-  set(CONFIG_MCUX_COMPONENT_driver.romapi ON)
+  if(CONFIG_SOC_SERIES_MCXAXX7)
+    set(CONFIG_MCUX_COMPONENT_driver.romapi_flashiap ON)
+  else()
+    set(CONFIG_MCUX_COMPONENT_driver.romapi ON)
+  endif()
 endif()
 
 if(CONFIG_SOC_FAMILY_MCXN AND (NOT CONFIG_SOC_MCXN947) AND (NOT CONFIG_SOC_MCXN547))
@@ -343,6 +358,9 @@ endif()
 
 if(CONFIG_SOC_MCXW727C OR CONFIG_SOC_MCXW716C)
   set(CONFIG_MCUX_COMPONENT_driver.elemu ON)
+endif()
+
+if(CONFIG_SOC_MCXW727C OR CONFIG_SOC_MCXW716C OR CONFIG_SOC_MCXW70AC)
   set(CONFIG_MCUX_COMPONENT_driver.ccm32k ON)
 endif()
 
@@ -355,6 +373,8 @@ endif()
 if(CONFIG_SOC_MCXW236 OR CONFIG_SOC_MCXW235)
   set(CONFIG_MCUX_COMPONENT_driver.lpc_iocon ON)
   set(CONFIG_MCUX_COMPONENT_driver.romapi ON)
+  # OS timer is used to replace SYSTICK during low power events for system wakeup.
+  set_variable_ifdef(CONFIG_PM CONFIG_MCUX_COMPONENT_driver.ostimer)
 endif()
 
 if((DEFINED CONFIG_FLASH_MCUX_XSPI_XIP) AND (DEFINED CONFIG_FLASH))

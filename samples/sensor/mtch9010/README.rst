@@ -10,7 +10,10 @@ Description
 This sample application configures the MTCH9010 in either
 capacitive or conductive sensing mode, triggers a sample
 once per second, and reports the data received from the
-sensor node.
+sensor node. This sample is described in further detail in
+`AN6386 - Setting up the MTCH9010 in Zephyr® RTOS`_.
+
+.. _AN6386 - Setting up the MTCH9010 in Zephyr® RTOS: https://www.microchip.com/en-us/application-notes/an6386
 
 Requirements
 ************
@@ -134,7 +137,7 @@ provided for the :zephyr:board:`saml21_xpro`.
 
       .. zephyr-app-commands::
          :zephyr-app: samples/sensor/mtch9010
-         :west-args: -- -DDTC_OVERLAY_FILE=capacitive.overlay
+         :gen-args: -DDTC_OVERLAY_FILE=capacitive.overlay
          :board: saml21_xpro
          :goals: build flash
 
@@ -142,7 +145,7 @@ provided for the :zephyr:board:`saml21_xpro`.
 
       .. zephyr-app-commands::
          :zephyr-app: samples/sensor/mtch9010
-         :west-args: -- -DDTC_OVERLAY_FILE=conductive.overlay
+         :gen-args: -DDTC_OVERLAY_FILE=conductive.overlay
          :board: saml21_xpro
          :goals: build flash
 
@@ -161,7 +164,6 @@ being sent to the MTCH9010 to configure it.*
    [00:00:00.197,000] <inf> mtch9010.0: "0"
    [00:00:00.199,000] <inf> mtch9010.0: "100"
    *** Booting Zephyr OS build v4.3.0-2498-gcefd950c5cc5 ***
-   MTCH9010 is Ready
    SENSOR_CHAN_MTCH9010_SW_OUT_STATE = 0
    SENSOR_CHAN_MTCH9010_OUT_STATE = 0
    SENSOR_CHAN_MTCH9010_REFERENCE_VALUE = 508

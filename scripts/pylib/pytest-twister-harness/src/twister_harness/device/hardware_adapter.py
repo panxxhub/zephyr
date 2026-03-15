@@ -51,13 +51,15 @@ class HardwareAdapter(DeviceAdapter):
 
         command = [
             self.west,
-            'flash',
+            self.device_config.west_flash_cmd or 'flash',
             '--no-rebuild',
             '--build-dir',
             str(self.device_config.build_dir),
         ]
 
         command_extra_args = []
+        if self.device_config.west_flash_cmd == 'debug':
+            command_extra_args.append('--batch')
         if self.device_config.west_flash_extra_args:
             command_extra_args.extend(self.device_config.west_flash_extra_args)
 
@@ -177,7 +179,9 @@ class HardwareAdapter(DeviceAdapter):
                 raise TwisterHarnessException(msg)
 
     def _close_device(self) -> None:
-        if self.device_config.post_script:
+        # Run post script only if the reader thread is started to avoid running it
+        # multiple times and when in initialization phase
+        if self.is_reader_started() and self.device_config.post_script:
             self._run_custom_script(self.device_config.post_script, self.base_timeout)
 
     @staticmethod

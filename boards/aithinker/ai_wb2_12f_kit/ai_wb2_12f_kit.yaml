@@ -21,4 +21,9 @@ supported:
   - i2c
   - spi
   - flash
+  - input
+  - pwm
+  - adc
+  - entropy
+  - crypto
 vendor: bflb

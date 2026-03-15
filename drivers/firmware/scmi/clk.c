@@ -39,9 +39,8 @@ int scmi_clock_rate_get(struct scmi_protocol *proto,
 	struct scmi_message msg, reply;
 	int ret;
 	struct scmi_clock_rate_set_reply reply_buffer;
-	bool use_polling;
 
-	/* sanity checks */
+	/* input validation */
 	if (!proto || !rate) {
 		return -EINVAL;
 	}
@@ -59,9 +58,7 @@ int scmi_clock_rate_get(struct scmi_protocol *proto,
 	reply.len = sizeof(reply_buffer);
 	reply.content = &reply_buffer;
 
-	use_polling = k_is_pre_kernel();
-
-	ret = scmi_send_message(proto, &msg, &reply, use_polling);
+	ret = scmi_send_message(proto, &msg, &reply, false);
 	if (ret < 0) {
 		return ret;
 	}
@@ -79,9 +76,8 @@ int scmi_clock_rate_set(struct scmi_protocol *proto, struct scmi_clock_rate_conf
 {
 	struct scmi_message msg, reply;
 	int status, ret;
-	bool use_polling;
 
-	/* sanity checks */
+	/* input validation */
 	if (!proto || !cfg) {
 		return -EINVAL;
 	}
@@ -103,9 +99,7 @@ int scmi_clock_rate_set(struct scmi_protocol *proto, struct scmi_clock_rate_conf
 	reply.len = sizeof(status);
 	reply.content = &status;
 
-	use_polling = k_is_pre_kernel();
-
-	ret = scmi_send_message(proto, &msg, &reply, use_polling);
+	ret = scmi_send_message(proto, &msg, &reply, false);
 	if (ret < 0) {
 		return ret;
 	}
@@ -118,9 +112,8 @@ int scmi_clock_parent_get(struct scmi_protocol *proto, uint32_t clk_id, uint32_t
 	struct scmi_message msg, reply;
 	int ret;
 	struct scmi_clock_parent_get_reply reply_buffer;
-	bool use_polling;
 
-	/* sanity checks */
+	/* input validation */
 	if (!proto || !parent_id) {
 		return -EINVAL;
 	}
@@ -138,9 +131,7 @@ int scmi_clock_parent_get(struct scmi_protocol *proto, uint32_t clk_id, uint32_t
 	reply.len = sizeof(reply_buffer);
 	reply.content = &reply_buffer;
 
-	use_polling = k_is_pre_kernel();
-
-	ret = scmi_send_message(proto, &msg, &reply, use_polling);
+	ret = scmi_send_message(proto, &msg, &reply, false);
 	if (ret < 0) {
 		return ret;
 	}
@@ -159,9 +150,8 @@ int scmi_clock_parent_set(struct scmi_protocol *proto, uint32_t clk_id, uint32_t
 	struct scmi_clock_parent_config cfg = {.clk_id = clk_id, .parent_id = parent_id};
 	struct scmi_message msg, reply;
 	int status, ret;
-	bool use_polling;
 
-	/* sanity checks */
+	/* input validation */
 	if (!proto) {
 		return -EINVAL;
 	}
@@ -179,9 +169,7 @@ int scmi_clock_parent_set(struct scmi_protocol *proto, uint32_t clk_id, uint32_t
 	reply.len = sizeof(status);
 	reply.content = &status;
 
-	use_polling = k_is_pre_kernel();
-
-	ret = scmi_send_message(proto, &msg, &reply, use_polling);
+	ret = scmi_send_message(proto, &msg, &reply, false);
 	if (ret < 0) {
 		return ret;
 	}
@@ -194,9 +182,8 @@ int scmi_clock_config_set(struct scmi_protocol *proto,
 {
 	struct scmi_message msg, reply;
 	int status, ret;
-	bool use_polling;
 
-	/* sanity checks */
+	/* input validation */
 	if (!proto || !cfg) {
 		return -EINVAL;
 	}
@@ -229,9 +216,7 @@ int scmi_clock_config_set(struct scmi_protocol *proto,
 	reply.len = sizeof(status);
 	reply.content = &status;
 
-	use_polling = k_is_pre_kernel();
-
-	ret = scmi_send_message(proto, &msg, &reply, use_polling);
+	ret = scmi_send_message(proto, &msg, &reply, false);
 	if (ret < 0) {
 		return ret;
 	}
@@ -244,9 +229,8 @@ int scmi_clock_protocol_attributes(struct scmi_protocol *proto, uint32_t *attrib
 	struct scmi_message msg, reply;
 	struct scmi_clock_attributes_reply reply_buffer;
 	int ret;
-	bool use_polling;
 
-	/* sanity checks */
+	/* input validation */
 	if (!proto || !attributes) {
 		return -EINVAL;
 	}
@@ -265,9 +249,7 @@ int scmi_clock_protocol_attributes(struct scmi_protocol *proto, uint32_t *attrib
 	reply.len = sizeof(reply_buffer);
 	reply.content = &reply_buffer;
 
-	use_polling = k_is_pre_kernel();
-
-	ret = scmi_send_message(proto, &msg, &reply, use_polling);
+	ret = scmi_send_message(proto, &msg, &reply, false);
 	if (ret < 0) {
 		return ret;
 	}

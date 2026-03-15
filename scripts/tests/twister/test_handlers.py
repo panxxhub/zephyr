@@ -1185,6 +1185,7 @@ def test_devicehandler_create_command(
 ):
     handler = DeviceHandler(mocked_instance, 'build', mock.Mock())
     handler.options = mock.Mock(west_flash=self_west_flash,
+                                west_flash_cmd='flash',
                                 flash_command=self_flash_command, verbose=0)
     handler.generator_cmd = 'generator_cmd'
 
@@ -1195,7 +1196,8 @@ def test_devicehandler_create_command(
         product=hardware_product_name,
         probe_id=12345 if hardware_probe else None,
         id=12345 if not hardware_probe else None,
-        runner_params=['param1', 'param2']
+        runner_params=['param1', 'param2'],
+        west_flash_cmd=None
     )
 
     command = handler._create_command(runner, hardware)
@@ -1473,10 +1475,18 @@ def test_devicehandler_handle(
     openpty_mock = mock.Mock(return_value=('master', 'slave'))
     ttyname_mock = mock.Mock(side_effect=lambda x: x + ' name')
 
+    lp_mock = SimpleNamespace(
+        comports=mock.Mock(return_value=[
+            SimpleNamespace(name='dummy serial'),
+            SimpleNamespace(name='slave name'),
+        ])
+    )
+
     with mock.patch('builtins.open', mock.mock_open(read_data='')), \
          mock.patch('subprocess.Popen', side_effect=mock_popen), \
          mock.patch('threading.Event', mock.Mock()), \
          mock.patch('threading.Thread', side_effect=mock_thread), \
+         mock.patch('twisterlib.handlers.list_ports', lp_mock, create=True), \
          mock.patch('pty.openpty', openpty_mock), \
          mock.patch('os.ttyname', ttyname_mock):
         handler.handle(harness)

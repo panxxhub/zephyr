@@ -284,6 +284,13 @@
 			status = "disabled";
 		};
 
+		aes: aes@e1810000 {
+			compatible = "microchip,aes-g1";
+			reg = <0xe1810000 0x100>;
+			clocks = <&pmc PMC_TYPE_PERIPHERAL 27>;
+			status = "disabled";
+		};
+
 		sha: sha@e1814000 {
 			compatible = "microchip,sha-g1-crypto";
 			reg = <0xe1814000 0x100>;
@@ -760,6 +767,21 @@
 				interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL IRQ_DEFAULT_PRIORITY>;
 				status = "disabled";
 			};
+		};
+
+		otpc: efuse@e8c00000 {
+			compatible = "microchip,sama7g5-otpc";
+			reg = <0xe8c00000 0x100>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+		};
+
+		hwinfo: device_id@e8c00060 {
+			compatible = "microchip,hwinfo-g1";
+			reg = <0xe8c00060 0x4>,
+			      <0xe8c00064 0x4>,
+			      <0xe8c00068 0x4>,
+			      <0xe8c0006c 0x4>;
 		};
 
 		gic: interrupt-controller@e8c11000 {

@@ -327,7 +327,7 @@ class CheckPatch(ComplianceTest):
             except subprocess.CalledProcessError as ex:
                 output = ex.output.decode("utf-8")
                 regex = (
-                    r'^\s*\S+:(\d+):\s*(ERROR|WARNING):(.+?):(.+)(?:\n|\r\n?)+'
+                    r'^\s*\S+:(\d+):\s*(ERROR|WARNING):(.+?):(.+)[\r\n]+'
                     r'^\s*#(\d+):\s*FILE:\s*(.+):(\d+):'
                 )
 
@@ -448,7 +448,7 @@ class ClangFormatCheck(ComplianceTest):
 
 class DevicetreeBindingsCheck(ComplianceTest):
     """
-    Checks if we are introducing any unwanted properties in Devicetree Bindings.
+    Checks for devicetree bindings.
     """
 
     name = "DevicetreeBindings"
@@ -466,15 +466,18 @@ class DevicetreeBindingsCheck(ComplianceTest):
         if nodiff:
             self.skip('no changes to bindings were made')
 
-        for binding in bindings:
-            self.check(binding, self.check_yaml_property_name)
-            self.check(binding, self.required_false_check)
+        def check(binding, callback, children=True):
+            if children:
+                while binding is not None:
+                    callback(binding)
+                    binding = binding.child_binding
+            else:
+                callback(binding)
 
-    @staticmethod
-    def check(binding, callback):
-        while binding is not None:
-            callback(binding)
-            binding = binding.child_binding
+        for binding in bindings:
+            check(binding, self.check_yaml_property_name)
+            check(binding, self.required_false_check)
+            check(binding, self.compatible_and_file_name_match_check, children=False)
 
     def get_yaml_bindings(self):
         """
@@ -527,6 +530,26 @@ class DevicetreeBindingsCheck(ComplianceTest):
                     "'required: false' is redundant, please remove"
                 )
 
+    def compatible_and_file_name_match_check(self, binding):
+        allowed = [f"{binding.compatible}.yaml"]
+        if binding.on_bus is not None:
+            allowed.append(f"{binding.compatible}-{binding.on_bus}.yaml")
+
+        actual_filename = Path(binding.path).name
+
+        if actual_filename not in allowed:
+            if len(allowed) > 1:
+                allowed_names = ", ".join(f"'{filename}'" for filename in allowed)
+                self.failure(
+                    f"{binding.path}: bad file name for compatible '{binding.compatible}'.\n"
+                    f"\tThe allowed file names for this binding are: {allowed_names}"
+                )
+            else:
+                self.failure(
+                    f"{binding.path}: bad file name for compatible '{binding.compatible}'; "
+                    f"this should be named '{allowed[0]}' instead"
+                )
+
 
 class DevicetreeLintingCheck(ComplianceTest):
     """
@@ -536,6 +559,7 @@ class DevicetreeLintingCheck(ComplianceTest):
     name = "DevicetreeLinting"
     doc = zephyr_doc_detail_builder("/contribute/style/devicetree.html")
     NPX_EXECUTABLE = "npx"
+    prefix = ZEPHYR_BASE / "scripts" / "ci"
 
     def ensure_npx(self) -> bool:
         if not (npx_executable := shutil.which(self.NPX_EXECUTABLE)):
@@ -544,7 +568,7 @@ class DevicetreeLintingCheck(ComplianceTest):
             self.npx_exe = npx_executable
             # --no prevents npx from fetching from registry
             subprocess.run(
-                [self.npx_exe, "--prefix", "./scripts/ci", "--no", 'dts-linter', "--", "--version"],
+                [self.npx_exe, "--prefix", self.prefix, "--no", 'dts-linter', "--", "--version"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=True,
@@ -625,7 +649,7 @@ class DevicetreeLintingCheck(ComplianceTest):
             cmd = [
                 self.npx_exe,
                 "--prefix",
-                "./scripts/ci",
+                self.prefix,
                 "--no",
                 "dts-linter",
                 "--",
@@ -1418,6 +1442,7 @@ Missing SoC names or CONFIG_SOC vs soc.yml out of sync:
             regex,
             "--",
             ":!/doc/releases",
+            ":!/doc/develop/manifest/external",
             ":!/doc/security/vulnerabilities.rst",
             cwd=GIT_TOP,
         )
@@ -1533,6 +1558,7 @@ flagged.
         "CRC",  # Used in TI CC13x2 / CC26x2 SDK comment
         "DEEP_SLEEP",  # #defined by RV32M1 in ext/
         "DESCRIPTION",
+        "DT_HAS_",  # example from doc/build/dts/dt-vs-kconfig.rst
         "ERR",
         "ESP_DIF_LIBRARY",  # Referenced in CMake comment
         "EXPERIMENTAL",
@@ -1554,6 +1580,8 @@ flagged.
         # with older versions of the ICMsg.
         "IPC_SERVICE_ICMSG_BOND_NOTIFY_REPEAT_TO_MS",
         "LIBGCC_RTLIB",
+        "LLEXT_EXPORT_SYMBOL_GROUP_",  # Used in regexp by
+        # scripts/build/llext_inspect_discarded_groups.py
         "LLVM_USE_LD",  # Both LLVM_USE_* are in cmake/toolchain/llvm/Kconfig
         # which are only included if LLVM is selected but
         # not other toolchains. Compliance check would complain,
@@ -1610,6 +1638,8 @@ flagged.
         "STACK_SIZE",  # Used as an example in the Kconfig docs
         "STD_CPP",  # Referenced in CMake comment
         "TEST1",
+        "TFM_SPM_BACKEND_IPC",  # Used in TFM sample dummy partition - belongs to TFM
+        "TFM_SPM_BACKEND_SFN",  # Used in TFM sample dummy partition - belongs to TFM
         # Defined in modules/hal_nxp/mcux/mcux-sdk-ng/basic.cmake.
         # It is used by MCUX SDK cmake functions to add content
         # based on current toolchain.
@@ -2479,9 +2509,11 @@ class Ruff(ComplianceTest):
     doc = "Check python files with ruff."
 
     def run(self):
+        if (ruff := shutil.which("ruff")) is None:
+            raise FileNotFoundError("ruff is not installed")
         try:
             subprocess.run(
-                "ruff check --output-format=json",
+                f"{ruff} check --output-format=json",
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -2489,12 +2521,23 @@ class Ruff(ComplianceTest):
                 cwd=GIT_TOP,
             )
         except subprocess.CalledProcessError as ex:
-            output = ex.output.decode("utf-8")
-            messages = json.loads(output)
+            try:
+                output = ex.output.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                print("Decode error:", exc)
+                raise
+            try:
+                messages = json.loads(output)
+            except json.decoder.JSONDecodeError:
+                print(
+                    "Cannot parse output from ruff check, output is not valid JSON format:\n"
+                    f"{output}"
+                )
+                raise
             for m in messages:
                 self.fmtd_failure(
                     "error",
-                    f'Python lint error ({m.get("code")}) see {m.get("url")}',
+                    f'Python lint error ({m.get("code")}) see {m.get("url")} ',
                     m.get("filename"),
                     line=m.get("location", {}).get("row"),
                     col=m.get("location", {}).get("column"),
@@ -2509,7 +2552,7 @@ class Ruff(ComplianceTest):
 
             try:
                 subprocess.run(
-                    f"ruff format --force-exclude --diff {file}",
+                    f"{ruff} format --force-exclude --diff {file}",
                     check=True,
                     shell=True,
                     cwd=GIT_TOP,
@@ -2527,7 +2570,7 @@ class PythonCompatCheck(ComplianceTest):
     name = "PythonCompat"
     doc = "Check that Python files are compatible with Zephyr minimum supported Python version."
 
-    MAX_VERSION = (3, 10)
+    MAX_VERSION = (3, 12)
     MAX_VERSION_STR = f"{MAX_VERSION[0]}.{MAX_VERSION[1]}"
 
     def run(self):

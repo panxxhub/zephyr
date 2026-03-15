@@ -13,8 +13,11 @@ config FLOAT_HARD
 	bool "Hard-float calling convention"
 	default y
 	depends on FPU
+	depends on !RISCV_ISA_RV32E
+	depends on RISCV_ISA_EXT_F
 	help
 	  This option enables the hard-float calling convention.
+	  Adds eight floating-point argument registers.
 
 choice RISCV_GP_PURPOSE
 	prompt "Purpose of the global pointer (GP) register"
@@ -417,6 +420,16 @@ config PMP_NO_LOCK_GLOBAL
 	  Configure the PMP entries as unlocked (L=0) to implement PMP relative
 	  features. This allows application to dynamically reconfigure PMP
 	  entries without requiring hard reset.
+
+config PMP_UNLOCK_ROM_FOR_DEBUG
+	bool "Unlock ROM region for debugger access"
+	default n
+	help
+	  When enabled, the ROM region PMP entry is configured without
+	  the lock bit (L=0), allowing debuggers running in machine mode
+	  to set breakpoints and read instructions. NULL pointer guards
+	  and stack guards remain locked to catch critical bugs during
+	  development. Only enable for debug builds.
 
 endif #RISCV_PMP
 

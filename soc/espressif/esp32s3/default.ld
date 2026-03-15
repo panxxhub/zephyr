@@ -130,7 +130,7 @@ ENTRY(CONFIG_KERNEL_ENTRY)
 #ifdef CONFIG_SOC_ENABLE_APPCPU
 _heap_sentry = procpu_dram_end;
 #else
-_heap_sentry = DRAM_RESERVED_START;
+_heap_sentry = DRAM_USER_END;
 #endif
 
 _libc_heap_size = _heap_sentry - _end;
@@ -243,7 +243,7 @@ SECTIONS
     *(.rtc.force_fast .rtc.force_fast.*)
     . = ALIGN(4);
     _rtc_force_fast_end = ABSOLUTE(.);
-  } GROUP_DATA_LINK_IN(rtc_slow_seg, ROMABLE_REGION)
+  } GROUP_DATA_LINK_IN(rtc_iram_seg, ROMABLE_REGION)
 
   /* RTC data section holds data marked with
    * RTC_DATA_ATTR, RTC_RODATA_ATTR attributes.
@@ -436,6 +436,8 @@ SECTIONS
     *libzephyr.a:spi_flash_hpm_enable.*(.literal .literal.* .text .text.*)
     *libzephyr.a:spi_flash_oct_flash_init.*(.literal .literal.* .text .text.*)
     *libzephyr.a:flash_ops.*(.literal .literal.* .text .text.*)
+    *libzephyr.a:spi_flash_os_func_app.*(.literal .literal.* .text .text.*)
+    *libzephyr.a:spi_flash_os_func_noos.*(.literal .literal.* .text .text.*)
     *libzephyr.a:esp_flash_api.*(.literal .text .literal.* .text.*)
 
     /* [mapping:esp_system] */
@@ -470,12 +472,14 @@ SECTIONS
     *libzephyr.a:esp_rom_cache_esp32s2_esp32s3.*(.literal .literal.* .text .text.*)
     *libzephyr.a:cache_utils.*(.literal .text .literal.* .text.*)
     *libzephyr.a:esp_rom_spiflash.*(.literal .literal.* .text .text.*)
+    *libzephyr.a:esp_rom_sys.*(.literal .literal.* .text .text.*)
     *libzephyr.a:esp_rom_systimer.*(.literal .literal.* .text .text.*)
     *libzephyr.a:esp_rom_wdt.*(.literal .literal.* .text .text.*)
     *libzephyr.a:esp_rom_efuse.*(.literal .literal.* .text .text.*)
 
     /* [mapping:esp_mm] */
-    *libzephyr.a:esp_cache.*(.literal .literal.* .text .text.*)
+    *libzephyr.a:esp_cache_utils.*(.literal .literal.* .text .text.*)
+    *libzephyr.a:esp_cache_msync.*(.literal .literal.* .text .text.*)
 
 #if defined(CONFIG_ESP32_WIFI_IRAM_OPT)
     *libnet80211.a:(.wifi0iram  .wifi0iram.* .wifislpiram .wifislpiram.* .wifiextrairam .wifiextrairam.*)
@@ -679,10 +683,13 @@ SECTIONS
     *libzephyr.a:spi_flash_oct_flash_init.*(.rodata .rodata.*)
     *libzephyr.a:flash_qio_mode.*(.rodata .rodata.*)
     *libzephyr.a:flash_ops.*(.rodata .rodata.*)
+    *libzephyr.a:spi_flash_os_func_app.*(.rodata .rodata.*)
+    *libzephyr.a:spi_flash_os_func_noos.*(.rodata .rodata.*)
     *libzephyr.a:esp_flash_api.*(.rodata .rodata.* .sdata2 .sdata2.* .srodata .srodata.*)
 
     /* [mapping:esp_mm] */
-    *libzephyr.a:esp_cache.*(.rodata .rodata.*)
+    *libzephyr.a:esp_cache_utils.*(.rodata .rodata.*)
+    *libzephyr.a:esp_cache_msync.*(.rodata .rodata.*)
 
     /* [mapping:esp_hw_support] */
     *(.rodata.esp_cpu_stall)
@@ -709,6 +716,7 @@ SECTIONS
     *libzephyr.a:esp_rom_cache_esp32s2_esp32s3.*(.rodata .rodata.*)
     *libzephyr.a:cache_utils.*(.rodata .rodata.*)
     *libzephyr.a:esp_rom_spiflash.*(.rodata .rodata.*)
+    *libzephyr.a:esp_rom_sys.*(.rodata .rodata.*)
     *libzephyr.a:esp_rom_systimer.*(.rodata .rodata.*)
     *libzephyr.a:esp_rom_wdt.*(.rodata .rodata.*)
     *libzephyr.a:esp_rom_efuse.*(.rodata .rodata.*)

@@ -34,6 +34,10 @@ static const struct arm_mmu_region mmu_regions[] = {
 	MMU_REGION_FLAT_ENTRY("vectors", CONFIG_KERNEL_VM_BASE, 0x1000,
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_X),
 
+	IF_ENABLED(DT_HAS_COMPAT_STATUS_OKAY(microchip_aes_g1),
+		   (MMU_REGION_FLAT_ENTRY("aes", AES_BASE_ADDRESS, 0x100,
+					  MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),))
+
 	IF_ENABLED(DT_HAS_COMPAT_STATUS_OKAY(atmel_sam_can),
 		   (MMU_REGION_FLAT_ENTRY("sram", IRAM_ADDR, IRAM_SIZE,
 					  MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),))
@@ -56,6 +60,9 @@ static const struct arm_mmu_region mmu_regions[] = {
 					  MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),))
 
 	FOR_EACH_IDX(MMU_REGION_MCAN_DEFN, (), 0, 1, 2, 3, 4, 5)
+
+	MMU_REGION_FLAT_ENTRY("otpc", OTPC_BASE_ADDRESS, 0x1000,
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
 
 	MMU_REGION_FLAT_ENTRY("pioa", PIO_BASE_ADDRESS, 0x4000,
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
