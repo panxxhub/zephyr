@@ -170,6 +170,14 @@ config PHY_VERIFY_DEVICE_IDENTIFICATION
 	  Verify the organizationally unique identifier that is reported
 	  by the phy chip.
 
+config PHY_MOTORCOMM_YT8511
+	bool "Motorcomm YT8511 Ethernet PHY Driver"
+	default y
+	depends on DT_HAS_MOTORCOMM_YT8511_ENABLED
+	select MDIO
+	help
+	  Enable Motorcomm YT8511 Ethernet PHY Driver
+
 config PHY_MOTORCOMM_YT8521
 	bool "Motorcomm YT8521 Ethernet PHY Driver"
 	default y

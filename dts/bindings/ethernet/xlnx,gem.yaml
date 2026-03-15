@@ -46,30 +46,31 @@ properties:
       Description, bits [20:18] to determine the appropriate divider for
       the current target's LPD LSBUS clock frequency.
 
+  phy-handle:
+    type: phandle
+    description: |
+      Phandle to the PHY device node managed by this controller instance.
+      When present, the MAC uses the standard Zephyr PHY driver API for
+      link management instead of the legacy built-in PHY layer.
+
   init-mdio-phy:
     type: boolean
+    deprecated: true
     description: |
-      Activates the management of a PHY associated with the controller in-
-      stance. If this parameter is activated at the board level, the de-
-      fault values of the associated parameters mdio-phy-address, phy-poll-
-      interval, link-speed and advertise-lower-link-speeds should be checked
-      and overwritten at the board level if required.
+      Deprecated. Use phy-handle with a standalone PHY driver instead.
 
   mdio-phy-address:
     type: int
-    required: true
+    default: 0
     description: |
-      The address on the MDIO bus of the PHY associated with the controller
-      instance. Set the address to 0 for auto-detection (first responding
-      PHY will be claimed by the driver, watch out in case of shared MDIO
-      use), or to a fixed address between 1 and 32.
+      Deprecated. The PHY address is now specified via the PHY node's reg
+      property under the MDIO bus. Kept for backward compatibility.
 
   phy-poll-interval:
     type: int
-    required: true
+    default: 1000
     description: |
-      PHY status polling interval in milliseconds for a driver instance
-      managing an associated PHY.
+      Deprecated. PHY polling is now handled by the standalone PHY driver.
 
   link-speed:
     type: int
@@ -345,19 +346,15 @@ properties:
   rgmii-tx-skew:
     type: int
     default: 0
+    deprecated: true
     description: |
-      Optional feature flag - RGMII TX skew. When set, the RGMII TX skew
-      is enabled. The value of this property is the skew in picoseconds
-      (ps) to be applied to the TX clock. Valid values are between 0 and
-      2000 ps.
-      The default value is 0 ps.
-  
+      Deprecated. RGMII TX skew is now configured via the PHY driver's
+      motorcomm,tx-delay-sel property. Kept for backward compatibility.
+
   rgmii-rx-skew:
     type: int
     default: 0
+    deprecated: true
     description: |
-      Optional feature flag - RGMII RX skew. When set, the RGMII RX skew
-      is enabled. The value of this property is the skew in picoseconds
-      (ps) to be applied to the RX clock. Valid values are between 0 and
-      2000 ps.
-      The default value is 0 ps.
+      Deprecated. RGMII RX skew is now configured via the PHY driver's
+      motorcomm,rx-delay-sel property. Kept for backward compatibility.

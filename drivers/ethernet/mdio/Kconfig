@@ -43,6 +43,7 @@ rsource "Kconfig.stm32_hal"
 rsource "Kconfig.sy1xx"
 rsource "Kconfig.xilinx_axi_ethernet_lite"
 rsource "Kconfig.xilinx_axienet"
+rsource "Kconfig.xlnx_gem"
 rsource "Kconfig.xmc4xxx"
 # zephyr-keep-sorted-stop
 

@@ -18,7 +18,7 @@
 #include <zephyr/irq.h>
 #include <zephyr/linker/section_tags.h>
 
-#include "phy_xlnx_gem.h"
+#include <zephyr/net/phy.h>
 
 #define ETH_XLNX_BUFFER_ALIGNMENT			4 /* RX/TX buffer alignment (in bytes) */
 
@@ -453,12 +453,10 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 		(DT_INST_PROP(port, mdc_divider)),\
 	.max_link_speed			= (enum eth_xlnx_link_speed)\
 		(DT_INST_PROP(port, link_speed)),\
-	.init_phy			= DT_INST_PROP(port, init_mdio_phy),\
-	.rgmii_tx_skew			= DT_INST_PROP(port, rgmii_tx_skew),\
-	.rgmii_rx_skew			= DT_INST_PROP(port, rgmii_rx_skew),\
-	.phy_mdio_addr_fix		= DT_INST_PROP(port, mdio_phy_address),\
-	.phy_advertise_lower		= DT_INST_PROP(port, advertise_lower_link_speeds),\
-	.phy_poll_interval		= DT_INST_PROP(port, phy_poll_interval),\
+	.phy_dev			= COND_CODE_1(\
+		DT_INST_NODE_HAS_PROP(port, phy_handle),\
+		(DEVICE_DT_GET(DT_INST_PHANDLE(port, phy_handle))),\
+		(NULL)),\
 	.defer_rxp_to_queue		= !DT_INST_PROP(port, handle_rx_in_isr),\
 	.defer_txd_to_queue		= DT_INST_PROP(port, handle_tx_in_workq),\
 	.ahb_burst_length		= (enum eth_xlnx_ahb_burst_length)\
@@ -509,9 +507,6 @@ static struct eth_xlnx_gem_dev_data eth_xlnx_gem##port##_dev_data = {\
 	.mac_addr        = DT_INST_PROP_OR(port, local_mac_address, {0}),\
 	.started         = 0,\
 	.eff_link_speed  = LINK_DOWN,\
-	.phy_addr        = 0,\
-	.phy_id          = 0,\
-	.phy_access_api  = NULL,\
 	.first_rx_buffer = NULL,\
 	.first_tx_buffer = NULL\
 };
@@ -733,12 +728,7 @@ struct eth_xlnx_gem_dev_cfg {
 	enum eth_xlnx_mdc_clock_divider	mdc_divider;
 
 	enum eth_xlnx_link_speed	max_link_speed;
-	bool				init_phy;
-	uint16_t 			rgmii_tx_skew;
-	uint16_t 			rgmii_rx_skew;
-	uint8_t				phy_mdio_addr_fix;
-	uint8_t				phy_advertise_lower;
-	uint32_t			phy_poll_interval;
+	const struct device		*phy_dev;
 	uint8_t				defer_rxp_to_queue;
 	uint8_t				defer_txd_to_queue;
 
@@ -792,11 +782,6 @@ struct eth_xlnx_gem_dev_data {
 	struct k_work			tx_done_work;
 	struct k_work			rx_pend_work;
 	struct k_sem			tx_done_sem;
-
-	uint8_t				phy_addr;
-	uint32_t			phy_id;
-	struct k_work_delayable		phy_poll_delayed_work;
-	struct phy_xlnx_gem_api		*phy_access_api;
 
 	uint8_t				*first_rx_buffer;
 	uint8_t				*first_tx_buffer;
