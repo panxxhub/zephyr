@@ -950,7 +950,7 @@ static int zynq_sdhc_host_send_cmd(const struct device *dev,
 	}
 
 	if (resp_type_select == ZYNQ_SDHC_HOST_INVAL_HOST_RESP) {
-		LOG_ERR("Invalid eMMC resp type:%d", resp_type_select);
+		LOG_DBG("Unsupported resp type for eMMC slot (cmd %d)", config->cmd_idx);
 		return -EINVAL;
 	}
 
