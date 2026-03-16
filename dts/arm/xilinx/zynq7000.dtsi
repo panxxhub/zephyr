@@ -59,8 +59,6 @@
 				      IRQ_DEFAULT_PRIORITY>;
 			interrupt-names = "irq_0", "irq_1";
 			syscon = <&slcr>;
-			mdio-phy-address = <XLNX_GEM_PHY_AUTO_DETECT>;
-			phy-poll-interval = <1000>;
 			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
 			amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_SINGLE>;
 			hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
@@ -94,8 +92,6 @@
 				      IRQ_DEFAULT_PRIORITY>;
 			interrupt-names = "irq_0", "irq_1";
 			syscon = <&slcr>;
-			mdio-phy-address = <XLNX_GEM_PHY_AUTO_DETECT>;
-			phy-poll-interval = <1000>;
 			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
 			amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_SINGLE>;
 			hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
