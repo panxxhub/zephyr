@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
+
+source "drivers/ethernet/mdio/Kconfig.xlnx_gem"
+source "drivers/ethernet/mdio/Kconfig.xlnx_esc"

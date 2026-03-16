@@ -1,0 +1,26 @@
+# Copyright (c) 2025 Moton Intelligent Equipment
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Xilinx ESC (EtherCAT Slave Controller) MDIO bus controller.
+  The ESC has a built-in MII management interface at register offset 0x510.
+  Each ESC port requires its own MDIO bus instance since the port_select
+  field (register 0x512) is not part of the standard MDIO API.
+
+compatible: "xlnx,esc-mdio"
+
+include: mdio-controller.yaml
+
+properties:
+  reg:
+    required: true
+    description: |
+      Base address and size of the ESC register block that contains
+      the MII management registers (0x510-0x514).
+
+  xlnx,port-id:
+    type: int
+    required: true
+    description: |
+      ESC port index (0-3) used in the MII control register's port_select
+      field to route MDIO transactions to the correct physical port.
