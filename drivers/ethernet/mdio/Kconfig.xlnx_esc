@@ -1,0 +1,11 @@
+# Copyright (c) 2025 Moton Intelligent Equipment
+# SPDX-License-Identifier: Apache-2.0
+
+config MDIO_XLNX_ESC
+	bool "Xilinx ESC MDIO driver"
+	default y
+	depends on DT_HAS_XLNX_ESC_MDIO_ENABLED
+	help
+	  Enable Xilinx EtherCAT Slave Controller MDIO bus driver.
+	  This driver provides the standard MDIO bus interface for PHY
+	  drivers connected to the ESC's built-in MII management port.

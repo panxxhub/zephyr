@@ -16,6 +16,13 @@ properties:
   interrupts:
     required: true
 
+  syscon:
+    type: phandle
+    required: false
+    description: |
+      phandle to the System Level Control Registers (SLCR).
+
+
   clock-frequency:
     type: int
     required: true
@@ -39,30 +46,13 @@ properties:
       Description, bits [20:18] to determine the appropriate divider for
       the current target's LPD LSBUS clock frequency.
 
-  init-mdio-phy:
-    type: boolean
+  phy-handle:
+    type: phandle
     description: |
-      Activates the management of a PHY associated with the controller in-
-      stance. If this parameter is activated at the board level, the de-
-      fault values of the associated parameters mdio-phy-address, phy-poll-
-      interval, link-speed and advertise-lower-link-speeds should be checked
-      and overwritten at the board level if required.
+      Phandle to the PHY device node managed by this controller instance.
+      When present, the MAC uses the standard Zephyr PHY driver API for
+      link management instead of the legacy built-in PHY layer.
 
-  mdio-phy-address:
-    type: int
-    required: true
-    description: |
-      The address on the MDIO bus of the PHY associated with the controller
-      instance. Set the address to 0 for auto-detection (first responding
-      PHY will be claimed by the driver, watch out in case of shared MDIO
-      use), or to a fixed address between 1 and 32.
-
-  phy-poll-interval:
-    type: int
-    required: true
-    description: |
-      PHY status polling interval in milliseconds for a driver instance
-      managing an associated PHY.
 
   link-speed:
     type: int
@@ -334,3 +324,19 @@ properties:
       Optional feature flag - Enable AHB management descriptor data endian-
       ness swap to big endian. If this flag is not set, data will be little
       endian.
+  
+  rgmii-tx-skew:
+    type: int
+    default: 0
+    deprecated: true
+    description: |
+      Deprecated. RGMII TX skew is now configured via the PHY driver's
+      motorcomm,tx-delay-sel property. Kept for backward compatibility.
+
+  rgmii-rx-skew:
+    type: int
+    default: 0
+    deprecated: true
+    description: |
+      Deprecated. RGMII RX skew is now configured via the PHY driver's
+      motorcomm,rx-delay-sel property. Kept for backward compatibility.
