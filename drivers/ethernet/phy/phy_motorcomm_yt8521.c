@@ -464,14 +464,8 @@ static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_sta
 
 	k_sem_take(&data->sem, K_FOREVER);
 
+	update_link_state(dev);
 	memcpy(state, &data->state, sizeof(struct phy_link_state));
-
-	if (state->speed == 0) {
-		/* If speed is 0, then link is also down, happens when autonegotiation is in
-		 * progress
-		 */
-		state->is_up = false;
-	}
 
 	k_sem_give(&data->sem);
 
