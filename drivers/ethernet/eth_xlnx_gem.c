@@ -1214,7 +1214,7 @@ static void eth_xlnx_gem_phy_link_changed(const struct device *phy_dev,
 	if (!state->is_up) {
 		dev_data->eff_link_speed = LINK_DOWN;
 		net_eth_carrier_off(dev_data->iface);
-		LOG_WRN("%s link down", dev->name);
+		LOG_DBG("%s link down", dev->name);
 		return;
 	}
 

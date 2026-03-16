@@ -520,7 +520,7 @@ static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 	if (phy_id) {
 		*phy_id = val;
 	} else {
-		LOG_INF("PHY (%d) ID:0x%X", config->phy_addr, val);
+		LOG_DBG("PHY (%d) ID:0x%X", config->phy_addr, val);
 	}
 
 	return 0;
@@ -557,6 +557,9 @@ static int mc_ytphy_init(const struct device *dev)
 
 	mc_ytphy_resume(dev);
 
+	const struct mc_ytphy_config *const cfg = dev->config;
+
+	LOG_INF("Motorcomm YT8521 PHY %d initialized", cfg->phy_addr);
 	return 0;
 }
 

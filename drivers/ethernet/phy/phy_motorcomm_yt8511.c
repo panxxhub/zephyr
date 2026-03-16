@@ -398,7 +398,7 @@ static int yt8511_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	LOG_INF("PHY (%d) ID: 0x%04X", cfg->phy_addr, phy_id);
+	LOG_DBG("PHY (%d) ID: 0x%04X", cfg->phy_addr, phy_id);
 
 	/* Soft reset */
 	ret = yt8511_soft_reset(dev);
@@ -422,6 +422,7 @@ static int yt8511_init(const struct device *dev)
 
 	k_work_schedule(&data->monitor_work, K_NO_WAIT);
 
+	LOG_INF("Motorcomm YT8511 PHY %d initialized", cfg->phy_addr);
 	return 0;
 }
 
