@@ -80,7 +80,7 @@ static void z_arm_enable_secondary_fpu(void)
 #undef FPEXC_ENABLE_BIT
 #endif
 
-#if defined(CONFIG_SOC_SERIES_ZYNQ7000)
+#if defined(CONFIG_SOC_SERIES_XC7ZXXX)
 
 #define ZYNQ_SLCR_BASE		0xF8000000U
 #define ZYNQ_SLCR_LOCK		(ZYNQ_SLCR_BASE + 0x0004U)
@@ -126,7 +126,7 @@ static void zynq_release_secondary_cpu(void)
 	__asm__ volatile("isb sy");
 }
 
-#endif /* CONFIG_SOC_SERIES_ZYNQ7000 */
+#endif /* CONFIG_SOC_SERIES_XC7ZXXX */
 
 /* Offsets used in reset.S */
 BUILD_ASSERT(offsetof(struct boot_params, mpid) == BOOT_PARAM_MPID_OFFSET);
@@ -222,7 +222,7 @@ void arch_cpu_start(int cpu_num, k_thread_stack_t *stack, int sz, arch_cpustart_
 			(void *)&arm_cpu_boot_params,
 			sizeof(arm_cpu_boot_params));
 
-#if defined(CONFIG_SOC_SERIES_ZYNQ7000)
+#if defined(CONFIG_SOC_SERIES_XC7ZXXX)
 	zynq_release_secondary_cpu();
 #endif
 
