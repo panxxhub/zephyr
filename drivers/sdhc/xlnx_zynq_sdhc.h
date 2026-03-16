@@ -408,7 +408,7 @@
 #define XLNX_SDHC_SD_SLOT   0x1U /**< SD slot */
 #define XLNX_SDHC_EMMC_SLOT 0x2U /**< eMMC slot */
 
-struct __packed zynq_sdhc_reg {
+struct zynq_sdhc_reg {
 	volatile uint32_t sdma_sysaddr;           /**< SDMA System Address */
 	volatile uint16_t block_size;             /**< Block Size */
 	volatile uint16_t block_count;            /**< Block Count */

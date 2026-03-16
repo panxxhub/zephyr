@@ -1172,6 +1172,7 @@ static int zynq_sdhc_request(const struct device *dev, struct sdhc_command *cmd,
  *---------------------------------------------------------------------------*/
 static int zynq_sdhc_set_io(const struct device *dev, struct sdhc_io *ios)
 {
+	const struct zynq_sdhc_config *cfg = dev->config;
 	struct zynq_sdhc_data *data = dev->data;
 	volatile struct zynq_sdhc_reg *regs = DEV_REG(dev);
 	struct sdhc_io *host_io = &data->host_io;
@@ -1182,9 +1183,9 @@ static int zynq_sdhc_set_io(const struct device *dev, struct sdhc_io *ios)
 		ios->power_mode == SDHC_POWER_ON ? "ON" : "OFF",
 		ios->signal_voltage == SD_VOL_1_8_V ? "1.8V" : "3.3V");
 
-	if (tgt_freq && (tgt_freq > data->props.f_max || tgt_freq < data->props.f_min)) {
-		LOG_ERR("Invalid clock: %d Hz (range %d-%d)", ios->clock, data->props.f_min,
-			data->props.f_max);
+	if (tgt_freq && (tgt_freq > cfg->max_bus_freq || tgt_freq < cfg->min_bus_freq)) {
+		LOG_ERR("Invalid clock: %d Hz (range %d-%d)", ios->clock, cfg->min_bus_freq,
+			cfg->max_bus_freq);
 		return -EINVAL;
 	}
 
