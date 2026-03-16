@@ -136,6 +136,17 @@
 			interrupt-names = "irq_0";
 		};
 
+		qspi: spi@e000d000 {
+			compatible = "xlnx,zynq-qspi";
+			reg = <0xe000d000 0x1000>;
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			clock-frequency = <200000000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		psgpio: gpio@e000a000 {
 			compatible = "xlnx,ps-gpio";
 			status = "disabled";
