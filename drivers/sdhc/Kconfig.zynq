@@ -27,7 +27,7 @@ config XLNX_ZYNQ_SDHC_HOST_ADMA
 config XLNX_ZYNQ_SDHC_HOST_ADMA_DESC_SIZE
 	int "Xlnx Zynq SDHC host controller ADMA Descriptor size"
 	depends on XLNX_ZYNQ_SDHC_HOST_ADMA
-	default 32 
+	default 32
 	help
 	  Xlnx Zynq SDHC host controller ADMA Descriptor size.
 

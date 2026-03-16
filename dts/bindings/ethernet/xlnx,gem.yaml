@@ -324,7 +324,7 @@ properties:
       Optional feature flag - Enable AHB management descriptor data endian-
       ness swap to big endian. If this flag is not set, data will be little
       endian.
-  
+
   rgmii-tx-skew:
     type: int
     default: 0
