@@ -117,12 +117,12 @@ static int zynq_qspi_configure(const struct device *dev,
 		return -ENOTSUP;
 	}
 
-	/* Compute baud rate divider: freq = ref_clk / (2 << div) */
-	uint32_t div = 0;
+	/* Compute baud rate divider: freq = ref_clk / (2 << baud_div) */
+	uint32_t baud_div = 0;
 
-	while (div < 7 &&
-	       (cfg->clock_frequency / (2U << div)) > config->frequency) {
-		div++;
+	while (baud_div < 7 &&
+	       (cfg->clock_frequency / (2U << baud_div)) > config->frequency) {
+		baud_div++;
 	}
 
 	/* Build CR: master, manual CS (deasserted), manual start enable */
@@ -135,7 +135,7 @@ static int zynq_qspi_configure(const struct device *dev,
 		cr |= CR_CPHA;
 	}
 
-	cr |= (div << CR_BAUD_SHIFT) & CR_BAUD_MASK;
+	cr |= (baud_div << CR_BAUD_SHIFT) & CR_BAUD_MASK;
 
 	qspi_write(dev, QSPI_CR, cr);
 	data->ctx.config = config;
