@@ -124,7 +124,8 @@ DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_BUFFER_SIZE_CHECK)
 static int eth_xlnx_gem_dev_init(const struct device *dev)
 {
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	uint32_t reg_val;
+
+	ARG_UNUSED(dev_conf);
 
 	/* Precondition checks using assertions */
 	/* Valid max. / nominal link speed value */
