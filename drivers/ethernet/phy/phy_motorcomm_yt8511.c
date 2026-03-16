@@ -132,14 +132,15 @@ static int yt8511_soft_reset(const struct device *dev)
 		k_msleep(1);
 		ret = yt8511_read(dev, MII_BMCR, &data);
 		if (ret) {
-			break;
+			return ret;
 		}
 		if (!(data & MII_BMCR_RESET)) {
 			return 0;
 		}
 	}
 
-	return ret;
+	LOG_ERR("PHY reset timed out");
+	return -ETIMEDOUT;
 }
 
 static int yt8511_cfg_clock_delay(const struct device *dev)

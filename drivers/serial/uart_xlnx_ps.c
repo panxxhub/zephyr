@@ -283,6 +283,13 @@ static void uart_xlnx_ps_poll_out(const struct device *dev, unsigned char c)
 	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
 	uint32_t retries = POLL_OUT_TIMEOUT_US / 10;
 
+	/* Bounded wait — poll_out() returns void per Zephyr API, so a
+	 * timeout silently drops the byte. This is a deliberate trade-off:
+	 * upstream has an unbounded loop that can hang forever if TX FIFO
+	 * is stuck. The 100ms timeout makes poll_out lossy under sustained
+	 * backpressure but prevents infinite hangs. Callers needing
+	 * reliable output should use interrupt-driven or async UART APIs.
+	 */
 	while ((sys_read32(reg_base + XUARTPS_SR_OFFSET) & XUARTPS_SR_TXFULL) != 0) {
 		if (--retries == 0) {
 			return;

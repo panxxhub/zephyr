@@ -53,24 +53,6 @@ properties:
       When present, the MAC uses the standard Zephyr PHY driver API for
       link management instead of the legacy built-in PHY layer.
 
-  init-mdio-phy:
-    type: boolean
-    deprecated: true
-    description: |
-      Deprecated. Use phy-handle with a standalone PHY driver instead.
-
-  mdio-phy-address:
-    type: int
-    default: 0
-    description: |
-      Deprecated. The PHY address is now specified via the PHY node's reg
-      property under the MDIO bus. Kept for backward compatibility.
-
-  phy-poll-interval:
-    type: int
-    default: 1000
-    description: |
-      Deprecated. PHY polling is now handled by the standalone PHY driver.
 
   link-speed:
     type: int

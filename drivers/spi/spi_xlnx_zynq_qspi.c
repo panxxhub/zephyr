@@ -4,6 +4,12 @@
  *
  * Zynq-7000 PS Quad-SPI controller driver (polling mode).
  * Reference: UG585 Zynq-7000 TRM, Chapter 12.
+ *
+ * This is a full-duplex byte-at-a-time SPI controller. RX bytes are
+ * produced for every TX byte. Callers that send command/address in TX
+ * and expect payload-only in RX MUST use NOP RX buffers (buf=NULL) for
+ * the command phase, as spi_nor.c does. Callers that omit NOP segments
+ * will get command-phase junk in the RX buffer.
  */
 
 #define DT_DRV_COMPAT xlnx_zynq_qspi
@@ -221,6 +227,10 @@ static int zynq_qspi_transceive(const struct device *dev,
 
 		qspi_write(dev, QSPI_ISR, ISR_RX_NEMPTY);
 
+		/* spi_nor.c uses NOP RX buffers (buf=NULL) for the command
+		 * phase so junk bytes are discarded here — rx_buf_on()
+		 * returns false when the active RX spi_buf has buf==NULL.
+		 */
 		if (spi_context_rx_buf_on(ctx)) {
 			*ctx->rx_buf = rx_byte;
 		}

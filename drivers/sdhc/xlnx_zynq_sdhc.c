@@ -407,6 +407,8 @@ static int set_timing(const struct device *dev, enum sdhc_timing_mode timing)
 		mode = ZYNQ_SDHC_HOST_UHSMODE_DDR50;
 		break;
 	case SDHC_TIMING_HS200:
+		mode = ZYNQ_SDHC_HOST_UHSMODE_SDR104;
+		break;
 	case SDHC_TIMING_HS400:
 		mode = ZYNQ_SDHC_HOST_UHSMODE_HS400;
 		break;
@@ -509,7 +511,12 @@ static int zynq_sdhc_dma_init(const struct device *dev, struct sdhc_data *data, 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA)) {
 		uintptr_t buff_base = (uintptr_t)data->data;
 
-		memset(sdhc_data->adma_desc_tbl, 0, sizeof(adma_desc_t) * (data->blocks + 1));
+		if (data->blocks > ADMA_DESC_SIZE) {
+			LOG_ERR("ADMA: %u blocks exceeds table size %u",
+				data->blocks, ADMA_DESC_SIZE);
+			return -ENOMEM;
+		}
+		memset(sdhc_data->adma_desc_tbl, 0, sizeof(adma_desc_t) * data->blocks);
 		for (int i = 0; i < data->blocks; i++) {
 			adma_desc_t *desc = &sdhc_data->adma_desc_tbl[i];
 
@@ -581,7 +588,11 @@ static int zynq_sdhc_init_xfr(const struct device *dev, struct sdhc_data *data, 
 	struct zynq_sdhc_data *sdhc_data = dev->data;
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_DMA)) {
-		zynq_sdhc_dma_init(dev, data, read);
+		int dma_rc = zynq_sdhc_dma_init(dev, data, read);
+
+		if (dma_rc) {
+			return dma_rc;
+		}
 #if defined(CONFIG_XLNX_ZYNQ_SDHC_HOST_ADMA)
 		sdhc_data->xfer_flag = 1;
 #endif
@@ -638,7 +649,10 @@ static int wait_xfr_intr_complete(const struct device *dev, uint32_t time_out)
 
 	events = k_event_wait(&sdhc_data->irq_event,
 			      ZYNQ_SDHC_HOST_XFER_COMPLETE |
-				      ERR_INTR_STATUS_EVENT(ZYNQ_SDHC_HOST_DMA_TXFR_ERR),
+				      ERR_INTR_STATUS_EVENT(ZYNQ_SDHC_HOST_DMA_TXFR_ERR |
+						    ZYNQ_SDHC_HOST_DATA_TIMEOUT_ERR |
+						    ZYNQ_SDHC_HOST_DATA_CRC_ERR |
+						    ZYNQ_SDHC_HOST_DATA_END_BIT_ERR),
 			      false, wait_time);
 
 	if (events & ZYNQ_SDHC_HOST_XFER_COMPLETE) {
@@ -860,7 +874,12 @@ static int zynq_sdhc_host_send_cmd(const struct device *dev,
 	}
 
 	if (IS_ENABLED(CONFIG_XLNX_ZYNQ_SDHC_HOST_INTR)) {
-		k_event_clear(&sdhc->irq_event, XSDPS_NORM_INTR_ALL_MASK & ~XSDPS_INTR_CARD_MASK);
+		/* Clear both normal and error events to prevent stale errors
+		 * from a prior command causing immediate false -EIO.
+		 */
+		k_event_clear(&sdhc->irq_event,
+			      (XSDPS_NORM_INTR_ALL_MASK & ~XSDPS_INTR_CARD_MASK) |
+			      ERR_INTR_STATUS_EVENT(0xFFFF));
 	}
 
 	regs->argument = sdhc_cmd->arg;
@@ -1095,8 +1114,8 @@ static int zynq_sdhc_reset(const struct device *dev)
 	int ret;
 
 	if (!(regs->present_state & ZYNQ_SDHC_HOST_PSTATE_CARD_INSERTED)) {
-		LOG_ERR("No card inserted");
-		return -ENODEV;
+		LOG_WRN("No card inserted — controller ready for hot-insert");
+		return 0;
 	}
 
 	ret = zynq_sdhc_host_sw_reset(dev, ZYNQ_SDHC_HOST_SWRST_ALL);
