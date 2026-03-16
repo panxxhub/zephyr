@@ -58,6 +58,7 @@
 				     <GIC_SPI 23 IRQ_TYPE_LEVEL
 				      IRQ_DEFAULT_PRIORITY>;
 			interrupt-names = "irq_0", "irq_1";
+			syscon = <&slcr>;
 			mdio-phy-address = <XLNX_GEM_PHY_AUTO_DETECT>;
 			phy-poll-interval = <1000>;
 			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
@@ -74,6 +75,14 @@
 			full-duplex;
 		};
 
+		gem0_mdio: mdio@e000b000 {
+			compatible = "xlnx,gem-mdio";
+			reg = <0xe000b000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		gem1: ethernet@e000c000 {
 			compatible = "xlnx,gem";
 			status = "disabled";
@@ -84,6 +93,7 @@
 				     <GIC_SPI 46 IRQ_TYPE_LEVEL
 				      IRQ_DEFAULT_PRIORITY>;
 			interrupt-names = "irq_0", "irq_1";
+			syscon = <&slcr>;
 			mdio-phy-address = <XLNX_GEM_PHY_AUTO_DETECT>;
 			phy-poll-interval = <1000>;
 			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
@@ -98,6 +108,14 @@
 			discard-rx-fcs;
 			unicast-hash;
 			full-duplex;
+		};
+
+		gem1_mdio: mdio@e000c000 {
+			compatible = "xlnx,gem-mdio";
+			reg = <0xe000c000 0x1000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 
 		uart0: uart@e0000000 {
@@ -116,6 +134,17 @@
 			interrupts = <GIC_SPI 50 IRQ_TYPE_LEVEL
 				      IRQ_DEFAULT_PRIORITY>;
 			interrupt-names = "irq_0";
+		};
+
+		qspi: spi@e000d000 {
+			compatible = "xlnx,zynq-qspi";
+			reg = <0xe000d000 0x1000>;
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			clock-frequency = <200000000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 
 		psgpio: gpio@e000a000 {

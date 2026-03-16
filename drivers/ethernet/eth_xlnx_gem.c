@@ -20,6 +20,9 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/__assert.h>
+#if defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
+#include <zephyr/drivers/syscon.h>
+#endif
 #include <zephyr/cache.h>
 
 #include <zephyr/net/net_if.h>
@@ -63,8 +66,9 @@ static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev);
 static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev);
 static void eth_xlnx_gem_set_mac_address(const struct device *dev);
 static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev);
-static void eth_xlnx_gem_init_phy(const struct device *dev);
-static void eth_xlnx_gem_poll_phy(struct k_work *item);
+static void eth_xlnx_gem_phy_link_changed(const struct device *phy_dev,
+					  struct phy_link_state *state,
+					  void *user_data);
 static void eth_xlnx_gem_configure_buffers(const struct device *dev);
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
@@ -123,18 +127,6 @@ static int eth_xlnx_gem_dev_init(const struct device *dev)
 	uint32_t reg_val;
 
 	/* Precondition checks using assertions */
-	/* Valid PHY address and polling interval, if PHY is to be managed */
-	if (dev_conf->init_phy) {
-		__ASSERT((dev_conf->phy_mdio_addr_fix >= 0 &&
-			 dev_conf->phy_mdio_addr_fix <= 32),
-			 "%s invalid PHY address %u, must be in range "
-			 "1 to 32, or 0 for auto-detection",
-			 dev->name, dev_conf->phy_mdio_addr_fix);
-		__ASSERT(dev_conf->phy_poll_interval > 0,
-			 "%s has an invalid zero PHY status polling "
-			 "interval", dev->name);
-	}
-
 	/* Valid max. / nominal link speed value */
 	__ASSERT((dev_conf->max_link_speed == LINK_10MBIT ||
 		 dev_conf->max_link_speed == LINK_100MBIT ||
@@ -205,19 +197,7 @@ static int eth_xlnx_gem_dev_init(const struct device *dev)
 	eth_xlnx_gem_set_mac_address(dev);	/* Chapter 16.3.2 */
 	eth_xlnx_gem_set_initial_dmacr(dev);	/* Chapter 16.3.2 */
 
-	/* Enable MDIO -> set gem.net_ctrl[mgmt_port_en] */
-	if (dev_conf->init_phy) {
-		reg_val  = sys_read32(dev_conf->base_addr +
-				      ETH_XLNX_GEM_NWCTRL_OFFSET);
-		reg_val |= ETH_XLNX_GEM_NWCTRL_MDEN_BIT;
-		sys_write32(reg_val, dev_conf->base_addr +
-			    ETH_XLNX_GEM_NWCTRL_OFFSET);
-	}
-
 	eth_xlnx_gem_configure_clocks(dev);	/* Chapter 16.3.3 */
-	if (dev_conf->init_phy) {
-		eth_xlnx_gem_init_phy(dev);	/* Chapter 16.3.4 */
-	}
 	eth_xlnx_gem_configure_buffers(dev);	/* Chapter 16.3.5 */
 
 	return 0;
@@ -241,14 +221,9 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 	ethernet_init(iface);
 	net_if_carrier_off(iface);
 
-	/*
-	 * Initialize the (delayed) work items for RX pending, TX done
-	 * and PHY status polling handlers
-	 */
+	/* Initialize work items for RX pending and TX done handlers */
 	k_work_init(&dev_data->tx_done_work, eth_xlnx_gem_tx_done_work);
 	k_work_init(&dev_data->rx_pend_work, eth_xlnx_gem_rx_pending_work);
-	k_work_init_delayable(&dev_data->phy_poll_delayed_work,
-			      eth_xlnx_gem_poll_phy);
 
 	/* Initialize TX-related semaphores */
 	k_sem_init(&dev_data->tx_done_sem, 0, 1);
@@ -257,8 +232,27 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 	/* Initialize the device's interrupt */
 	dev_conf->config_func(dev);
 
-	/* Submit initial PHY status polling delayed work */
-	k_work_reschedule(&dev_data->phy_poll_delayed_work, K_NO_WAIT);
+	/* Register PHY link change callback if a PHY device is configured */
+	if (dev_conf->phy_dev != NULL) {
+		phy_link_callback_set(dev_conf->phy_dev,
+				      eth_xlnx_gem_phy_link_changed, (void *)dev);
+	} else {
+		/*
+		 * No PHY configured: assume link up at max configured speed.
+		 * Apply clock and speed settings, then bring carrier up.
+		 */
+		dev_data->eff_link_speed = dev_conf->max_link_speed;
+		eth_xlnx_gem_configure_clocks(dev);
+		eth_xlnx_gem_set_nwcfg_link_speed(dev);
+		net_eth_carrier_on(dev_data->iface);
+
+		LOG_WRN("%s no PHY configured, assuming link up at %s",
+			dev->name,
+			(dev_conf->max_link_speed == LINK_1GBIT) ? "1 GBit/s" :
+			(dev_conf->max_link_speed == LINK_100MBIT) ? "100 MBit/s" :
+			(dev_conf->max_link_speed == LINK_10MBIT) ? "10 MBit/s" :
+			"undefined");
+	}
 }
 
 /**
@@ -566,11 +560,6 @@ static int eth_xlnx_gem_start_device(const struct device *dev)
 	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK,
 		    dev_conf->base_addr + ETH_XLNX_GEM_IER_OFFSET);
 
-	/* Submit the delayed work for polling the link state */
-	if (k_work_delayable_remaining_get(&dev_data->phy_poll_delayed_work) == 0) {
-		k_work_reschedule(&dev_data->phy_poll_delayed_work, K_NO_WAIT);
-	}
-
 	LOG_DBG("%s started", dev->name);
 	return 0;
 }
@@ -595,11 +584,6 @@ static int eth_xlnx_gem_stop_device(const struct device *dev)
 		return 0;
 	}
 	dev_data->started = false;
-
-	/* Cancel the delayed work that polls the link state */
-	if (k_work_delayable_remaining_get(&dev_data->phy_poll_delayed_work) != 0) {
-		k_work_cancel_delayable(&dev_data->phy_poll_delayed_work);
-	}
 
 	/* RX and TX disable */
 	reg_val  = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
@@ -636,18 +620,10 @@ static enum ethernet_hw_caps eth_xlnx_gem_get_capabilities(
 	enum ethernet_hw_caps caps = (enum ethernet_hw_caps)0;
 
 	if (dev_conf->max_link_speed == LINK_1GBIT) {
-		if (dev_conf->phy_advertise_lower) {
-			caps |= (ETHERNET_LINK_1000BASE | ETHERNET_LINK_100BASE |
-				 ETHERNET_LINK_10BASE);
-		} else {
-			caps |= ETHERNET_LINK_1000BASE;
-		}
+		caps |= (ETHERNET_LINK_1000BASE | ETHERNET_LINK_100BASE |
+			 ETHERNET_LINK_10BASE);
 	} else if (dev_conf->max_link_speed == LINK_100MBIT) {
-		if (dev_conf->phy_advertise_lower) {
-			caps |= (ETHERNET_LINK_100BASE | ETHERNET_LINK_10BASE);
-		} else {
-			caps |= ETHERNET_LINK_100BASE;
-		}
+		caps |= (ETHERNET_LINK_100BASE | ETHERNET_LINK_10BASE);
 	} else {
 		caps |= ETHERNET_LINK_10BASE;
 	}
@@ -859,14 +835,10 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 	uint32_t tmp;
 	uint32_t clk_ctrl_reg;
 
-	if ((!dev_conf->init_phy) || dev_data->eff_link_speed == LINK_DOWN) {
+	if (dev_data->eff_link_speed == LINK_DOWN) {
 		/*
-		 * Run-time data indicates 'link down' or PHY management
-		 * is disabled for the current device -> this indicates the
-		 * initial device initialization. Once the PHY status polling
-		 * delayed work handler has picked up the result of the auto-
-		 * negotiation (if enabled), this if-statement will evaluate
-		 * to false.
+		 * Run-time data indicates 'link down' -> use max/nominal
+		 * link speed for initial clock configuration.
 		 */
 		if (dev_conf->max_link_speed == LINK_10MBIT) {
 			target = 2500000;   /* Target frequency: 2.5 MHz */
@@ -941,7 +913,12 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 		sys_write32(tmp, ETH_XLNX_CRL_APB_WPROT_REGISTER_ADDRESS);
 	}
 # elif defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
-	clk_ctrl_reg  = sys_read32(dev_conf->clk_ctrl_reg_address);
+	if (!device_is_ready(dev_conf->syscon_dev)) {
+		LOG_ERR("%s: SLCR syscon device not ready", dev->name);
+		return;
+	}
+
+	syscon_read_reg(dev_conf->syscon_dev, dev_conf->clk_ctrl_reg_offset, &clk_ctrl_reg);
 	clk_ctrl_reg &= ~((ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
 			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR0_SHIFT) |
 			(ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
@@ -951,7 +928,7 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 			((div1 & ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK) <<
 			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR1_SHIFT);
 
-	sys_write32(clk_ctrl_reg, dev_conf->clk_ctrl_reg_address);
+	syscon_write_reg(dev_conf->syscon_dev, dev_conf->clk_ctrl_reg_offset, clk_ctrl_reg);
 #endif /* CONFIG_SOC_XILINX_ZYNQMP / CONFIG_SOC_FAMILY_XILINX_ZYNQ7000 */
 
 	LOG_DBG("%s set clock dividers div0/1 %u/%u for target "
@@ -1081,7 +1058,7 @@ static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev)
 /**
  * @brief GEM Network Configuration Register link speed update function
  * Updates only the link speed-related bits of the Network Configuration
- * register. This is called from within #eth_xlnx_gem_poll_phy.
+ * register. This is called from the PHY link change callback.
  *
  * @param dev Pointer to the device data
  */
@@ -1214,158 +1191,62 @@ static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev)
 }
 
 /**
- * @brief GEM associated PHY detection and setup function
- * If the current GEM device shall manage an associated PHY, its detection
- * and configuration is performed from within this function. Called from
- * within the device initialization function. This function refers to
- * functionality implemented in the phy_xlnx_gem module.
+ * @brief PHY link state change callback
+ * Called by the standalone PHY driver whenever the link state or speed
+ * changes. Maps the Zephyr phy_link_speed to the GEM's internal
+ * eth_xlnx_link_speed, reconfigures clocks and NWCFG, and updates
+ * carrier state.
  *
- * @param dev Pointer to the device data
+ * @param phy_dev  PHY device that triggered the callback
+ * @param state    New link state from the PHY driver
+ * @param user_data Pointer to the MAC device (cast from void *)
  */
-static void eth_xlnx_gem_init_phy(const struct device *dev)
+static void eth_xlnx_gem_phy_link_changed(const struct device *phy_dev,
+					   struct phy_link_state *state,
+					   void *user_data)
 {
+	const struct device *dev = (const struct device *)user_data;
 	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
-	int detect_rc;
 
-	LOG_DBG("%s attempting to initialize associated PHY", dev->name);
+	ARG_UNUSED(phy_dev);
 
-	/*
-	 * The phy_xlnx_gem_detect function checks if a valid PHY
-	 * ID is returned when reading the corresponding high / low
-	 * ID registers for all valid MDIO addresses. If a compatible
-	 * PHY is detected, the function writes a pointer to the
-	 * vendor-specific implementations of the PHY management
-	 * functions to the run-time device data struct, along with
-	 * the ID and the MDIO address of the detected PHY (dev_data->
-	 * phy_id, dev_data->phy_addr, dev_data->phy_access_api).
-	 */
-	detect_rc = phy_xlnx_gem_detect(dev);
-
-	if (detect_rc == 0 && dev_data->phy_id != 0x00000000 &&
-			dev_data->phy_id != 0xFFFFFFFF &&
-			dev_data->phy_access_api != NULL) {
-		/* A compatible PHY was detected -> reset & configure it */
-		dev_data->phy_access_api->phy_reset_func(dev);
-		dev_data->phy_access_api->phy_configure_func(dev);
-	} else {
-		LOG_WRN("%s no compatible PHY detected", dev->name);
+	if (!state->is_up) {
+		dev_data->eff_link_speed = LINK_DOWN;
+		net_eth_carrier_off(dev_data->iface);
+		LOG_WRN("%s link down", dev->name);
+		return;
 	}
-}
 
-/**
- * @brief GEM associated PHY status polling function
- * This handler of a delayed work item is called from the context of
- * the system work queue. It is always scheduled at least once during the
- * interface initialization. If the current driver instance manages a
- * PHY, the delayed work item will be re-scheduled in order to continuously
- * monitor the link state and speed while the device is active. Link state
- * and link speed changes are polled, which may result in the link state
- * change being propagated (carrier on/off) and / or the TX clock being
- * reconfigured to match the current link speed. If PHY management is dis-
- * abled for the current driver instance or no compatible PHY was detected,
- * the work item will not be re-scheduled and default link speed and link
- * state values are applied. This function refers to functionality imple-
- * mented in the phy_xlnx_gem module.
- *
- * @param work Pointer to the delayed work item which facilitates
- *             access to the current device's configuration data
- */
-static void eth_xlnx_gem_poll_phy(struct k_work *work)
-{
-	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-	struct eth_xlnx_gem_dev_data *dev_data = CONTAINER_OF(dwork,
-		struct eth_xlnx_gem_dev_data, phy_poll_delayed_work);
-	const struct device *dev = net_if_get_device(dev_data->iface);
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-
-	uint16_t phy_status;
-	uint8_t link_status;
-
-	if (dev_data->phy_access_api != NULL) {
-		/* A supported PHY is managed by the driver */
-		phy_status = dev_data->phy_access_api->phy_poll_status_change_func(dev);
-
-		if ((phy_status & (
-			PHY_XLNX_GEM_EVENT_LINK_SPEED_CHANGED |
-			PHY_XLNX_GEM_EVENT_LINK_STATE_CHANGED |
-			PHY_XLNX_GEM_EVENT_AUTONEG_COMPLETE)) != 0) {
-
-			/*
-			 * Get the PHY's link status. Handling a 'link down'
-			 * event the simplest possible case.
-			 */
-			link_status = dev_data->phy_access_api->phy_poll_link_status_func(dev);
-
-			if (link_status == 0) {
-				/*
-				 * Link is down -> propagate to the Ethernet
-				 * layer that the link has gone down.
-				 */
-				dev_data->eff_link_speed = LINK_DOWN;
-				net_eth_carrier_off(dev_data->iface);
-
-				LOG_WRN("%s link down", dev->name);
-			} else {
-				/*
-				 * A link has been detected, which, depending
-				 * on the driver's configuration, might have
-				 * a different speed than the previous link.
-				 * Therefore, the clock dividers must be ad-
-				 * justed accordingly.
-				 */
-				dev_data->eff_link_speed =
-					dev_data->phy_access_api->phy_poll_link_speed_func(dev);
-
-				eth_xlnx_gem_configure_clocks(dev);
-				eth_xlnx_gem_set_nwcfg_link_speed(dev);
-				net_eth_carrier_on(dev_data->iface);
-
-				LOG_INF("%s link up, %s", dev->name,
-					(dev_data->eff_link_speed   == LINK_1GBIT)
-					? "1 GBit/s"
-					: (dev_data->eff_link_speed == LINK_100MBIT)
-					? "100 MBit/s"
-					: (dev_data->eff_link_speed == LINK_10MBIT)
-					? "10 MBit/s" : "undefined / link down");
-			}
-		}
-
-		/*
-		 * Re-submit the delayed work using the interval from the device
-		 * configuration data.
-		 */
-		k_work_reschedule(&dev_data->phy_poll_delayed_work,
-				  K_MSEC(dev_conf->phy_poll_interval));
+	/* Map phy_link_speed to eth_xlnx_link_speed */
+	if (PHY_LINK_IS_SPEED_1000M(state->speed)) {
+		dev_data->eff_link_speed = LINK_1GBIT;
+	} else if (PHY_LINK_IS_SPEED_100M(state->speed)) {
+		dev_data->eff_link_speed = LINK_100MBIT;
+	} else if (PHY_LINK_IS_SPEED_10M(state->speed)) {
+		dev_data->eff_link_speed = LINK_10MBIT;
 	} else {
-		/*
-		 * The current driver instance doesn't manage a PHY or no
-		 * supported PHY was detected -> pretend the configured max.
-		 * link speed is the effective link speed and that the link
-		 * is up. The delayed work item won't be re-scheduled, as
-		 * there isn't anything to poll for.
-		 */
-		dev_data->eff_link_speed = dev_conf->max_link_speed;
-
-		eth_xlnx_gem_configure_clocks(dev);
-		eth_xlnx_gem_set_nwcfg_link_speed(dev);
-		net_eth_carrier_on(dev_data->iface);
-
-		LOG_WRN("%s PHY not managed by the driver or no compatible "
-			"PHY detected, assuming link up at %s", dev->name,
-			(dev_conf->max_link_speed == LINK_1GBIT)
-			? "1 GBit/s"
-			: (dev_conf->max_link_speed == LINK_100MBIT)
-			? "100 MBit/s"
-			: (dev_conf->max_link_speed == LINK_10MBIT)
-			? "10 MBit/s" : "undefined");
+		dev_data->eff_link_speed = LINK_DOWN;
+		net_eth_carrier_off(dev_data->iface);
+		LOG_WRN("%s unknown PHY speed %u", dev->name, state->speed);
+		return;
 	}
+
+	eth_xlnx_gem_configure_clocks(dev);
+	eth_xlnx_gem_set_nwcfg_link_speed(dev);
+	net_eth_carrier_on(dev_data->iface);
+
+	LOG_INF("%s link up, %s", dev->name,
+		(dev_data->eff_link_speed == LINK_1GBIT) ? "1 GBit/s" :
+		(dev_data->eff_link_speed == LINK_100MBIT) ? "100 MBit/s" :
+		(dev_data->eff_link_speed == LINK_10MBIT) ? "10 MBit/s" :
+		"undefined");
 }
 
 /**
  * @brief GEM DMA memory area setup function
  * Sets up the DMA memory area to be used by the current GEM device.
  * Called from within the device initialization function or from within
- * the context of the PHY status polling delayed work handler.
+ * the context of the PHY link change callback.
  *
  * @param dev Pointer to the device data
  */
