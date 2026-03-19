@@ -534,6 +534,7 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	/* Reset indices */
 	ch->producer_idx = 0;
 	ch->consumer_idx = 0;
+	atomic_set(&ch->rx_windows_ready, 0);
 	ch->error = false;
 	ch->last_rx_bytes = 0;
 	memset(&ch->rx_app, 0, sizeof(ch->rx_app));
@@ -559,10 +560,12 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
 		return -EINVAL;
 	}
 
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
 	uint32_t dmasr = chan_read(dev, channel, REG_DMASR);
 
 	/* If halted due to error, reset and rebuild */
-	if (dmasr & DMASR_HALTED) {
+	if ((dmasr & DMASR_HALTED) && ch->error) {
 		LOG_WRN("ch %u halted (DMASR=0x%08x), performing reset", channel, dmasr);
 
 		int ret = do_soft_reset(dev, channel);
@@ -702,6 +705,7 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 	ch->irq_threshold = threshold;
 	ch->consumer_idx = 0;
 	ch->producer_idx = 0;
+	atomic_set(&ch->rx_windows_ready, 0);
 	ch->error = false;
 
 	/* Rebuild and restart */
