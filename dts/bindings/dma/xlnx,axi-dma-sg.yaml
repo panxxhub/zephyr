@@ -1,0 +1,38 @@
+description: |
+  Xilinx AXI DMA with scatter-gather and cyclic BD support.
+  Designed for streaming peripherals (FOC, custom IPs) that need
+  cyclic BD rings, APP field passthrough, and dynamic SG reconfiguration.
+
+compatible: "xlnx,axi-dma-sg"
+
+include: [dma-controller.yaml, base.yaml]
+
+properties:
+  reg:
+    required: true
+    description: |
+      Three regions: DMA control registers, TX buffer, RX buffer.
+      Use reg-names "regs", "tx_buf", "rx_buf".
+
+  reg-names:
+    required: true
+
+  interrupts:
+    required: true
+    description: |
+      Two interrupts: TX (MM2S) completion, RX (S2MM) completion.
+
+  "#dma-cells":
+    const: 1
+    description: |
+      Channel number: 0 = TX (MM2S), 1 = RX (S2MM).
+
+  xlnx,addrwidth:
+    type: int
+    required: true
+    enum: [32, 64]
+    description: DMA address width.
+
+  dma-channels:
+    const: 2
+    description: Fixed 2 channels (TX + RX).

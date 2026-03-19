@@ -1,0 +1,46 @@
+# Copyright (c) 2026 Moton
+# SPDX-License-Identifier: Apache-2.0
+
+config DMA_XLNX_AXI_DMA_SG
+	bool "Xilinx AXI DMA scatter-gather driver"
+	default y
+	depends on DT_HAS_XLNX_AXI_DMA_SG_ENABLED
+	select DMA
+	help
+	  Xilinx AXI DMA driver with scatter-gather cyclic BD support,
+	  generic APP field passthrough, and dynamic RX ring reconfiguration.
+
+if DMA_XLNX_AXI_DMA_SG
+
+config DMA_XLNX_AXI_DMA_SG_NUM_TX_BD
+	int "Number of TX scatter-gather descriptors"
+	default 16
+	range 2 256
+
+config DMA_XLNX_AXI_DMA_SG_NUM_RX_BD
+	int "Number of RX scatter-gather descriptors"
+	default 16
+	range 2 256
+
+config DMA_XLNX_AXI_DMA_SG_IRQ_THRESHOLD
+	int "Default interrupt coalescing threshold"
+	default 1
+	range 1 255
+	help
+	  Number of completed descriptors before generating an interrupt.
+
+config DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT
+	int "Interrupt delay timeout"
+	default 16
+	range 0 255
+	help
+	  Timeout in units of 125 * SG clock period. 0 disables.
+
+config DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT
+	bool "DMA is cache-coherent with CPU"
+	default n
+	help
+	  If disabled, driver performs explicit cache flush/invalidate
+	  on descriptors and data buffers.
+
+endif # DMA_XLNX_AXI_DMA_SG
