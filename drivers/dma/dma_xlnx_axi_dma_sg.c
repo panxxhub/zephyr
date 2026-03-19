@@ -400,6 +400,13 @@ static void dma_xlnx_sg_tx_isr(const struct device *dev)
 			ch->callback(dev, ch->user_data, CH_TX, status);
 		}
 	}
+
+	/* Notify consumer of error even without IOC/DLY */
+	if (ch->error && !(dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ))) {
+		if (ch->callback) {
+			ch->callback(dev, ch->user_data, CH_TX, -EIO);
+		}
+	}
 }
 
 /* --------------------------------------------------------------------------
@@ -427,6 +434,13 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 			int status = ch->error ? -EIO : DMA_STATUS_COMPLETE;
 
 			ch->callback(dev, ch->user_data, CH_RX, status);
+		}
+	}
+
+	/* Notify consumer of error even without IOC/DLY */
+	if (ch->error && !(dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ))) {
+		if (ch->callback) {
+			ch->callback(dev, ch->user_data, CH_RX, -EIO);
 		}
 	}
 }
@@ -547,7 +561,20 @@ static int dma_xlnx_sg_stop(const struct device *dev, uint32_t channel)
 	chan_write(dev, channel, REG_DMACR, dmacr);
 	barrier_dmem_fence_full();
 
-	LOG_DBG("ch %u stop requested", channel);
+	uint32_t elapsed = 0;
+
+	while (elapsed < RESET_TIMEOUT_US) {
+		if (chan_read(dev, channel, REG_DMASR) & DMASR_HALTED) {
+			break;
+		}
+		k_busy_wait(RESET_POLL_US);
+		elapsed += RESET_POLL_US;
+	}
+	if (elapsed >= RESET_TIMEOUT_US) {
+		LOG_WRN("Channel %u did not halt within timeout", channel);
+	}
+
+	LOG_DBG("ch %u stopped", channel);
 	return 0;
 }
 
@@ -626,6 +653,10 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 		}
 		k_busy_wait(RESET_POLL_US);
 		elapsed += RESET_POLL_US;
+	}
+	if (elapsed >= RESET_TIMEOUT_US) {
+		LOG_ERR("S2MM channel did not halt for RX reconfigure");
+		return -EIO;
 	}
 
 	/* Update ring parameters */
@@ -776,10 +807,14 @@ static int dma_xlnx_sg_init(const struct device *dev)
 	const struct dma_xlnx_sg_cfg *cfg = dev->config;
 	struct dma_xlnx_sg_data *data = dev->data;
 
-	/* Map MMIO regions */
+	/* Map MMIO regions.
+	 * Register region is mapped uncached (device memory).
+	 * Buffer regions use default (cacheable) mapping — the driver manages
+	 * coherency explicitly via cache_flush() / cache_invd() calls.
+	 */
 	DEVICE_MMIO_NAMED_MAP(dev, regs, K_MEM_CACHE_NONE);
-	DEVICE_MMIO_NAMED_MAP(dev, tx_buf, K_MEM_CACHE_NONE);
-	DEVICE_MMIO_NAMED_MAP(dev, rx_buf, K_MEM_CACHE_NONE);
+	DEVICE_MMIO_NAMED_MAP(dev, tx_buf, K_MEM_CACHE_WB);
+	DEVICE_MMIO_NAMED_MAP(dev, rx_buf, K_MEM_CACHE_WB);
 
 	/* Soft-reset both channels */
 	int ret = do_soft_reset(dev, CH_TX);
