@@ -61,6 +61,7 @@ zephyr_library_sources_ifdef(CONFIG_DMA_STM32_V2 dma_stm32.c dma_stm32_v2.c)
 zephyr_library_sources_ifdef(CONFIG_DMA_TI_CC23X0 dma_ti_cc23x0.c)
 zephyr_library_sources_ifdef(CONFIG_DMA_WCH dma_wch.c)
 zephyr_library_sources_ifdef(CONFIG_DMA_XILINX_AXI_DMA dma_xilinx_axi_dma.c)
+zephyr_library_sources_ifdef(CONFIG_DMA_XLNX_AXI_DMA_SG dma_xlnx_axi_dma_sg.c)
 zephyr_library_sources_ifdef(CONFIG_DMA_XMC4XXX dma_xmc4xxx.c)
 zephyr_library_sources_ifdef(CONFIG_MCUX_PXP dma_mcux_pxp.c)
 # zephyr-keep-sorted-stop
