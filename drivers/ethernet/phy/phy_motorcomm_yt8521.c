@@ -464,14 +464,8 @@ static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_sta
 
 	k_sem_take(&data->sem, K_FOREVER);
 
+	update_link_state(dev);
 	memcpy(state, &data->state, sizeof(struct phy_link_state));
-
-	if (state->speed == 0) {
-		/* If speed is 0, then link is also down, happens when autonegotiation is in
-		 * progress
-		 */
-		state->is_up = false;
-	}
 
 	k_sem_give(&data->sem);
 
@@ -520,7 +514,7 @@ static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 	if (phy_id) {
 		*phy_id = val;
 	} else {
-		LOG_INF("PHY (%d) ID:0x%X", config->phy_addr, val);
+		LOG_DBG("PHY (%d) ID:0x%X", config->phy_addr, val);
 	}
 
 	return 0;
@@ -557,6 +551,9 @@ static int mc_ytphy_init(const struct device *dev)
 
 	mc_ytphy_resume(dev);
 
+	const struct mc_ytphy_config *const cfg = dev->config;
+
+	LOG_INF("Motorcomm YT8521 PHY %d initialized", cfg->phy_addr);
 	return 0;
 }
 

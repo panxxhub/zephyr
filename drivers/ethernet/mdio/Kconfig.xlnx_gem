@@ -1,0 +1,11 @@
+# Copyright (c) 2025 Moton Intelligent Equipment
+# SPDX-License-Identifier: Apache-2.0
+
+config MDIO_XLNX_GEM
+	bool "Xilinx GEM MDIO driver"
+	default y
+	depends on DT_HAS_XLNX_GEM_MDIO_ENABLED
+	help
+	  Enable Xilinx GEM MDIO bus driver. This driver provides the
+	  standard MDIO bus interface for PHY drivers connected to the
+	  GEM Ethernet controller's built-in MDIO management port.

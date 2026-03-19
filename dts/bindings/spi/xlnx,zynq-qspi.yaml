@@ -1,0 +1,25 @@
+# Copyright (c) 2025 Moton Intelligent Equipment
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Xilinx Zynq-7000 PS Quad-SPI controller.
+  Directly connected to the boot flash. Supports standard SPI mode
+  with manual chip select and manual start for flash programming.
+
+compatible: "xlnx,zynq-qspi"
+
+include: [spi-controller.yaml, pinctrl-device.yaml]
+
+properties:
+  reg:
+    required: true
+
+  interrupts:
+    required: true
+
+  clock-frequency:
+    type: int
+    required: true
+    description: |
+      Input reference clock frequency in Hz (typically SPI_REF_CLK
+      from the IO PLL, default ~200 MHz on Zynq-7000).
