@@ -16,7 +16,8 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
-#include <zephyr/arch/cache.h>
+#include <zephyr/cache.h>
+#include <zephyr/sys/atomic.h>
 #include <string.h>
 
 #include "dma_xlnx_axi_dma_sg.h"
@@ -115,6 +116,9 @@ struct xlnx_sg_bd {
 #define RESET_TIMEOUT_US 10000
 #define RESET_POLL_US    10
 
+/* 64-byte aligned address guaranteed outside any BD ring (PG021 cyclic mode). */
+#define CYCLIC_DUMMY_TAILDESC 0x00000040U
+
 /* --------------------------------------------------------------------------
  * Per-channel runtime state
  * -------------------------------------------------------------------------- */
@@ -133,6 +137,7 @@ struct dma_xlnx_sg_chan {
 	struct dma_xlnx_sg_app_fields rx_app;  /* APP fields from last completed RX */
 	uint32_t last_rx_bytes;      /* bytes from last completed RX BD */
 	uint32_t bd_buf_bytes;       /* buffer size per BD */
+	atomic_t rx_windows_ready;   /* incremented by ISR, decremented by get_rx_window */
 };
 
 /* --------------------------------------------------------------------------
@@ -198,14 +203,14 @@ static inline uint32_t chan_read(const struct device *dev, uint32_t channel,
 static inline void cache_flush(void *addr, size_t len)
 {
 #if !IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)
-	arch_dcache_flush_range(addr, len);
+	sys_cache_data_flush_range(addr, len);
 #endif
 }
 
 static inline void cache_invd(void *addr, size_t len)
 {
 #if !IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)
-	arch_dcache_invd_range(addr, len);
+	sys_cache_data_invd_range(addr, len);
 #endif
 }
 
@@ -347,7 +352,7 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 		 * OUTSIDE the BD ring. We use an arbitrary invalid address.
 		 * The engine ignores CMPLT bits and runs forever.
 		 */
-		chan_write(dev, channel, REG_TAILDESC, 0x50U);
+		chan_write(dev, channel, REG_TAILDESC, CYCLIC_DUMMY_TAILDESC);
 	} else {
 		/*
 		 * Non-cyclic: TAILDESC = last BD. Engine pauses when it
@@ -449,6 +454,8 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 
 			ch->callback(dev, ch->user_data, CH_RX, status);
 		}
+
+		atomic_inc(&ch->rx_windows_ready);
 	}
 
 	/* Notify consumer of error even without IOC/DLY */
@@ -466,6 +473,12 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 /* --------------------------------------------------------------------------
  * dma_config() — validate params, build BD ring, store callback
  * -------------------------------------------------------------------------- */
+/*
+ * NOTE: This driver uses fixed DT-defined buffer regions for all transfers.
+ * The standard dma_config head_block (source/dest addresses, block_size)
+ * is ignored. Use dma_xlnx_sg_get_buffer() to access buffer addresses
+ * and dma_xlnx_sg_reconfigure_rx() to adjust per-BD buffer sizes.
+ */
 static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 			       struct dma_config *dma_cfg)
 {
@@ -483,6 +496,11 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	}
 	if (channel == CH_RX && dma_cfg->channel_direction != PERIPHERAL_TO_MEMORY) {
 		LOG_ERR("RX channel requires PERIPHERAL_TO_MEMORY");
+		return -ENOTSUP;
+	}
+
+	if (channel == CH_TX && dma_cfg->cyclic) {
+		LOG_ERR("Cyclic mode not supported on TX channel");
 		return -ENOTSUP;
 	}
 
@@ -762,6 +780,11 @@ int dma_xlnx_sg_get_rx_window(const struct device *dev,
 {
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
+
+	if (atomic_get(&ch->rx_windows_ready) <= 0) {
+		return -EAGAIN;
+	}
+
 	uint32_t capacity = *count;
 	uint32_t filled = 0;
 	uint32_t idx = ch->consumer_idx;
@@ -806,7 +829,13 @@ int dma_xlnx_sg_get_rx_window(const struct device *dev,
 	}
 
 	*count = filled;
-	return (filled > 0) ? 0 : -EAGAIN;
+
+	if (filled > 0) {
+		atomic_dec(&ch->rx_windows_ready);
+		return 0;
+	}
+
+	return -EAGAIN;
 }
 
 /* --------------------------------------------------------------------------
@@ -816,6 +845,10 @@ int dma_xlnx_sg_release_rx_window(const struct device *dev, uint32_t count)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
+
+	if (count == 0 || count > ch->num_bds) {
+		return -EINVAL;
+	}
 
 	ch->consumer_idx = (ch->consumer_idx + count) % ch->num_bds;
 	return 0;
@@ -912,6 +945,9 @@ static int dma_xlnx_sg_init(const struct device *dev)
 			},                                                                   \
 		},                                                                           \
 	};                                                                                   \
+                                                                                             \
+	BUILD_ASSERT(DT_INST_PROP(inst, xlnx_addrwidth) == 32,                              \
+		     "xlnx,axi-dma-sg: only 32-bit addressing supported");               \
                                                                                              \
 	DEVICE_DT_INST_DEFINE(inst, dma_xlnx_sg_init, NULL,                                 \
 			      &dma_xlnx_sg_data_##inst,                                      \

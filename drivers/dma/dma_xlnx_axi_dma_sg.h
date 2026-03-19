@@ -11,6 +11,7 @@
 #define ZEPHYR_DRIVERS_DMA_XLNX_AXI_DMA_SG_H_
 
 #include <zephyr/device.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -32,7 +33,7 @@ struct dma_xlnx_sg_app_fields {
  * @param dev       DMA device.
  * @param bd_bytes  Bytes per BD buffer.
  * @param threshold IRQ coalescing threshold (must divide num_bds evenly).
- * @return 0 on success, -EINVAL on bad parameters, -ENOTSUP if not SG.
+ * @return 0 on success, -EINVAL on bad parameters, -EIO on halt timeout.
  */
 int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 				uint32_t bd_bytes, uint8_t threshold);
