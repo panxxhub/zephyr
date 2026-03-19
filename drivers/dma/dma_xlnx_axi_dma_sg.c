@@ -20,7 +20,7 @@
 #include <zephyr/sys/atomic.h>
 #include <string.h>
 
-#include "dma_xlnx_axi_dma_sg.h"
+#include <zephyr/drivers/dma/dma_xlnx_axi_dma_sg.h>
 
 #define DT_DRV_COMPAT xlnx_axi_dma_sg
 
@@ -137,6 +137,8 @@ struct dma_xlnx_sg_chan {
 	struct dma_xlnx_sg_app_fields rx_app;  /* APP fields from last completed RX */
 	uint32_t last_rx_bytes;      /* bytes from last completed RX BD */
 	uint32_t bd_buf_bytes;       /* buffer size per BD */
+	uint32_t tx_src_addr;        /* one-shot TX: caller's source address (0 = use DT region) */
+	uint32_t tx_xfer_size;       /* one-shot TX: transfer size in bytes */
 	atomic_t rx_windows_ready;   /* incremented by ISR, decremented by get_rx_window */
 };
 
@@ -273,6 +275,37 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 	const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
 	uintptr_t phys = buf_phys(dev, channel);
 
+	/*
+	 * NOTE: Using CPU virtual addresses for BD next_desc and CURDESC/TAILDESC
+	 * register writes. This assumes VA==PA (identity mapping), which holds
+	 * on Zynq-7000 with Zephyr's default MMU configuration. If the platform
+	 * uses non-identity mappings, these must be converted to physical
+	 * addresses via k_mem_phys_addr() or equivalent.
+	 */
+
+	/* One-shot TX: single BD with caller's buffer address and size */
+	if (channel == CH_TX && ch->tx_src_addr != 0) {
+		if (ch->tx_xfer_size > len_mask) {
+			LOG_ERR("TX transfer size %u exceeds hardware max %u",
+				ch->tx_xfer_size, len_mask);
+			return -EINVAL;
+		}
+
+		memset(&ch->bds[0], 0, sizeof(ch->bds[0]));
+		ch->bds[0].next_desc = (uint32_t)(uintptr_t)&ch->bds[0];
+		ch->bds[0].next_desc_msb = 0U;
+		ch->bds[0].buf_addr = ch->tx_src_addr;
+		ch->bds[0].buf_addr_msb = 0U;
+		ch->bds[0].control = (ch->tx_xfer_size & len_mask) |
+				     BD_CTRL_SOF | BD_CTRL_EOF;
+		for (int a = 0; a < 5; a++) {
+			ch->bds[0].app[a] = ch->tx_app.app[a];
+		}
+		ch->bds[0].status = 0U;
+		cache_flush(ch->bds, sizeof(struct xlnx_sg_bd));
+		return 0;
+	}
+
 	if (ch->bd_buf_bytes > len_mask) {
 		LOG_ERR("BD buffer size %u exceeds hardware max %u "
 			"(sg-length-width too narrow)",
@@ -355,11 +388,14 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 		chan_write(dev, channel, REG_TAILDESC, CYCLIC_DUMMY_TAILDESC);
 	} else {
 		/*
-		 * Non-cyclic: TAILDESC = last BD. Engine pauses when it
-		 * reaches this descriptor after processing it.
+		 * Non-cyclic: TAILDESC triggers processing up to this BD.
+		 * For one-shot TX (tx_src_addr != 0), only bds[0] is used.
+		 * For multi-BD transfers, submit through the last BD.
 		 */
+		uint32_t tail_idx = (ch->tx_src_addr != 0) ? 0 : (ch->num_bds - 1);
+
 		chan_write(dev, channel, REG_TAILDESC,
-			   (uint32_t)(uintptr_t)&ch->bds[ch->num_bds - 1]);
+			   (uint32_t)(uintptr_t)&ch->bds[tail_idx]);
 	}
 
 	barrier_dmem_fence_full();
@@ -474,10 +510,11 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
  * dma_config() — validate params, build BD ring, store callback
  * -------------------------------------------------------------------------- */
 /*
- * NOTE: This driver uses fixed DT-defined buffer regions for all transfers.
- * The standard dma_config head_block (source/dest addresses, block_size)
- * is ignored. Use dma_xlnx_sg_get_buffer() to access buffer addresses
- * and dma_xlnx_sg_reconfigure_rx() to adjust per-BD buffer sizes.
+ * NOTE: RX uses fixed DT-defined buffer regions. For TX, if head_block is
+ * provided, source_address and block_size are used for a one-shot single-BD
+ * transfer. If head_block is NULL, the DT TX buffer region is split across
+ * all BDs. Use dma_xlnx_sg_get_buffer() to query buffer addresses and
+ * dma_xlnx_sg_reconfigure_rx() to adjust per-BD buffer sizes.
  */
 static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 			       struct dma_config *dma_cfg)
@@ -530,6 +567,15 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	/* Use Kconfig defaults for IRQ coalescing */
 	ch->irq_threshold = (uint8_t)CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_THRESHOLD;
 	ch->irq_timeout = (uint8_t)CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT;
+
+	/* TX one-shot: use caller's buffer from head_block instead of DT region */
+	if (channel == CH_TX && dma_cfg->head_block != NULL) {
+		ch->tx_src_addr = (uint32_t)dma_cfg->head_block->source_address;
+		ch->tx_xfer_size = dma_cfg->head_block->block_size;
+	} else {
+		ch->tx_src_addr = 0;
+		ch->tx_xfer_size = 0;
+	}
 
 	/* Reset indices */
 	ch->producer_idx = 0;
@@ -744,8 +790,20 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev,
 			     const struct dma_xlnx_sg_app_fields *app)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[CH_TX];
 
-	data->ch[CH_TX].tx_app = *app;
+	memcpy(&ch->tx_app, app, sizeof(*app));
+
+	/* Patch live BD(s) — update APP fields in all SOF descriptors */
+	for (uint32_t i = 0; i < ch->num_bds; i++) {
+		if (ch->bds[i].control & BD_CTRL_SOF) {
+			for (int a = 0; a < 5; a++) {
+				ch->bds[i].app[a] = app->app[a];
+			}
+			cache_flush(&ch->bds[i], sizeof(ch->bds[i]));
+		}
+	}
+
 	return 0;
 }
 
