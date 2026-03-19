@@ -84,11 +84,15 @@ LOG_MODULE_REGISTER(dma_xlnx_sg, CONFIG_DMA_LOG_LEVEL);
 /* --------------------------------------------------------------------------
  * BD control / status field masks
  * -------------------------------------------------------------------------- */
-#define BD_CTRL_LEN_MASK  0x03FFFFFFU
 #define BD_CTRL_EOF       BIT(26)
 #define BD_CTRL_SOF       BIT(27)
 #define BD_STS_CMPLT      BIT(31)
-#define BD_STS_LEN_MASK   0x03FFFFFFU
+
+/* BD_CTRL_LEN_MASK and BD_STS_LEN_MASK are computed at init time from
+ * the DT property xlnx,sg-length-width (Vivado c_sg_length_width).
+ * The macro below converts the width to a bitmask.
+ */
+#define SG_LEN_MASK(width) (BIT(width) - 1U)
 
 /* --------------------------------------------------------------------------
  * Scatter-gather BD descriptor — PG021 layout, 64-byte aligned
@@ -148,6 +152,7 @@ struct dma_xlnx_sg_cfg {
 	uintptr_t rx_buf_phys;
 	size_t tx_buf_size;
 	size_t rx_buf_size;
+	uint32_t sg_len_mask;       /* (1 << sg_length_width) - 1 */
 };
 
 /* --------------------------------------------------------------------------
@@ -256,11 +261,19 @@ static int do_soft_reset(const struct device *dev, uint32_t channel)
  * For TX (non-cyclic): each BD gets SOF+EOF, status cleared.
  * For RX (cyclic): each BD points to its buffer slice, no SOF/EOF needed.
  * -------------------------------------------------------------------------- */
-static void build_bd_ring(const struct device *dev, uint32_t channel)
+static int build_bd_ring(const struct device *dev, uint32_t channel)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
+	const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
 	uintptr_t phys = buf_phys(dev, channel);
+
+	if (ch->bd_buf_bytes > len_mask) {
+		LOG_ERR("BD buffer size %u exceeds hardware max %u "
+			"(sg-length-width too narrow)",
+			ch->bd_buf_bytes, len_mask);
+		return -EINVAL;
+	}
 
 	for (uint32_t i = 0; i < ch->num_bds; i++) {
 		uint32_t next = (i + 1) % ch->num_bds;
@@ -270,7 +283,7 @@ static void build_bd_ring(const struct device *dev, uint32_t channel)
 		ch->bds[i].next_desc_msb = 0U;
 		ch->bds[i].buf_addr = (uint32_t)(phys + (uintptr_t)i * ch->bd_buf_bytes);
 		ch->bds[i].buf_addr_msb = 0U;
-		ch->bds[i].control = ch->bd_buf_bytes & BD_CTRL_LEN_MASK;
+		ch->bds[i].control = ch->bd_buf_bytes & DEV_CFG(dev)->sg_len_mask;
 
 		if (channel == CH_TX) {
 			/* Each TX BD is a complete single-BD transfer */
@@ -286,6 +299,7 @@ static void build_bd_ring(const struct device *dev, uint32_t channel)
 
 	/* Flush entire BD ring so DMA engine sees current values */
 	cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * ch->num_bds);
+	return 0;
 }
 
 /* --------------------------------------------------------------------------
@@ -507,7 +521,10 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	memset(&ch->rx_app, 0, sizeof(ch->rx_app));
 
 	/* Build the BD ring */
-	build_bd_ring(dev, channel);
+	int ret = build_bd_ring(dev, channel);
+	if (ret) {
+		return ret;
+	}
 
 	LOG_DBG("ch %u configured: %u BDs x %u bytes, cyclic=%d, thresh=%u",
 		channel, ch->num_bds, ch->bd_buf_bytes, ch->cyclic, ch->irq_threshold);
@@ -537,7 +554,10 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
 		}
 
 		/* Rebuild BD ring after reset */
-		build_bd_ring(dev, channel);
+		ret = build_bd_ring(dev, channel);
+		if (ret) {
+			return ret;
+		}
 	}
 
 	kick_channel(dev, channel);
@@ -667,7 +687,10 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 	ch->error = false;
 
 	/* Rebuild and restart */
-	build_bd_ring(dev, CH_RX);
+	int build_ret = build_bd_ring(dev, CH_RX);
+	if (build_ret) {
+		return build_ret;
+	}
 	kick_channel(dev, CH_RX);
 
 	LOG_INF("RX ring reconfigured: %u BDs x %u bytes, threshold=%u",
@@ -764,7 +787,7 @@ int dma_xlnx_sg_get_rx_window(const struct device *dev,
 		cache_invd(bd, sizeof(*bd));
 
 		info[filled].buf_virt = virt_base + (uintptr_t)idx * ch->bd_buf_bytes;
-		info[filled].byte_count = bd->status & BD_STS_LEN_MASK;
+		info[filled].byte_count = bd->status & DEV_CFG(dev)->sg_len_mask;
 		for (int a = 0; a < 5; a++) {
 			info[filled].app.app[a] = bd->app[a];
 		}
@@ -831,8 +854,9 @@ static int dma_xlnx_sg_init(const struct device *dev)
 	/* Configure IRQs */
 	cfg->irq_config(dev);
 
-	LOG_INF("initialized (TX=%u BDs, RX=%u BDs)",
-		data->ch[CH_TX].num_bds, data->ch[CH_RX].num_bds);
+	LOG_INF("initialized (TX=%u BDs, RX=%u BDs, max_xfer=%u bytes)",
+		data->ch[CH_TX].num_bds, data->ch[CH_RX].num_bds,
+		cfg->sg_len_mask);
 	return 0;
 }
 
@@ -872,6 +896,8 @@ static int dma_xlnx_sg_init(const struct device *dev)
 		.rx_buf_phys = DT_INST_REG_ADDR_BY_NAME(inst, rx_buf),                      \
 		.tx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, tx_buf),                      \
 		.rx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, rx_buf),                      \
+		.sg_len_mask = SG_LEN_MASK(                                              \
+			DT_INST_PROP_OR(inst, xlnx_sg_length_width, 14)),                \
 	};                                                                                   \
                                                                                              \
 	static struct dma_xlnx_sg_data dma_xlnx_sg_data_##inst = {                          \

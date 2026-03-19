@@ -5,7 +5,7 @@ description: |
 
 compatible: "xlnx,axi-dma-sg"
 
-include: [dma-controller.yaml, base.yaml]
+include: dma-controller.yaml
 
 properties:
   reg:
@@ -24,8 +24,6 @@ properties:
 
   "#dma-cells":
     const: 1
-    description: |
-      Channel number: 0 = TX (MM2S), 1 = RX (S2MM).
 
   xlnx,addrwidth:
     type: int
@@ -33,6 +31,18 @@ properties:
     enum: [32, 64]
     description: DMA address width.
 
+  xlnx,sg-length-width:
+    type: int
+    default: 14
+    description: |
+      Width of the Buffer Length Register in bits (Vivado parameter
+      c_sg_length_width).  Determines the maximum transfer size per
+      SG descriptor: max_bytes = 2^width - 1.  Valid range 8..26.
+      Must match the value configured in the AXI DMA IP core.
+
   dma-channels:
     const: 2
     description: Fixed 2 channels (TX + RX).
+
+dma-cells:
+  - channel
