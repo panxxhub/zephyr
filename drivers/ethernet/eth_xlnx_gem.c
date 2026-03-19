@@ -125,8 +125,6 @@ static int eth_xlnx_gem_dev_init(const struct device *dev)
 {
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
 
-	ARG_UNUSED(dev_conf);
-
 	/* Precondition checks using assertions */
 	/* Valid max. / nominal link speed value */
 	__ASSERT((dev_conf->max_link_speed == LINK_10MBIT ||
@@ -197,6 +195,20 @@ static int eth_xlnx_gem_dev_init(const struct device *dev)
 	eth_xlnx_gem_set_initial_nwcfg(dev);	/* Chapter 16.3.2 */
 	eth_xlnx_gem_set_mac_address(dev);	/* Chapter 16.3.2 */
 	eth_xlnx_gem_set_initial_dmacr(dev);	/* Chapter 16.3.2 */
+
+	/*
+	 * Re-enable MDIO management port after reset_hw cleared NWCTRL.
+	 * The MDIO bus driver sets MDEN during its own init, but GEM's
+	 * reset_hw writes 0 to NWCTRL, clearing it. Restore it here so
+	 * the PHY driver's monitor_work can continue reading registers.
+	 */
+	if (dev_conf->phy_dev != NULL) {
+		uint32_t nwctrl = sys_read32(dev_conf->base_addr +
+					     ETH_XLNX_GEM_NWCTRL_OFFSET);
+		nwctrl |= ETH_XLNX_GEM_NWCTRL_MDEN_BIT;
+		sys_write32(nwctrl, dev_conf->base_addr +
+			    ETH_XLNX_GEM_NWCTRL_OFFSET);
+	}
 
 	eth_xlnx_gem_configure_clocks(dev);	/* Chapter 16.3.3 */
 	eth_xlnx_gem_configure_buffers(dev);	/* Chapter 16.3.5 */
