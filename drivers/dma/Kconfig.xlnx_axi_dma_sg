@@ -4,8 +4,7 @@
 config DMA_XLNX_AXI_DMA_SG
 	bool "Xilinx AXI DMA scatter-gather driver"
 	default y
-	depends on DT_HAS_XLNX_AXI_DMA_SG_ENABLED
-	select DMA
+	depends on DT_HAS_XLNX_AXI_DMA_SG_ENABLED && DMA
 	help
 	  Xilinx AXI DMA driver with scatter-gather cyclic BD support,
 	  generic APP field passthrough, and dynamic RX ring reconfiguration.
