@@ -123,8 +123,8 @@ struct xlnx_sg_bd {
 	uint32_t next_desc_msb;   /* 0x04 */
 	uint32_t buf_addr;        /* 0x08 */
 	uint32_t buf_addr_msb;    /* 0x0C */
-	uint32_t reserved0;       /* 0x10 */
-	uint32_t reserved1;       /* 0x14 */
+	uint32_t mcctl;           /* 0x10 */
+	uint32_t stride_vsize;    /* 0x14 */
 	uint32_t control;         /* 0x18 */
 	uint32_t status;          /* 0x1C */
 	uint32_t app[5];          /* 0x20-0x30 */
@@ -510,6 +510,36 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 		chan_write(dev, CH_RX, REG_DMASR,
 			   dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ));
 
+		/*
+		 * Non-cyclic mode: eagerly clear CMPLT on completed BDs
+		 * so the SG prefetch engine doesn't see stale CMPLT=1
+		 * when it reads ahead past TAILDESC in the circular chain.
+		 * The consumer still reads data via get_rx_window (which
+		 * cache-invalidates the BD to pick up the byte count
+		 * before we zero it here) — but we must clear+flush NOW
+		 * before the DMA's prefetch wraps around the ring.
+		 *
+		 * We track which BDs have been cleared via producer_idx.
+		 */
+		if (!ch->cyclic) {
+			uint32_t idx = ch->producer_idx;
+
+			for (uint32_t i = 0; i < ch->irq_threshold; i++) {
+				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
+				/*
+				 * With STS/CTRL stream, the DMA writes CMPLT
+				 * (bit 31) to the CONTROL field (0x18), not
+				 * STATUS (0x1C). Clear it in both to be safe.
+				 * Preserve the lower bits (byte count/length).
+				 */
+				ch->bds[idx].control &= ~BD_STS_CMPLT;
+				ch->bds[idx].status &= ~BD_STS_CMPLT;
+				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
+				idx = (idx + 1) % ch->num_bds;
+			}
+			ch->producer_idx = idx;
+		}
+
 		if (ch->callback) {
 			int status = ch->error ? -EIO : DMA_STATUS_COMPLETE;
 
@@ -575,8 +605,17 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	/* Cyclic mode from dma_config */
 	ch->cyclic = (dma_cfg->cyclic != 0);
 
-	/* Calculate BD buffer size from total buffer region */
-	size_t total = buf_size(dev, channel);
+	/* Calculate BD buffer size.
+	 * If head_block provides a block_size, use it to derive per-BD size
+	 * (total transfer / num_bds). Otherwise fall back to DT buffer region.
+	 */
+	size_t total;
+
+	if (dma_cfg->head_block != NULL && dma_cfg->head_block->block_size > 0) {
+		total = dma_cfg->head_block->block_size;
+	} else {
+		total = buf_size(dev, channel);
+	}
 
 	if (ch->num_bds == 0) {
 		LOG_ERR("ch %u: no BDs allocated", channel);
@@ -727,6 +766,23 @@ static DEVICE_API(dma, dma_xlnx_sg_api) = {
  * ========================================================================== */
 
 /* --------------------------------------------------------------------------
+ * Prepare RX channel for continuous SG streaming — sets callback without
+ * building BDs or starting the channel.  Uses non-cyclic mode with
+ * software-managed CMPLT clearing and TAILDESC advancement in
+ * release_rx_window().
+ * -------------------------------------------------------------------------- */
+void dma_xlnx_sg_prepare_rx_cyclic(const struct device *dev,
+				    dma_callback_t callback, void *user_data)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
+
+	ch->cyclic = false;
+	ch->callback = callback;
+	ch->user_data = user_data;
+}
+
+/* --------------------------------------------------------------------------
  * Reconfigure RX ring at runtime
  * -------------------------------------------------------------------------- */
 int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
@@ -750,20 +806,19 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 	}
 
 	/*
-	 * Soft-reset the channel. This both halts the engine and flushes
-	 * the hardware descriptor prefetch pipeline. A simple RS=0 + halt
-	 * poll is insufficient because:
-	 *  1. The halt poll can time out when the channel is actively
-	 *     streaming at high data rates.
-	 *  2. Without a full reset, stale BDs with the CMPLT bit (bit 31)
-	 *     set from the previous transfer remain in the prefetch buffer.
-	 *     PG021 treats fetching such a descriptor as SGINTERR and halts
-	 *     the channel immediately after restart.
+	 * Stop the channel if running.  Halted channels (first call)
+	 * skip the reset to avoid disrupting the DMA engine state.
+	 * Running channels get a soft-reset to flush the prefetch
+	 * pipeline and clear stale CMPLT bits.
 	 */
-	int reset_ret = do_soft_reset(dev, CH_RX);
+	uint32_t dmasr = chan_read(dev, CH_RX, REG_DMASR);
 
-	if (reset_ret) {
-		return reset_ret;
+	if (!(dmasr & DMASR_HALTED)) {
+		int reset_ret = do_soft_reset(dev, CH_RX);
+
+		if (reset_ret) {
+			return reset_ret;
+		}
 	}
 
 	/* Update ring parameters */
@@ -779,6 +834,7 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 	if (build_ret) {
 		return build_ret;
 	}
+
 	kick_channel(dev, CH_RX);
 
 	LOG_INF("RX ring reconfigured: %u BDs x %u bytes, threshold=%u",
@@ -921,7 +977,15 @@ int dma_xlnx_sg_get_rx_window(const struct device *dev,
 }
 
 /* --------------------------------------------------------------------------
- * Release RX BD window — advance consumer index
+ * Release RX BD window — clear CMPLT, flush, advance TAILDESC + consumer
+ *
+ * In non-cyclic mode this re-submits the consumed BDs to hardware by
+ * clearing the CMPLT bit (so the SG engine won't fire SGINTERR when it
+ * wraps back to them) and advancing TAILDESC to allow the engine to
+ * continue past its previous stopping point.
+ *
+ * In cyclic mode the hardware ignores CMPLT and never stops, so only
+ * the consumer index is advanced.
  * -------------------------------------------------------------------------- */
 int dma_xlnx_sg_release_rx_window(const struct device *dev, uint32_t count)
 {
@@ -930,6 +994,31 @@ int dma_xlnx_sg_release_rx_window(const struct device *dev, uint32_t count)
 
 	if (count == 0 || count > ch->num_bds) {
 		return -EINVAL;
+	}
+
+	if (!ch->cyclic) {
+		/* Reset control field to just the buffer length (clearing
+		 * CMPLT/SOF/EOF written by hardware) and zero status.
+		 * With STS/CTRL stream, CMPLT is in the control field.
+		 */
+		uint32_t idx = ch->consumer_idx;
+		const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
+
+		for (uint32_t i = 0; i < count; i++) {
+			ch->bds[idx].control = ch->bd_buf_bytes & len_mask;
+			ch->bds[idx].status = 0U;
+			cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
+			idx = (idx + 1) % ch->num_bds;
+		}
+
+		/* Advance TAILDESC to the last released BD so the DMA
+		 * engine can re-process it when it wraps around.
+		 */
+		uint32_t tail = (ch->consumer_idx + count - 1) % ch->num_bds;
+
+		barrier_dmem_fence_full();
+		chan_write(dev, CH_RX, REG_TAILDESC,
+			  (uint32_t)(uintptr_t)&ch->bds[tail]);
 	}
 
 	ch->consumer_idx = (ch->consumer_idx + count) % ch->num_bds;

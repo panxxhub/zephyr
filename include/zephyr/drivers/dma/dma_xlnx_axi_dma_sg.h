@@ -39,6 +39,16 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 				uint32_t bd_bytes, uint8_t threshold);
 
 /**
+ * @brief Prepare RX channel for cyclic mode without starting.
+ *
+ * Sets ch->cyclic and ch->callback so that reconfigure_rx can build
+ * and kick the channel with CYC_BD_EN and IRQ callback enabled.
+ * Does NOT build BDs or write any hardware registers.
+ */
+void dma_xlnx_sg_prepare_rx_cyclic(const struct device *dev,
+				    dma_callback_t callback, void *user_data);
+
+/**
  * @brief Read APP fields from the most recently completed RX descriptor.
  *
  * @param dev  DMA device.
