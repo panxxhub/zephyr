@@ -724,34 +724,16 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 		return -EINVAL;
 	}
 
-	/* Stop S2MM channel */
-	uint32_t dmacr = chan_read(dev, CH_RX, REG_DMACR);
-
-	dmacr &= ~DMACR_RS;
-	chan_write(dev, CH_RX, REG_DMACR, dmacr);
-	barrier_dmem_fence_full();
-
-	/* Wait for halt */
-	uint32_t elapsed = 0;
-
-	while (elapsed < RESET_TIMEOUT_US) {
-		if (chan_read(dev, CH_RX, REG_DMASR) & DMASR_HALTED) {
-			break;
-		}
-		k_busy_wait(RESET_POLL_US);
-		elapsed += RESET_POLL_US;
-	}
-	if (elapsed >= RESET_TIMEOUT_US) {
-		LOG_ERR("S2MM channel did not halt for RX reconfigure");
-		return -EIO;
-	}
-
 	/*
-	 * Soft-reset the channel to flush the hardware descriptor prefetch
-	 * pipeline. Without this, the engine may hold stale BDs with the
-	 * CMPLT bit (bit 31) still set from the previous transfer. PG021
-	 * treats fetching such a descriptor as SGINTERR and halts the
-	 * channel immediately after restart.
+	 * Soft-reset the channel. This both halts the engine and flushes
+	 * the hardware descriptor prefetch pipeline. A simple RS=0 + halt
+	 * poll is insufficient because:
+	 *  1. The halt poll can time out when the channel is actively
+	 *     streaming at high data rates.
+	 *  2. Without a full reset, stale BDs with the CMPLT bit (bit 31)
+	 *     set from the previous transfer remain in the prefetch buffer.
+	 *     PG021 treats fetching such a descriptor as SGINTERR and halts
+	 *     the channel immediately after restart.
 	 */
 	int reset_ret = do_soft_reset(dev, CH_RX);
 
