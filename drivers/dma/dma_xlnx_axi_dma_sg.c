@@ -746,6 +746,19 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 		return -EIO;
 	}
 
+	/*
+	 * Soft-reset the channel to flush the hardware descriptor prefetch
+	 * pipeline. Without this, the engine may hold stale BDs with the
+	 * CMPLT bit (bit 31) still set from the previous transfer. PG021
+	 * treats fetching such a descriptor as SGINTERR and halts the
+	 * channel immediately after restart.
+	 */
+	int reset_ret = do_soft_reset(dev, CH_RX);
+
+	if (reset_ret) {
+		return reset_ret;
+	}
+
 	/* Update ring parameters */
 	ch->bd_buf_bytes = bd_bytes;
 	ch->irq_threshold = threshold;
