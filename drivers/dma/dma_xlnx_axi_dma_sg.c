@@ -372,9 +372,12 @@ static uint32_t build_dmacr(const struct dma_xlnx_sg_chan *ch)
 {
 	uint32_t dmacr = DMACR_RS | DMACR_ALL_IRQEN;
 
-	if (ch->cyclic) {
-		dmacr |= DMACR_CYC_BD_EN;
-	}
+	/*
+	 * Do NOT set CYC_BD_EN — it disables IOC_IRQ generation.
+	 * Instead, continuous RX uses a circular BD chain with
+	 * TAILDESC past the last BD so the engine never catches it.
+	 * See: AMD forum "AXI DMA Cyclic BD not working".
+	 */
 
 	dmacr |= ((uint32_t)ch->irq_threshold << DMACR_IRQTHRESH_SHIFT) & DMACR_IRQTHRESH_MASK;
 	dmacr |= ((uint32_t)ch->irq_timeout << DMACR_IRQDELAY_SHIFT) & DMACR_IRQDELAY_MASK;
@@ -406,11 +409,12 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 
 	if (ch->cyclic) {
 		/*
-		 * PG021: In cyclic mode, TAILDESC must be set to a value
-		 * OUTSIDE the BD ring. We use an arbitrary invalid address.
-		 * The engine ignores CMPLT bits and runs forever.
+		 * "Cyclic" RX: still non-cyclic in hardware (no CYC_BD_EN),
+		 * TAILDESC = last BD. DMA processes all BDs then goes IDLE.
+		 * ISR fires, consumer re-arms via reconfigure_rx + kick.
 		 */
-		chan_write(dev, channel, REG_TAILDESC, CYCLIC_DUMMY_TAILDESC);
+		chan_write(dev, channel, REG_TAILDESC,
+			   (uint32_t)(uintptr_t)&ch->bds[ch->num_bds - 1]);
 	} else {
 		/*
 		 * Non-cyclic: TAILDESC triggers processing up to this BD.
@@ -511,27 +515,27 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 			   dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ));
 
 		/*
-		 * Non-cyclic mode: eagerly clear CMPLT on completed BDs
-		 * so the SG prefetch engine doesn't see stale CMPLT=1
-		 * when it reads ahead past TAILDESC in the circular chain.
-		 * The consumer still reads data via get_rx_window (which
-		 * cache-invalidates the BD to pick up the byte count
-		 * before we zero it here) — but we must clear+flush NOW
-		 * before the DMA's prefetch wraps around the ring.
-		 *
-		 * We track which BDs have been cleared via producer_idx.
+		 * Mask IOC/DLY IRQs so the level-triggered ISR doesn't
+		 * re-enter while the work handler runs. The work handler
+		 * calls dma_xlnx_sg_reenable_rx_irq() after processing.
 		 */
-		if (!ch->cyclic) {
+		{
+			uint32_t dmacr = chan_read(dev, CH_RX, REG_DMACR);
+
+			dmacr &= ~(DMACR_IOC_IRQEN | DMACR_DLY_IRQEN);
+			chan_write(dev, CH_RX, REG_DMACR, dmacr);
+		}
+
+		/*
+		 * Eagerly clear CMPLT on completed BDs so the SG engine
+		 * doesn't see stale CMPLT when it wraps around the ring.
+		 * Critical for the non-CYC_BD_EN continuous workaround.
+		 */
+		{
 			uint32_t idx = ch->producer_idx;
 
 			for (uint32_t i = 0; i < ch->irq_threshold; i++) {
 				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
-				/*
-				 * With STS/CTRL stream, the DMA writes CMPLT
-				 * (bit 31) to the CONTROL field (0x18), not
-				 * STATUS (0x1C). Clear it in both to be safe.
-				 * Preserve the lower bits (byte count/length).
-				 */
 				ch->bds[idx].control &= ~BD_STS_CMPLT;
 				ch->bds[idx].status &= ~BD_STS_CMPLT;
 				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
@@ -777,9 +781,17 @@ void dma_xlnx_sg_prepare_rx_cyclic(const struct device *dev,
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
 
-	ch->cyclic = false;
+	ch->cyclic = true;
 	ch->callback = callback;
 	ch->user_data = user_data;
+}
+
+void dma_xlnx_sg_reenable_rx_irq(const struct device *dev)
+{
+	uint32_t dmacr = chan_read(dev, CH_RX, REG_DMACR);
+
+	dmacr |= DMACR_IOC_IRQEN | DMACR_DLY_IRQEN;
+	chan_write(dev, CH_RX, REG_DMACR, dmacr);
 }
 
 /* --------------------------------------------------------------------------
@@ -837,7 +849,7 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
 
 	kick_channel(dev, CH_RX);
 
-	LOG_INF("RX ring reconfigured: %u BDs x %u bytes, threshold=%u",
+	LOG_DBG("RX ring reconfigured: %u BDs x %u bytes, threshold=%u",
 		ch->num_bds, bd_bytes, threshold);
 	return 0;
 }

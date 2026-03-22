@@ -49,6 +49,11 @@ void dma_xlnx_sg_prepare_rx_cyclic(const struct device *dev,
 				    dma_callback_t callback, void *user_data);
 
 /**
+ * @brief Re-enable RX IOC/DLY IRQs after cyclic ISR disabled them.
+ */
+void dma_xlnx_sg_reenable_rx_irq(const struct device *dev);
+
+/**
  * @brief Read APP fields from the most recently completed RX descriptor.
  *
  * @param dev  DMA device.
