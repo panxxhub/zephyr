@@ -27,7 +27,10 @@ struct dma_xlnx_sg_app_fields {
  * @brief Callback invoked when an RX stream window is ready.
  *
  * Called from system workqueue context. The driver owns SG descriptor
- * lifecycle, IRQ masking/re-enable, and ring re-arm policy.
+ * lifecycle, IRQ masking/re-enable, and ring re-arm policy. @p buf points into
+ * the driver's RX buffer region and is valid only for the duration of the
+ * callback; copy it if the data must outlive the call. @p size is the
+ * contiguous completed window span in bytes (`bd_bytes * irq_threshold`).
  */
 typedef void (*dma_xlnx_sg_rx_stream_cb_t)(const struct device *dev, void *user_data, uint8_t *buf,
 					   uint32_t size);

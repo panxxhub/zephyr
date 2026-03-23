@@ -404,9 +404,9 @@ static uint32_t build_dmacr(const struct dma_xlnx_sg_chan *ch)
 
 	/*
 	 * Do NOT set CYC_BD_EN — it disables IOC_IRQ generation.
-	 * Instead, continuous RX uses a circular BD chain with
-	 * TAILDESC past the last BD so the engine never catches it.
-	 * See: AMD forum "AXI DMA Cyclic BD not working".
+	 * Continuous RX therefore uses a normal BD ring with software-managed
+	 * re-arm after each completed window, while TAILDESC still points at
+	 * the last BD in the ring. See: AMD forum "AXI DMA Cyclic BD not working".
 	 */
 
 	dmacr |= ((uint32_t)ch->irq_threshold << DMACR_IRQTHRESH_SHIFT) & DMACR_IRQTHRESH_MASK;
@@ -558,7 +558,6 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 
 			for (uint32_t i = 0; i < ch->irq_threshold; i++) {
 				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
-				ch->bds[idx].control &= ~BD_STS_CMPLT;
 				ch->bds[idx].status &= ~BD_STS_CMPLT;
 				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
 				idx = (idx + 1) % ch->num_bds;
@@ -803,6 +802,7 @@ static void dma_xlnx_sg_prepare_rx_stream(const struct device *dev,
 	ch->cyclic = true;
 	ch->callback = NULL;
 	ch->user_data = NULL;
+	ch->irq_timeout = (uint8_t)CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT;
 	ch->rx_stream_callback = cfg->callback;
 	ch->rx_stream_user_data = cfg->user_data;
 }
@@ -890,7 +890,7 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 
 	uint32_t idx = ch->consumer_idx;
 	uint32_t window_size = ch->irq_threshold;
-	uint32_t total_bytes = 0U;
+	uint32_t window_bytes = ch->bd_buf_bytes * window_size;
 	uintptr_t virt_base = buf_virt(dev, CH_RX);
 	uint8_t *window_buf = (uint8_t *)(virt_base + (uintptr_t)idx * ch->bd_buf_bytes);
 
@@ -907,7 +907,6 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 		byte_count = bd->status & DEV_CFG(dev)->sg_len_mask;
 		cache_invd(data_buf, ch->bd_buf_bytes);
 
-		total_bytes += byte_count;
 		ch->last_rx_bytes = byte_count;
 		for (int a = 0; a < 5; a++) {
 			ch->rx_app.app[a] = bd->app[a];
@@ -919,12 +918,8 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 	ch->consumer_idx = idx;
 	atomic_dec(&ch->rx_windows_ready);
 
-	if (total_bytes == 0U) {
-		total_bytes = ch->bd_buf_bytes * window_size;
-	}
-
 	*buf = window_buf;
-	*size = total_bytes;
+	*size = window_bytes;
 	return 0;
 }
 
@@ -966,6 +961,10 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 	ret = dma_xlnx_sg_reconfigure_rx(dev, ch->bd_buf_bytes, ch->irq_threshold);
 	if (ret != 0) {
 		LOG_ERR("failed to re-arm RX stream ring: %d", ret);
+		atomic_set(&ch->rx_windows_ready, 0);
+		ch->rx_stream_windows_remaining = 0U;
+		ch->error = true;
+		(void)dma_xlnx_sg_stop(dev, CH_RX);
 		ch->rx_stream_active = false;
 		ch->rx_stream_callback = NULL;
 		ch->rx_stream_user_data = NULL;

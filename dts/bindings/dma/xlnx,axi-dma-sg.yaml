@@ -1,5 +1,5 @@
-#Copyright(c) 2026 Moton
-#SPDX - License - Identifier : Apache - 2.0
+# Copyright (c) 2026 Moton
+# SPDX-License-Identifier: Apache-2.0
 
 description: |
   Xilinx AXI DMA with scatter-gather and cyclic BD support.
