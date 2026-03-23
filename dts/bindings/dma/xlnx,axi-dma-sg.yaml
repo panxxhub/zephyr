@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Moton
-# SPDX-License-Identifier: Apache-2.0
+#Copyright(c) 2026 Moton
+#SPDX - License - Identifier : Apache - 2.0
 
 description: |
   Xilinx AXI DMA with scatter-gather and cyclic BD support.
@@ -46,6 +46,7 @@ properties:
   xlnx,sg-cache:
     type: int
     default: 0x3
+    enum: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     description: |
       AxCACHE value for the M_AXI_SG port (SG descriptor fetch and
       write-back transactions).  Written to the SG_CTL register at
