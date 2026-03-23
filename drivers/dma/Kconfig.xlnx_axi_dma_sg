@@ -11,6 +11,13 @@ config DMA_XLNX_AXI_DMA_SG
 
 if DMA_XLNX_AXI_DMA_SG
 
+config DMA_XLNX_AXI_DMA_SG_APP_FIELDS
+	bool
+	help
+	  Enable the device-specific APP-field helper API for SG descriptors.
+	  Keep this disabled unless the connected peripheral actually uses the
+	  AXI DMA control/status streams.
+
 config DMA_XLNX_AXI_DMA_SG_NUM_TX_BD
 	int "Number of TX scatter-gather descriptors"
 	default 16
