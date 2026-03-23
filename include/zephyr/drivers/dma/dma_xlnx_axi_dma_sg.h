@@ -64,6 +64,7 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
  */
 void dma_xlnx_sg_stop_rx_stream(const struct device *dev);
 
+#ifdef CONFIG_DMA_XLNX_AXI_DMA_SG_APP_FIELDS
 /**
  * @brief Read APP fields from the most recently completed RX descriptor.
  *
@@ -81,6 +82,7 @@ int dma_xlnx_sg_get_rx_app(const struct device *dev, struct dma_xlnx_sg_app_fiel
  * @return 0 on success.
  */
 int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_app_fields *app);
+#endif
 
 /**
  * @brief Get the byte count of the last completed RX transfer.

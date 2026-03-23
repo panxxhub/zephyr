@@ -1034,6 +1034,7 @@ void dma_xlnx_sg_stop_rx_stream(const struct device *dev)
 	(void)k_work_cancel_sync(&ch->rx_stream_work, &ch->rx_stream_work_sync);
 }
 
+#ifdef CONFIG_DMA_XLNX_AXI_DMA_SG_APP_FIELDS
 /* --------------------------------------------------------------------------
  * Get APP fields from last completed RX descriptor
  * -------------------------------------------------------------------------- */
@@ -1072,6 +1073,7 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_ap
 
 	return 0;
 }
+#endif
 
 /* --------------------------------------------------------------------------
  * Get byte count from last completed RX transfer
