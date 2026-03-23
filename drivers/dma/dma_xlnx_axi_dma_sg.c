@@ -46,6 +46,26 @@ LOG_MODULE_REGISTER(dma_xlnx_sg, CONFIG_DMA_LOG_LEVEL);
 #define S2MM_BASE 0x30
 
 /* --------------------------------------------------------------------------
+ * SG control register — absolute offset from DMA base (shared, not per-channel)
+ *
+ * PG021 Table 2-7: SG_CTL at offset 0x2C controls AxCACHE and AxUSER for
+ * all M_AXI_SG descriptor fetch and write-back transactions.
+ *
+ * After reset SG_CTL = 0x0, giving AxCACHE = 0b0000 (device non-bufferable).
+ * On Zynq-7000, HP-port writes to DDR with AxCACHE[1]=0 (non-modifiable)
+ * may be silently dropped by the interconnect, preventing BD write-back
+ * (CMPLT bit never set, IOC_IRQ never fires).
+ *
+ * The fix: set SG_CACHE to at least 0x3 (normal non-cacheable bufferable)
+ * so that M_AXI_SG write-back transactions reach DDR.
+ * -------------------------------------------------------------------------- */
+#define REG_SGCTL            0x2C
+#define SGCTL_SG_CACHE_SHIFT 0
+#define SGCTL_SG_CACHE_MASK  0x0000000FU
+#define SGCTL_SG_USER_SHIFT  8
+#define SGCTL_SG_USER_MASK   0x00000F00U
+
+/* --------------------------------------------------------------------------
  * DMACR bits
  * -------------------------------------------------------------------------- */
 #define DMACR_RS         BIT(0)
@@ -160,6 +180,7 @@ struct dma_xlnx_sg_cfg {
 	size_t tx_buf_size;
 	size_t rx_buf_size;
 	uint32_t sg_len_mask;       /* (1 << sg_length_width) - 1 */
+	uint8_t sg_cache;           /* AxCACHE for M_AXI_SG transactions */
 };
 
 /* --------------------------------------------------------------------------
@@ -181,10 +202,14 @@ struct dma_xlnx_sg_data {
 /* --------------------------------------------------------------------------
  * MMIO helpers
  * -------------------------------------------------------------------------- */
+static inline uintptr_t dma_base(const struct device *dev)
+{
+	return DEVICE_MMIO_NAMED_GET(dev, regs);
+}
+
 static inline uintptr_t chan_base(const struct device *dev, uint32_t channel)
 {
-	return DEVICE_MMIO_NAMED_GET(dev, regs) +
-	       (channel == CH_TX ? MM2S_BASE : S2MM_BASE);
+	return dma_base(dev) + (channel == CH_TX ? MM2S_BASE : S2MM_BASE);
 }
 
 static inline void chan_write(const struct device *dev, uint32_t channel,
@@ -946,12 +971,25 @@ static int dma_xlnx_sg_init(const struct device *dev)
 		return ret;
 	}
 
+	/*
+	 * Program SG_CTL with the configured AxCACHE value for M_AXI_SG
+	 * descriptor fetch and write-back transactions.  After reset SG_CTL
+	 * is 0x0 (AxCACHE = 0b0000, device non-bufferable).  On Zynq-7000,
+	 * HP-port writes with AxCACHE[1]=0 can be silently dropped, which
+	 * prevents the SG engine from writing back BD STATUS (CMPLT bit
+	 * never set → IOC_IRQ never fires).
+	 */
+	uint32_t sgctl = ((uint32_t)cfg->sg_cache << SGCTL_SG_CACHE_SHIFT) &
+			 SGCTL_SG_CACHE_MASK;
+
+	sys_write32(sgctl, dma_base(dev) + REG_SGCTL);
+
 	/* Configure IRQs */
 	cfg->irq_config(dev);
 
-	LOG_INF("initialized (TX=%u BDs, RX=%u BDs, max_xfer=%u bytes)",
+	LOG_INF("initialized (TX=%u BDs, RX=%u BDs, max_xfer=%u, sg_cache=0x%x)",
 		data->ch[CH_TX].num_bds, data->ch[CH_RX].num_bds,
-		cfg->sg_len_mask);
+		cfg->sg_len_mask, cfg->sg_cache);
 	return 0;
 }
 
@@ -993,6 +1031,7 @@ static int dma_xlnx_sg_init(const struct device *dev)
 		.rx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, rx_buf),                      \
 		.sg_len_mask = SG_LEN_MASK(                                              \
 			DT_INST_PROP_OR(inst, xlnx_sg_length_width, 14)),                \
+		.sg_cache = (uint8_t)DT_INST_PROP_OR(inst, xlnx_sg_cache, 0x3),         \
 	};                                                                                   \
                                                                                              \
 	static struct dma_xlnx_sg_data dma_xlnx_sg_data_##inst = {                          \
