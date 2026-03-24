@@ -1,0 +1,34 @@
+description: |
+  ARM Cortex-A9 MPCore Timer-Watchdog (TWD) Private Timer.
+
+  This is the per-CPU 32-bit down-counter in the Cortex-A9 MPCore SCU
+  peripheral block.  Each core has its own independent timer instance at
+  the same MMIO address (hardware-banked), so there is no cross-CPU
+  contention on compare/reload registers.
+
+  The driver pairs this per-CPU interrupt source with a read-only view of
+  the 64-bit SCU Global Timer counter for cycle-accurate timekeeping,
+  solving the Global Timer compare-register contention that breaks
+  SMP + tickless on Cortex-A9.
+
+compatible: "arm,cortex-a9-twd-timer"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+    description: |
+      Base address and size of the Private Timer register block.
+      On Zynq-7000 this is 0xF8F00600, size 0x20.
+
+  interrupts:
+    required: true
+    description: |
+      Private Timer interrupt (GIC PPI 29).
+
+  clock-frequency:
+    type: int
+    description: |
+      Timer input clock frequency in Hz.  Typically PERIPHCLK, which is
+      CPU_CLK / 2 on Zynq-7000 (e.g. 333333333 for a 667 MHz CPU clock).
