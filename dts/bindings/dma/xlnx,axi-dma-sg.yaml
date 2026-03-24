@@ -43,6 +43,27 @@ properties:
       SG descriptor: max_bytes = 2^width - 1.  Valid range 8..26.
       Must match the value configured in the AXI DMA IP core.
 
+  xlnx,sg-cache:
+    type: int
+    default: 0x3
+    enum: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    description: |
+      AxCACHE value for the M_AXI_SG port (SG descriptor fetch and
+      write-back transactions).  Written to the SG_CTL register at
+      offset 0x2C during init.
+
+      After reset SG_CTL defaults to 0x0 (AxCACHE = 0b0000, device
+      non-bufferable).  On Zynq-7000, HP-port writes to DDR with
+      AxCACHE[1]=0 may be silently dropped by the interconnect,
+      preventing BD write-back (CMPLT bit never set, IOC_IRQ never
+      fires).
+
+      Common values:
+        0x3  — Normal non-cacheable bufferable (default, safe for DDR)
+        0xB  — Write-back read-allocate (for ACP coherent access)
+
+      Must be in the range 0..15.
+
   dma-channels:
     const: 2
     description: Fixed 2 channels (TX + RX).

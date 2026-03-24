@@ -3,8 +3,8 @@
  * Xilinx AXI DMA SG driver — device-specific extensions.
  *
  * These functions supplement the standard dma_*() API for features
- * not covered by struct dma_driver_api: APP field access, cyclic SG
- * reconfiguration, and RX frame length query.
+ * not covered by struct dma_driver_api: APP field access, RX stream
+ * start/stop, and RX frame length query.
  */
 
 #ifndef ZEPHYR_DRIVERS_DMA_XLNX_AXI_DMA_SG_H_
@@ -24,20 +24,50 @@ struct dma_xlnx_sg_app_fields {
 };
 
 /**
- * @brief Reconfigure the RX SG ring at runtime.
+ * @brief Callback invoked when an RX stream window is ready.
  *
- * Stops the S2MM channel, rebuilds the BD ring with the given per-BD
- * buffer size and IRQ threshold, then restarts.  The total ring capacity
- * (bd_buf_bytes * num_bds) must not exceed the RX buffer region size.
- *
- * @param dev       DMA device.
- * @param bd_bytes  Bytes per BD buffer.
- * @param threshold IRQ coalescing threshold (must divide num_bds evenly).
- * @return 0 on success, -EINVAL on bad parameters, -EIO on halt timeout.
+ * Called from system workqueue context. The driver owns SG descriptor
+ * lifecycle, IRQ masking/re-enable, and ring re-arm policy. @p buf points into
+ * the driver's RX buffer region and is valid only for the duration of the
+ * callback; copy it if the data must outlive the call. @p size is the
+ * contiguous completed window span in bytes (`bd_bytes * irq_threshold`).
  */
-int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
-				uint32_t bd_bytes, uint8_t threshold);
+typedef void (*dma_xlnx_sg_rx_stream_cb_t)(const struct device *dev, void *user_data, uint8_t *buf,
+					   uint32_t size);
 
+/**
+ * @brief Continuous RX stream configuration.
+ */
+struct dma_xlnx_sg_rx_stream_cfg {
+	uint32_t bd_bytes;
+	uint16_t irq_threshold;
+	dma_xlnx_sg_rx_stream_cb_t callback;
+	void *user_data;
+};
+
+/**
+ * @brief Start a continuous RX stream.
+ *
+ * The driver configures the RX SG ring, manages descriptor completion
+ * windows internally, and invokes @p callback once per completed window.
+ *
+ * @param dev DMA device.
+ * @param cfg Stream configuration and callback binding.
+ * @return 0 on success, negative errno on failure.
+ */
+int dma_xlnx_sg_start_rx_stream(const struct device *dev,
+				const struct dma_xlnx_sg_rx_stream_cfg *cfg);
+
+/**
+ * @brief Stop the active continuous RX stream.
+ *
+ * Safe to call when no stream is active.
+ *
+ * @param dev DMA device.
+ */
+void dma_xlnx_sg_stop_rx_stream(const struct device *dev);
+
+#ifdef CONFIG_DMA_XLNX_AXI_DMA_SG_APP_FIELDS
 /**
  * @brief Read APP fields from the most recently completed RX descriptor.
  *
@@ -45,8 +75,7 @@ int dma_xlnx_sg_reconfigure_rx(const struct device *dev,
  * @param app  Output: APP0-APP4 from the completed descriptor.
  * @return 0 on success, -EAGAIN if no completed descriptor available.
  */
-int dma_xlnx_sg_get_rx_app(const struct device *dev,
-			    struct dma_xlnx_sg_app_fields *app);
+int dma_xlnx_sg_get_rx_app(const struct device *dev, struct dma_xlnx_sg_app_fields *app);
 
 /**
  * @brief Set APP fields for the next TX descriptor (control stream).
@@ -55,8 +84,8 @@ int dma_xlnx_sg_get_rx_app(const struct device *dev,
  * @param app  APP0-APP4 to write into the SOF descriptor.
  * @return 0 on success.
  */
-int dma_xlnx_sg_set_tx_app(const struct device *dev,
-			    const struct dma_xlnx_sg_app_fields *app);
+int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_app_fields *app);
+#endif
 
 /**
  * @brief Get the byte count of the last completed RX transfer.
@@ -81,47 +110,8 @@ uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev);
  * @param size     Output: buffer region size in bytes.
  * @return 0 on success, -EINVAL if channel invalid.
  */
-int dma_xlnx_sg_get_buffer(const struct device *dev, uint32_t channel,
-			    uintptr_t *phys, uintptr_t *virt, size_t *size);
-
-/** Completed BD window descriptor — one entry per BD in the window. */
-struct dma_xlnx_sg_rx_bd_info {
-	uintptr_t buf_virt;                     /* CPU-accessible buffer pointer */
-	uint32_t byte_count;                    /* Bytes transferred (from status[25:0]) */
-	struct dma_xlnx_sg_app_fields app;      /* APP0-APP4 from completed descriptor */
-};
-
-/**
- * @brief Get the completed RX BD window after an IRQ.
- *
- * In cyclic mode with IRQ coalescing, each IRQ fires after `threshold`
- * BDs complete.  This function returns info for each BD in the window.
- * The caller provides an array of at least `threshold` entries.
- *
- * After the caller has processed the window, it must call
- * dma_xlnx_sg_release_rx_window() to advance the consumer index.
- *
- * @param dev       DMA device.
- * @param info      Output array (caller-allocated, length >= threshold).
- * @param count     Input: array capacity.  Output: number of entries filled.
- * @return 0 on success, -EAGAIN if no complete window, -EINVAL on error.
- */
-int dma_xlnx_sg_get_rx_window(const struct device *dev,
-			       struct dma_xlnx_sg_rx_bd_info *info,
-			       uint32_t *count);
-
-/**
- * @brief Release an RX BD window after processing.
- *
- * Advances the consumer index so the DMA engine can reuse the descriptors.
- * In cyclic mode with CYC_BD_EN, the CMPLT bits are ignored by hardware,
- * but this function updates the driver's internal tracking.
- *
- * @param dev    DMA device.
- * @param count  Number of BDs to release (must match get_rx_window output).
- * @return 0 on success.
- */
-int dma_xlnx_sg_release_rx_window(const struct device *dev, uint32_t count);
+int dma_xlnx_sg_get_buffer(const struct device *dev, uint32_t channel, uintptr_t *phys,
+			   uintptr_t *virt, size_t *size);
 
 #ifdef __cplusplus
 }
