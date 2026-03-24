@@ -25,8 +25,8 @@ config DMA_XLNX_AXI_DMA_SG_NUM_TX_BD
 
 config DMA_XLNX_AXI_DMA_SG_NUM_RX_BD
 	int "Number of RX scatter-gather descriptors"
-	default 1024
-	range 2 4096
+	default 16
+	range 2 256
 
 config DMA_XLNX_AXI_DMA_SG_IRQ_THRESHOLD
 	int "Default interrupt coalescing threshold"
