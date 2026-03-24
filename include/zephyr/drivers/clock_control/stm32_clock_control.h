@@ -552,7 +552,6 @@
 #define STM32_LSE_DRIVING	DT_PROP(DT_NODELABEL(clk_lse), driving_capability)
 #define STM32_LSE_BYPASS	DT_PROP(DT_NODELABEL(clk_lse), lse_bypass)
 #else
-#define STM32_LSE_ENABLED	0
 #define STM32_LSE_FREQ		0
 #define STM32_LSE_DRIVING	0
 #define STM32_LSE_BYPASS	0
@@ -565,13 +564,12 @@
 #endif
 
 #if DT_NODE_HAS_COMPAT_STATUS(DT_NODELABEL(clk_msi), st_stm32_msi_clock, okay)
-#define STM32_MSI_ENABLED	1
 #define STM32_MSI_PLL_MODE	DT_PROP(DT_NODELABEL(clk_msi), msi_pll_mode)
-#endif
 
-#if defined(CONFIG_SOC_SERIES_STM32L4X) && STM32_MSI_PLL_MODE && !STM32_LSE_ENABLED
-#error "On STM32L4 series, MSI PLL mode requires LSE to be enabled"
-#endif
+# if defined(CONFIG_SOC_SERIES_STM32L4X) && STM32_MSI_PLL_MODE && !defined(STM32_LSE_ENABLED)
+# error "On STM32L4 series, MSI PLL mode requires LSE to be enabled"
+# endif /* stm32l4 && msi_pll_mode && !STM32_LSE_ENABLED */
+#endif /* st_stm32_msi_clock */
 
 #if DT_NODE_HAS_COMPAT_STATUS(DT_NODELABEL(clk_msis), st_stm32u5_msi_clock, okay) || \
 	DT_NODE_HAS_COMPAT_STATUS(DT_NODELABEL(clk_msis), st_stm32u3_msi_clock, okay)
@@ -579,7 +577,6 @@
 #define STM32_MSIS_RANGE	DT_PROP(DT_NODELABEL(clk_msis), msi_range)
 #define STM32_MSIS_PLL_MODE	DT_PROP(DT_NODELABEL(clk_msis), msi_pll_mode)
 #else
-#define STM32_MSIS_ENABLED	0
 #define STM32_MSIS_RANGE	0
 #define STM32_MSIS_PLL_MODE	0
 #endif
@@ -590,7 +587,6 @@
 #define STM32_MSIK_RANGE	DT_PROP(DT_NODELABEL(clk_msik), msi_range)
 #define STM32_MSIK_PLL_MODE	DT_PROP(DT_NODELABEL(clk_msik), msi_pll_mode)
 #else
-#define STM32_MSIK_ENABLED	0
 #define STM32_MSIK_RANGE	0
 #define STM32_MSIK_PLL_MODE	0
 #endif
@@ -659,7 +655,9 @@
 #define STM32_HSE_ENABLED	1
 #define STM32_HSE_BYPASS	DT_PROP(DT_NODELABEL(clk_hse), hse_bypass)
 #define STM32_HSE_FREQ		DT_PROP(DT_NODELABEL(clk_hse), clock_frequency)
-#define STM32_HSE_CSS		DT_PROP(DT_NODELABEL(clk_hse), css_enabled)
+#if DT_PROP(DT_NODELABEL(clk_hse), css_enabled)
+#define STM32_HSE_CSS		1
+#endif /* css_enabled */
 #elif DT_NODE_HAS_COMPAT_STATUS(DT_NODELABEL(clk_hse), st_stm32wl_hse_clock, okay)
 #define STM32_HSE_ENABLED	1
 #define STM32_HSE_TCXO		DT_PROP(DT_NODELABEL(clk_hse), hse_tcxo)
@@ -940,7 +938,7 @@ struct stm32_pclken {
  * overridden.
  */
 void stm32_hse_css_callback(void);
-#endif
+#endif /* STM32_HSE_CSS */
 
 #ifdef CONFIG_SOC_SERIES_STM32WB0X
 /**
