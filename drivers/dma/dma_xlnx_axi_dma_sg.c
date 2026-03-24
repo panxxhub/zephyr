@@ -12,6 +12,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/dma.h>
+#include <zephyr/drivers/interrupt_controller/gic.h>
 #include <zephyr/irq.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -155,7 +156,10 @@ struct dma_xlnx_sg_chan {
 	void *user_data;
 	bool cyclic; /* true for cyclic RX */
 	bool error;  /* sticky error flag */
-	uint8_t irq_threshold;
+	uint16_t irq_threshold;    /* software window size in BDs */
+	uint8_t hw_irq_threshold;  /* hardware threshold (max 255) written to DMACR */
+	uint16_t irq_coalesce_target; /* hw IRQs per software window */
+	uint16_t irq_coalesce_count;  /* current hw IRQ accumulator */
 	uint8_t irq_timeout;
 	struct dma_xlnx_sg_app_fields tx_app; /* APP fields for next TX SOF */
 	struct dma_xlnx_sg_app_fields rx_app; /* APP fields from last completed RX */
@@ -169,7 +173,7 @@ struct dma_xlnx_sg_chan {
 	void *rx_stream_user_data;
 	struct k_work rx_stream_work;
 	struct k_work_sync rx_stream_work_sync;
-	uint16_t rx_stream_windows_remaining;
+	uint32_t tail_idx; /* current TAILDESC BD index for ping-pong */
 };
 
 /* --------------------------------------------------------------------------
@@ -261,7 +265,7 @@ static void dma_xlnx_sg_program_sgctl(const struct device *dev)
 	sys_write32(sgctl, sgctl_addr);
 }
 
-static uint16_t rx_stream_windows_per_ring(uint8_t irq_threshold)
+static uint16_t __maybe_unused rx_stream_windows_per_ring(uint8_t irq_threshold)
 {
 	if (irq_threshold == 0U) {
 		return 0U;
@@ -400,7 +404,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
  * -------------------------------------------------------------------------- */
 static uint32_t build_dmacr(const struct dma_xlnx_sg_chan *ch)
 {
-	uint32_t dmacr = DMACR_RS | DMACR_ALL_IRQEN;
+	uint32_t dmacr = DMACR_RS | DMACR_IOC_IRQEN | DMACR_ERR_IRQEN;
 
 	/*
 	 * Do NOT set CYC_BD_EN — it disables IOC_IRQ generation.
@@ -409,8 +413,11 @@ static uint32_t build_dmacr(const struct dma_xlnx_sg_chan *ch)
 	 * the last BD in the ring. See: AMD forum "AXI DMA Cyclic BD not working".
 	 */
 
-	dmacr |= ((uint32_t)ch->irq_threshold << DMACR_IRQTHRESH_SHIFT) & DMACR_IRQTHRESH_MASK;
-	dmacr |= ((uint32_t)ch->irq_timeout << DMACR_IRQDELAY_SHIFT) & DMACR_IRQDELAY_MASK;
+	dmacr |= ((uint32_t)ch->hw_irq_threshold << DMACR_IRQTHRESH_SHIFT) & DMACR_IRQTHRESH_MASK;
+	if (ch->irq_timeout != 0U) {
+		dmacr |= DMACR_DLY_IRQEN;
+		dmacr |= ((uint32_t)ch->irq_timeout << DMACR_IRQDELAY_SHIFT) & DMACR_IRQDELAY_MASK;
+	}
 
 	return dmacr;
 }
@@ -439,13 +446,14 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 
 	if (ch->cyclic) {
 		/*
-		 * "Cyclic" RX: still non-cyclic in hardware (no CYC_BD_EN),
-		 * TAILDESC = last BD. DMA processes all BDs then goes IDLE.
-		 * The RX stream worker consumes each completed window and
-		 * re-arms the ring after the last window in the current ring.
+		 * Ping-pong RX: non-cyclic in hardware (no CYC_BD_EN).
+		 * TAILDESC = first HW threshold boundary.
+		 * DMA processes those BDs, goes IDLE, IOC fires.
+		 * ISR advances TAILDESC by hw_irq_threshold each time.
 		 */
+		ch->tail_idx = ch->hw_irq_threshold - 1;
 		chan_write(dev, channel, REG_TAILDESC,
-			   (uint32_t)(uintptr_t)&ch->bds[ch->num_bds - 1]);
+			   (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
 	} else {
 		/*
 		 * Non-cyclic: TAILDESC triggers processing up to this BD.
@@ -543,29 +551,40 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 		chan_write(dev, CH_RX, REG_DMASR, dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ));
 
 		if (ch->rx_stream_active) {
-			uint32_t dmacr = chan_read(dev, CH_RX, REG_DMACR);
-
-			/* Keep the level-triggered IRQ from retriggering until
-			 * the stream worker consumes and re-arms the window.
+			/*
+			 * Ping-pong: clear CMPLT on the just-completed BDs,
+			 * then advance TAILDESC to resume DMA immediately.
+			 * Use hw_irq_threshold (what HW actually coalesced)
+			 * for the BD-level operations each HW IRQ.
 			 */
-			dmacr &= ~(DMACR_IOC_IRQEN | DMACR_DLY_IRQEN);
-			chan_write(dev, CH_RX, REG_DMACR, dmacr);
-
-			/* Clear CMPLT eagerly so the next ring arm does not
-			 * inherit stale completion bits.
-			 */
+			uint32_t hw_thresh = ch->hw_irq_threshold;
 			uint32_t idx = ch->producer_idx;
 
-			for (uint32_t i = 0; i < ch->irq_threshold; i++) {
+			for (uint32_t i = 0; i < hw_thresh; i++) {
 				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
+				ch->bds[idx].control &= ~BD_STS_CMPLT;
 				ch->bds[idx].status &= ~BD_STS_CMPLT;
 				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
 				idx = (idx + 1) % ch->num_bds;
 			}
 			ch->producer_idx = idx;
 
-			atomic_inc(&ch->rx_windows_ready);
-			(void)k_work_submit(&ch->rx_stream_work);
+			/* Advance TAILDESC by hw_thresh BDs */
+			ch->tail_idx = (ch->tail_idx + hw_thresh) % ch->num_bds;
+			barrier_dmem_fence_full();
+			chan_write(dev, CH_RX, REG_TAILDESC,
+				   (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
+
+			/* Software coalescing: only notify work handler
+			 * when enough HW IRQs have accumulated to fill
+			 * one full software window (irq_threshold BDs).
+			 */
+			ch->irq_coalesce_count++;
+			if (ch->irq_coalesce_count >= ch->irq_coalesce_target) {
+				ch->irq_coalesce_count = 0;
+				atomic_inc(&ch->rx_windows_ready);
+				(void)k_work_submit(&ch->rx_stream_work);
+			}
 		} else {
 			if (ch->callback) {
 				int status = ch->error ? -EIO : DMA_STATUS_COMPLETE;
@@ -802,16 +821,21 @@ static void dma_xlnx_sg_prepare_rx_stream(const struct device *dev,
 	ch->cyclic = true;
 	ch->callback = NULL;
 	ch->user_data = NULL;
-	ch->irq_timeout = (uint8_t)CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT;
+	ch->irq_timeout = 0U;
 	ch->rx_stream_callback = cfg->callback;
 	ch->rx_stream_user_data = cfg->user_data;
 }
 
-static void dma_xlnx_sg_reenable_rx_irq(const struct device *dev)
+static void __maybe_unused dma_xlnx_sg_reenable_rx_irq(const struct device *dev)
 {
 	uint32_t dmacr = chan_read(dev, CH_RX, REG_DMACR);
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
 
-	dmacr |= DMACR_IOC_IRQEN | DMACR_DLY_IRQEN;
+	dmacr |= DMACR_IOC_IRQEN;
+	if (ch->irq_timeout != 0U) {
+		dmacr |= DMACR_DLY_IRQEN;
+	}
 	chan_write(dev, CH_RX, REG_DMACR, dmacr);
 }
 
@@ -819,7 +843,7 @@ static void dma_xlnx_sg_reenable_rx_irq(const struct device *dev)
  * Reconfigure RX ring at runtime.
  * -------------------------------------------------------------------------- */
 static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_bytes,
-				      uint8_t threshold)
+				      uint16_t threshold)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
@@ -854,6 +878,24 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 	/* Update ring parameters */
 	ch->bd_buf_bytes = bd_bytes;
 	ch->irq_threshold = threshold;
+
+	/*
+	 * Hardware IOC threshold is limited to a small value because
+	 * IOC_IRQ does not reliably fire with large thresholds on this
+	 * DMA IP (confirmed: threshold=16 works, threshold=128 does not).
+	 * Always use software coalescing for the full window size.
+	 */
+	{
+		uint8_t hw = 32;
+
+		while (hw > 1 && (threshold % hw) != 0) {
+			hw >>= 1;
+		}
+		ch->hw_irq_threshold = hw;
+		ch->irq_coalesce_target = threshold / hw;
+	}
+	ch->irq_coalesce_count = 0;
+
 	ch->consumer_idx = 0;
 	ch->producer_idx = 0;
 	atomic_set(&ch->rx_windows_ready, 0);
@@ -927,51 +969,35 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 {
 	struct dma_xlnx_sg_chan *ch = CONTAINER_OF(work, struct dma_xlnx_sg_chan, rx_stream_work);
 	const struct device *dev = ch->dev;
-	uint8_t *buf = NULL;
-	uint32_t size = 0U;
-	int ret;
 
 	if (dev == NULL || !ch->rx_stream_active) {
 		return;
 	}
 
-	ret = dma_xlnx_sg_consume_rx_window(dev, &buf, &size);
-	if (ret != 0) {
-		LOG_ERR("failed to consume RX stream window: %d", ret);
-		if (ch->rx_stream_active) {
-			dma_xlnx_sg_reenable_rx_irq(dev);
+	/*
+	 * Ping-pong: ISR already advanced TAILDESC and DMA is processing
+	 * the next half. We just consume all ready windows and deliver
+	 * them to the callback. No DMA reconfiguration needed.
+	 */
+	while (atomic_get(&ch->rx_windows_ready) > 0) {
+		uint8_t *buf = NULL;
+		uint32_t size = 0U;
+		int ret;
+
+		ret = dma_xlnx_sg_consume_rx_window(dev, &buf, &size);
+		if (ret != 0) {
+			LOG_ERR("failed to consume RX stream window: %d", ret);
+			break;
 		}
-		return;
-	}
 
-	if (buf != NULL && size > 0U && ch->rx_stream_callback != NULL) {
-		ch->rx_stream_callback(dev, ch->rx_stream_user_data, buf, size);
-	}
+		if (buf != NULL && size > 0U && ch->rx_stream_callback != NULL) {
+			ch->rx_stream_callback(dev, ch->rx_stream_user_data, buf, size);
+		}
 
-	if (!ch->rx_stream_active) {
-		return;
+		if (!ch->rx_stream_active) {
+			return;
+		}
 	}
-
-	if (ch->rx_stream_windows_remaining > 1U) {
-		ch->rx_stream_windows_remaining--;
-		dma_xlnx_sg_reenable_rx_irq(dev);
-		return;
-	}
-
-	ret = dma_xlnx_sg_reconfigure_rx(dev, ch->bd_buf_bytes, ch->irq_threshold);
-	if (ret != 0) {
-		LOG_ERR("failed to re-arm RX stream ring: %d", ret);
-		atomic_set(&ch->rx_windows_ready, 0);
-		ch->rx_stream_windows_remaining = 0U;
-		ch->error = true;
-		(void)dma_xlnx_sg_stop(dev, CH_RX);
-		ch->rx_stream_active = false;
-		ch->rx_stream_callback = NULL;
-		ch->rx_stream_user_data = NULL;
-		return;
-	}
-
-	ch->rx_stream_windows_remaining = rx_stream_windows_per_ring(ch->irq_threshold);
 }
 
 int dma_xlnx_sg_start_rx_stream(const struct device *dev,
@@ -1001,11 +1027,9 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 
 	dma_xlnx_sg_prepare_rx_stream(dev, cfg);
 	ch->rx_stream_active = true;
-	ch->rx_stream_windows_remaining = rx_stream_windows_per_ring(cfg->irq_threshold);
 	ret = dma_xlnx_sg_reconfigure_rx(dev, cfg->bd_bytes, cfg->irq_threshold);
 	if (ret != 0) {
 		ch->rx_stream_active = false;
-		ch->rx_stream_windows_remaining = 0U;
 		ch->rx_stream_callback = NULL;
 		ch->rx_stream_user_data = NULL;
 		return ret;
@@ -1026,7 +1050,6 @@ void dma_xlnx_sg_stop_rx_stream(const struct device *dev)
 	ch->rx_stream_active = false;
 	ch->rx_stream_callback = NULL;
 	ch->rx_stream_user_data = NULL;
-	ch->rx_stream_windows_remaining = 0U;
 	atomic_set(&ch->rx_windows_ready, 0);
 
 	(void)dma_xlnx_sg_stop(dev, CH_RX);
@@ -1115,7 +1138,6 @@ static int dma_xlnx_sg_init(const struct device *dev)
 	data->ch[CH_RX].rx_stream_active = false;
 	data->ch[CH_RX].rx_stream_callback = NULL;
 	data->ch[CH_RX].rx_stream_user_data = NULL;
-	data->ch[CH_RX].rx_stream_windows_remaining = 0U;
 	k_work_init(&data->ch[CH_RX].rx_stream_work, dma_xlnx_sg_rx_stream_work_handler);
 
 	/* Map MMIO regions.
@@ -1168,10 +1190,16 @@ static int dma_xlnx_sg_init(const struct device *dev)
 	{                                                                                          \
 		IRQ_CONNECT(DT_INST_IRQN_BY_IDX(inst, 0), DT_INST_IRQ_BY_IDX(inst, 0, priority),   \
 			    dma_xlnx_sg_tx_isr, DEVICE_DT_INST_GET(inst), 0);                      \
+		IF_ENABLED(CONFIG_SMP, (                                                         \
+			sys_write8(BIT(0), GICD_ITARGETSRn + DT_INST_IRQN_BY_IDX(inst, 0));     \
+		));                                                                              \
 		irq_enable(DT_INST_IRQN_BY_IDX(inst, 0));                                          \
                                                                                                    \
 		IRQ_CONNECT(DT_INST_IRQN_BY_IDX(inst, 1), DT_INST_IRQ_BY_IDX(inst, 1, priority),   \
 			    dma_xlnx_sg_rx_isr, DEVICE_DT_INST_GET(inst), 0);                      \
+		IF_ENABLED(CONFIG_SMP, (                                                         \
+			sys_write8(BIT(0), GICD_ITARGETSRn + DT_INST_IRQN_BY_IDX(inst, 1));     \
+		));                                                                              \
 		irq_enable(DT_INST_IRQN_BY_IDX(inst, 1));                                          \
 	}                                                                                          \
                                                                                                    \

@@ -40,7 +40,7 @@ typedef void (*dma_xlnx_sg_rx_stream_cb_t)(const struct device *dev, void *user_
  */
 struct dma_xlnx_sg_rx_stream_cfg {
 	uint32_t bd_bytes;
-	uint8_t irq_threshold;
+	uint16_t irq_threshold;
 	dma_xlnx_sg_rx_stream_cb_t callback;
 	void *user_data;
 };
