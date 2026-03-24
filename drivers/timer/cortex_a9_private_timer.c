@@ -65,6 +65,13 @@
 
 #define GT_CNT_LOWER  0x00
 #define GT_CNT_UPPER  0x04
+#define GT_CTRL       0x08
+
+/* GT_CTRL bit 0 is the global timer enable (shared across CPUs).
+ * Bits 1-3 are per-CPU banked (compare, IRQ, auto-increment) — we
+ * must NOT touch them when enabling the counter.
+ */
+#define GT_CTRL_TIMER_ENABLE  BIT(0)
 
 /* ------------------------------------------------------------------ */
 /* Private Timer PPI                                                  */
@@ -120,6 +127,25 @@ static uint32_t last_elapsed;
 #if defined(CONFIG_TEST)
 const int32_t z_sys_timer_irq_for_test = PT_IRQ;
 #endif
+
+/* ------------------------------------------------------------------ */
+/* Global Timer enable (counter only — no compare/IRQ bits)           */
+/* ------------------------------------------------------------------ */
+
+static void global_timer_enable(void)
+{
+	uint32_t ctrl = sys_read32(GT_REG(GT_CTRL));
+
+	if (!(ctrl & GT_CTRL_TIMER_ENABLE)) {
+		/*
+		 * Only set the enable bit.  Preserve per-CPU banked bits
+		 * (compare, IRQ, auto-increment) read as the calling
+		 * CPU's state — writing them back unchanged is safe.
+		 */
+		ctrl |= GT_CTRL_TIMER_ENABLE;
+		sys_write32(ctrl, GT_REG(GT_CTRL));
+	}
+}
 
 /* ------------------------------------------------------------------ */
 /* Global Timer 64-bit counter read (safe concurrent access)          */
@@ -336,6 +362,13 @@ static int sys_clock_driver_init(void)
 {
 	DEVICE_MMIO_TOPLEVEL_MAP(pt_regs, K_MEM_CACHE_NONE);
 	DEVICE_MMIO_TOPLEVEL_MAP(gt_regs, K_MEM_CACHE_NONE);
+
+	/* Ensure the Global Timer counter is running.  The old
+	 * ARM_ARCH_TIMER driver used to enable this; since we replaced
+	 * it, we must do it ourselves.  Only the enable bit (bit 0) is
+	 * touched — per-CPU banked bits are preserved.
+	 */
+	global_timer_enable();
 
 	IRQ_CONNECT(PT_IRQ, PT_IRQ_PRIO, private_timer_isr, NULL,
 		    PT_IRQ_FLAGS);
