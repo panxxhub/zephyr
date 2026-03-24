@@ -19,6 +19,7 @@
 #include <zephyr/sys_clock.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/device_mmio.h>
+#include <zephyr/arch/cpu.h>
 
 /* ------------------------------------------------------------------ */
 /* DTS nodes                                                          */
@@ -137,13 +138,9 @@ static void global_timer_enable(void)
 	uint32_t ctrl = sys_read32(GT_REG(GT_CTRL));
 
 	if (!(ctrl & GT_CTRL_TIMER_ENABLE)) {
-		/*
-		 * Only set the enable bit.  Preserve per-CPU banked bits
-		 * (compare, IRQ, auto-increment) read as the calling
-		 * CPU's state — writing them back unchanged is safe.
-		 */
 		ctrl |= GT_CTRL_TIMER_ENABLE;
 		sys_write32(ctrl, GT_REG(GT_CTRL));
+		barrier_dsync_fence_full();
 	}
 }
 
@@ -169,14 +166,21 @@ static ALWAYS_INLINE uint64_t global_timer_count(void)
 /* Private Timer helpers                                              */
 /* ------------------------------------------------------------------ */
 
-static ALWAYS_INLINE void pt_stop(void)
-{
-	sys_write32(0, PT_REG(PT_CONTROL));
-}
-
 static ALWAYS_INLINE void pt_clear_isr(void)
 {
 	sys_write32(PT_ISR_EVENT_FLAG, PT_REG(PT_ISR));
+}
+
+/*
+ * Mask the Private Timer IRQ without stopping the counter.
+ * The timer keeps counting but will not fire an interrupt.
+ */
+static ALWAYS_INLINE void pt_mask_irq(void)
+{
+	uint32_t ctrl = sys_read32(PT_REG(PT_CONTROL));
+
+	ctrl &= ~PT_CTRL_IRQ_ENABLE;
+	sys_write32(ctrl, PT_REG(PT_CONTROL));
 }
 
 /*
@@ -185,11 +189,15 @@ static ALWAYS_INLINE void pt_clear_isr(void)
  */
 static ALWAYS_INLINE void pt_set_oneshot(uint32_t cycles)
 {
-	pt_stop();
+	/* Stop timer, clear pending interrupt */
+	sys_write32(0, PT_REG(PT_CONTROL));
 	pt_clear_isr();
+
+	/* Load countdown value and start */
 	sys_write32(cycles, PT_REG(PT_LOAD));
 	sys_write32(PT_CTRL_ENABLE | PT_CTRL_IRQ_ENABLE,
 		    PT_REG(PT_CONTROL));
+	barrier_dsync_fence_full();
 }
 
 /*
@@ -197,11 +205,13 @@ static ALWAYS_INLINE void pt_set_oneshot(uint32_t cycles)
  */
 static ALWAYS_INLINE void pt_set_periodic(uint32_t cycles)
 {
-	pt_stop();
+	sys_write32(0, PT_REG(PT_CONTROL));
 	pt_clear_isr();
+
 	sys_write32(cycles, PT_REG(PT_LOAD));
 	sys_write32(PT_CTRL_ENABLE | PT_CTRL_AUTO_RELOAD | PT_CTRL_IRQ_ENABLE,
 		    PT_REG(PT_CONTROL));
+	barrier_dsync_fence_full();
 }
 
 /* ------------------------------------------------------------------ */
@@ -225,16 +235,20 @@ static void private_timer_isr(const void *arg)
 	last_elapsed = 0;
 
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
-		/*
-		 * Periodic mode: auto-reload keeps running, nothing to
-		 * reprogram.  Just announce.
-		 */
+		/* Periodic mode: auto-reload keeps running. */
 	} else {
 		/*
-		 * Tickless mode: stop the timer.  The kernel will call
-		 * sys_clock_set_timeout() to schedule the next wakeup.
+		 * Tickless: mask the IRQ but keep the timer enabled.
+		 * This mirrors the arm_arch_timer.c pattern (set compare
+		 * to ~0ULL / mask IRQ).  The timer keeps counting so the
+		 * counter read in sys_clock_elapsed() stays live, and
+		 * sys_clock_set_timeout() will reprogram it.
+		 *
+		 * NEVER call pt_stop() here — if sys_clock_set_timeout()
+		 * runs on a different CPU, this CPU's timer would stay
+		 * dead and miss future timeouts.
 		 */
-		pt_stop();
+		pt_mask_irq();
 	}
 
 	k_spin_unlock(&lock, key);
@@ -253,7 +267,12 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 	}
 
 	if (idle && ticks == K_TICKS_FOREVER) {
-		pt_stop();
+		/*
+		 * No pending timeouts and going idle.  Do NOT stop the
+		 * timer — just leave it masked.  If a timeout was armed
+		 * before we entered idle, stopping would destroy it.
+		 * The original arm_arch_timer.c simply returns here.
+		 */
 		return;
 	}
 
@@ -363,11 +382,7 @@ static int sys_clock_driver_init(void)
 	DEVICE_MMIO_TOPLEVEL_MAP(pt_regs, K_MEM_CACHE_NONE);
 	DEVICE_MMIO_TOPLEVEL_MAP(gt_regs, K_MEM_CACHE_NONE);
 
-	/* Ensure the Global Timer counter is running.  The old
-	 * ARM_ARCH_TIMER driver used to enable this; since we replaced
-	 * it, we must do it ourselves.  Only the enable bit (bit 0) is
-	 * touched — per-CPU banked bits are preserved.
-	 */
+	/* Ensure the Global Timer counter is running. */
 	global_timer_enable();
 
 	IRQ_CONNECT(PT_IRQ, PT_IRQ_PRIO, private_timer_isr, NULL,
