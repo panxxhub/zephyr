@@ -172,18 +172,6 @@ static ALWAYS_INLINE void pt_clear_isr(void)
 }
 
 /*
- * Mask the Private Timer IRQ without stopping the counter.
- * The timer keeps counting but will not fire an interrupt.
- */
-static ALWAYS_INLINE void pt_mask_irq(void)
-{
-	uint32_t ctrl = sys_read32(PT_REG(PT_CONTROL));
-
-	ctrl &= ~PT_CTRL_IRQ_ENABLE;
-	sys_write32(ctrl, PT_REG(PT_CONTROL));
-}
-
-/*
  * Load the Private Timer with a one-shot countdown.
  * The timer starts immediately and fires an IRQ when it reaches zero.
  */
@@ -238,17 +226,22 @@ static void private_timer_isr(const void *arg)
 		/* Periodic mode: auto-reload keeps running. */
 	} else {
 		/*
-		 * Tickless: mask the IRQ but keep the timer enabled.
-		 * This mirrors the arm_arch_timer.c pattern (set compare
-		 * to ~0ULL / mask IRQ).  The timer keeps counting so the
-		 * counter read in sys_clock_elapsed() stays live, and
-		 * sys_clock_set_timeout() will reprogram it.
+		 * Tickless: re-arm with a one-tick fallback.
 		 *
-		 * NEVER call pt_stop() here — if sys_clock_set_timeout()
-		 * runs on a different CPU, this CPU's timer would stay
-		 * dead and miss future timeouts.
+		 * On SMP, sys_clock_set_timeout() may run on a different
+		 * CPU than the one whose ISR just fired.  Since the
+		 * Private Timer is per-CPU banked, only the calling CPU's
+		 * timer gets programmed.  If we stop or mask this CPU's
+		 * timer here, it stays dead until the kernel happens to
+		 * call sys_clock_set_timeout() on this CPU again.
+		 *
+		 * Instead, always re-arm with CYC_PER_TICK so the timer
+		 * never goes silent.  sys_clock_set_timeout() will
+		 * override with the real delay if it runs on this CPU.
+		 * Worst case: an extra tick interrupt — same cost as
+		 * non-tickless periodic mode.
 		 */
-		pt_mask_irq();
+		pt_set_oneshot(CYC_PER_TICK);
 	}
 
 	k_spin_unlock(&lock, key);
