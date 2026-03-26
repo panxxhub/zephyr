@@ -835,6 +835,14 @@ static int dma_xlnx_sg_stop(const struct device *dev, uint32_t channel)
 		return -EINVAL;
 	}
 
+	/* Set TAILDESC = CURDESC so the engine stops after the current BD
+	 * instead of processing the entire queued ring.  Then clear RS.
+	 */
+	uint32_t curdesc = chan_read(dev, channel, REG_CURDESC);
+
+	chan_write(dev, channel, REG_TAILDESC, curdesc);
+	barrier_dmem_fence_full();
+
 	uint32_t dmacr = chan_read(dev, channel, REG_DMACR);
 
 	dmacr &= ~DMACR_RS;
@@ -851,7 +859,11 @@ static int dma_xlnx_sg_stop(const struct device *dev, uint32_t channel)
 		elapsed += RESET_POLL_US;
 	}
 	if (elapsed >= RESET_TIMEOUT_US) {
-		LOG_WRN("Channel %u did not halt within timeout", channel);
+		/* Expected when stopping a stream mid-burst (partial FIFO data,
+		 * no TLAST to complete the current BD).  The next session start
+		 * performs a soft reset to recover.
+		 */
+		LOG_DBG("ch %u: halt timeout (expected for mid-burst stream stop)", channel);
 	}
 
 	LOG_DBG("ch %u stopped", channel);
