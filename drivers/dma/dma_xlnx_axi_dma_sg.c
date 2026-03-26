@@ -165,6 +165,7 @@ struct dma_xlnx_sg_chan {
 	struct dma_xlnx_sg_app_fields rx_app; /* APP fields from last completed RX */
 	uint32_t last_rx_bytes;               /* bytes from last completed RX BD */
 	uint32_t bd_buf_bytes;                /* buffer size per BD */
+	uint32_t active_bds;       /* number of BDs used in current transfer (0 = all num_bds) */
 	uint32_t tx_src_addr;      /* one-shot TX: caller's source address (0 = use DT region) */
 	uint32_t tx_xfer_size;     /* one-shot TX: transfer size in bytes */
 	atomic_t rx_windows_ready; /* completed stream windows waiting for the worker */
@@ -364,8 +365,10 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 		return -EINVAL;
 	}
 
-	for (uint32_t i = 0; i < ch->num_bds; i++) {
-		uint32_t next = (i + 1) % ch->num_bds;
+	uint32_t ring_count = (ch->active_bds > 0) ? ch->active_bds : ch->num_bds;
+
+	for (uint32_t i = 0; i < ring_count; i++) {
+		uint32_t next = (i + 1) % ring_count;
 
 		memset(&ch->bds[i], 0, sizeof(ch->bds[i]));
 		ch->bds[i].next_desc = (uint32_t)(uintptr_t)&ch->bds[next];
@@ -387,7 +390,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 	}
 
 	/* Flush entire BD ring so DMA engine sees current values */
-	cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * ch->num_bds);
+	cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * ring_count);
 	return 0;
 }
 
@@ -450,9 +453,18 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 		/*
 		 * Non-cyclic: TAILDESC triggers processing up to this BD.
 		 * For one-shot TX (tx_src_addr != 0), only bds[0] is used.
+		 * For finite RX (active_bds > 0), use active_bds - 1.
 		 * For multi-BD transfers, submit through the last BD.
 		 */
-		uint32_t tail_idx = (ch->tx_src_addr != 0) ? 0 : (ch->num_bds - 1);
+		uint32_t tail_idx;
+
+		if (ch->tx_src_addr != 0) {
+			tail_idx = 0;
+		} else if (ch->active_bds > 0) {
+			tail_idx = ch->active_bds - 1;
+		} else {
+			tail_idx = ch->num_bds - 1;
+		}
 
 		chan_write(dev, channel, REG_TAILDESC, (uint32_t)(uintptr_t)&ch->bds[tail_idx]);
 	}
@@ -578,6 +590,23 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 				(void)k_work_submit(&ch->rx_stream_work);
 			}
 		} else {
+			/* Non-streaming finite RX: scan completed BDs to
+			 * compute total bytes received.
+			 */
+			uint32_t total_bytes = 0U;
+			uint32_t ring_count = (ch->active_bds > 0)
+						      ? ch->active_bds
+						      : ch->num_bds;
+			const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
+
+			for (uint32_t i = 0; i < ring_count; i++) {
+				cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
+				if (ch->bds[i].status & BD_STS_CMPLT) {
+					total_bytes += ch->bds[i].status & len_mask;
+				}
+			}
+			ch->last_rx_bytes = total_bytes;
+
 			if (ch->callback) {
 				int status = ch->error ? -EIO : DMA_STATUS_COMPLETE;
 
@@ -644,9 +673,24 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	}
 	ch->cyclic = (dma_cfg->cyclic != 0);
 
+	/* If RX channel is not halted (e.g. prior stream didn't stop cleanly),
+	 * force a soft reset before reconfiguring.
+	 */
+	if (channel == CH_RX) {
+		uint32_t dmasr = chan_read(dev, CH_RX, REG_DMASR);
+
+		if (!(dmasr & DMASR_HALTED)) {
+			(void)do_soft_reset(dev, CH_RX);
+		}
+	}
+
 	/* Calculate BD buffer size.
-	 * If head_block provides a block_size, use it to derive per-BD size
-	 * (total transfer / num_bds). Otherwise fall back to DT buffer region.
+	 * If head_block provides a block_size, use it to derive per-BD size.
+	 *
+	 * For cyclic RX (streaming): spread across all BDs (total / num_bds).
+	 * For non-cyclic RX (finite transfer): use the minimum number of BDs
+	 * needed, with each BD sized up to the hardware max (sg_len_mask).
+	 * Otherwise fall back to DT buffer region.
 	 */
 	size_t total;
 
@@ -661,7 +705,48 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 		return -EINVAL;
 	}
 
-	ch->bd_buf_bytes = (uint32_t)(total / ch->num_bds);
+	const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
+
+	if (channel == CH_RX && !ch->cyclic && dma_cfg->head_block != NULL &&
+	    dma_cfg->head_block->dest_scatter_count > 0) {
+		/* Finite RX with per-burst BD sizing: caller provides
+		 * block_size = bytes per BD (one TLAST burst) and
+		 * dest_scatter_count = number of BDs needed.
+		 */
+		uint32_t per_bd = dma_cfg->head_block->block_size;
+		uint32_t needed = dma_cfg->head_block->dest_scatter_count;
+
+		if (per_bd > len_mask) {
+			LOG_ERR("ch %u: BD size %u exceeds hw max %u",
+				channel, per_bd, len_mask);
+			return -EINVAL;
+		}
+		if (needed > ch->num_bds) {
+			LOG_ERR("ch %u: need %u BDs but only %u available",
+				channel, needed, ch->num_bds);
+			return -EINVAL;
+		}
+		ch->bd_buf_bytes = per_bd;
+		ch->active_bds = needed;
+		total = (size_t)per_bd * needed;
+	} else if (channel == CH_RX && !ch->cyclic && total > 0 && total < (size_t)ch->num_bds * len_mask) {
+		/* Finite RX fallback: single BD if total fits */
+		uint32_t per_bd = (total <= len_mask) ? (uint32_t)total
+						      : (uint32_t)len_mask;
+		uint32_t needed = ((uint32_t)total + per_bd - 1U) / per_bd;
+
+		if (needed > ch->num_bds) {
+			LOG_ERR("ch %u: need %u BDs but only %u available",
+				channel, needed, ch->num_bds);
+			return -EINVAL;
+		}
+		ch->bd_buf_bytes = per_bd;
+		ch->active_bds = needed;
+	} else {
+		ch->bd_buf_bytes = (uint32_t)(total / ch->num_bds);
+		ch->active_bds = 0; /* 0 = use all num_bds */
+	}
+
 	if (ch->bd_buf_bytes == 0) {
 		LOG_ERR("ch %u: buffer region too small for %u BDs", channel, ch->num_bds);
 		return -EINVAL;
@@ -678,6 +763,11 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	} else {
 		ch->tx_src_addr = 0;
 		ch->tx_xfer_size = 0;
+	}
+
+	/* For finite RX, set IRQ threshold to fire after all active BDs complete */
+	if (channel == CH_RX && ch->active_bds > 0 && ch->active_bds <= 255U) {
+		ch->irq_threshold = (uint16_t)ch->active_bds;
 	}
 
 	/* Reset indices */
@@ -848,18 +938,21 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 	 * Running channels get a soft-reset to flush the prefetch
 	 * pipeline and clear stale CMPLT bits.
 	 */
-	uint32_t dmasr = chan_read(dev, CH_RX, REG_DMASR);
+	/* Always soft-reset before reconfiguring.  This clears stale BD
+	 * state from any prior finite transfer and flushes the prefetch
+	 * pipeline.  After reset, the channel is halted and ready for a
+	 * fresh BD ring.
+	 */
+	int reset_ret = do_soft_reset(dev, CH_RX);
 
-	if (!(dmasr & DMASR_HALTED)) {
-		int reset_ret = do_soft_reset(dev, CH_RX);
-
-		if (reset_ret) {
-			return reset_ret;
-		}
+	if (reset_ret) {
+		return reset_ret;
 	}
 
-	/* Update ring parameters */
+	/* Update ring parameters — clear finite transfer state */
 	ch->bd_buf_bytes = bd_bytes;
+	ch->active_bds = 0;
+	ch->error = false;
 	ch->irq_threshold = threshold;
 
 	/*
