@@ -1,0 +1,18 @@
+# Copyright (c) 2026 Moton Intelligent Technology
+# SPDX-License-Identifier: Apache-2.0
+
+config CORTEX_A9_PRIVATE_TIMER
+	bool "Cortex-A9 MPCore Private Timer"
+	depends on CPU_CORTEX_A9
+	depends on GIC
+	depends on DT_HAS_ARM_CORTEX_A9_TWD_TIMER_ENABLED
+	select ARCH_HAS_CUSTOM_BUSY_WAIT
+	select TICKLESS_CAPABLE
+	select TIMER_HAS_64BIT_CYCLE_COUNTER
+	help
+	  Per-CPU private timer driver for ARM Cortex-A9 MPCore.
+
+	  Uses the 32-bit per-CPU Private Timer for interrupt generation
+	  and the 64-bit SCU Global Timer counter for cycle counting.
+	  This avoids the Global Timer compare-register contention that
+	  breaks SMP + tickless mode on Cortex-A9.
