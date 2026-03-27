@@ -54,6 +54,23 @@ static const struct arm_mmu_region mmu_regions[] = {
 
 DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 
+	/*
+	 * AXI DMA buffers — identity-mapped as L1 section entries (1 MiB each).
+	 * This avoids consuming one L2 page table per MiB, which would exhaust
+	 * CONFIG_ARM_MMU_NUM_L2_TABLES for large (>25 MiB) buffers.
+	 * Addresses and sizes come from the DTS axi_dma0 node reg-names.
+	 */
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(axi_dma0))
+	MMU_REGION_FLAT_ENTRY("dma_tx_buf",
+			      DT_REG_ADDR_BY_NAME(DT_NODELABEL(axi_dma0), tx_buf),
+			      DT_REG_SIZE_BY_NAME(DT_NODELABEL(axi_dma0), tx_buf),
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+	MMU_REGION_FLAT_ENTRY("dma_rx_buf",
+			      DT_REG_ADDR_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
+			      DT_REG_SIZE_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+#endif
+
 };
 
 const struct arm_mmu_config mmu_config = {
