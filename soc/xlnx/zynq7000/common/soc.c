@@ -64,11 +64,13 @@ DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 	MMU_REGION_FLAT_ENTRY("dma_tx_buf",
 			      DT_REG_ADDR_BY_NAME(DT_NODELABEL(axi_dma0), tx_buf),
 			      DT_REG_SIZE_BY_NAME(DT_NODELABEL(axi_dma0), tx_buf),
-			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W |
+				      MATTR_MAY_MAP_L1_SECTION),
 	MMU_REGION_FLAT_ENTRY("dma_rx_buf",
 			      DT_REG_ADDR_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
 			      DT_REG_SIZE_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
-			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W |
+				      MATTR_MAY_MAP_L1_SECTION),
 #endif
 
 };
