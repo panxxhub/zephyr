@@ -187,8 +187,6 @@ typedef void (*dma_xlnx_sg_irq_cfg_t)(const struct device *dev);
  * -------------------------------------------------------------------------- */
 struct dma_xlnx_sg_cfg {
 	DEVICE_MMIO_NAMED_ROM(regs);
-	DEVICE_MMIO_NAMED_ROM(tx_buf);
-	DEVICE_MMIO_NAMED_ROM(rx_buf);
 	dma_xlnx_sg_irq_cfg_t irq_config;
 	uintptr_t tx_buf_phys;
 	uintptr_t rx_buf_phys;
@@ -203,8 +201,6 @@ struct dma_xlnx_sg_cfg {
  * -------------------------------------------------------------------------- */
 struct dma_xlnx_sg_data {
 	DEVICE_MMIO_NAMED_RAM(regs);
-	DEVICE_MMIO_NAMED_RAM(tx_buf);
-	DEVICE_MMIO_NAMED_RAM(rx_buf);
 	struct dma_xlnx_sg_chan ch[NUM_CHANNELS];
 };
 
@@ -279,10 +275,9 @@ static inline uintptr_t buf_phys(const struct device *dev, uint32_t channel)
 
 static inline uintptr_t buf_virt(const struct device *dev, uint32_t channel)
 {
-	if (channel == CH_TX) {
-		return DEVICE_MMIO_NAMED_GET(dev, tx_buf);
-	}
-	return DEVICE_MMIO_NAMED_GET(dev, rx_buf);
+	/* VA = PA: DMA buffers are identity-mapped via L1 section entries in
+	 * soc.c, so no DEVICE_MMIO_NAMED_MAP translation is needed. */
+	return buf_phys(dev, channel);
 }
 
 static inline size_t buf_size(const struct device *dev, uint32_t channel)
@@ -1228,14 +1223,11 @@ static int dma_xlnx_sg_init(const struct device *dev)
 	data->ch[CH_RX].rx_stream_user_data = NULL;
 	k_work_init(&data->ch[CH_RX].rx_stream_work, dma_xlnx_sg_rx_stream_work_handler);
 
-	/* Map MMIO regions.
-	 * Register region is mapped uncached (device memory).
-	 * Buffer regions use default (cacheable) mapping — the driver manages
-	 * coherency explicitly via cache_flush() / cache_invd() calls.
+	/* Map register MMIO region uncached (device memory).
+	 * DMA buffer regions are identity-mapped via L1 section entries in soc.c
+	 * (MT_STRONGLY_ORDERED) — no DEVICE_MMIO_NAMED_MAP needed for them.
 	 */
 	DEVICE_MMIO_NAMED_MAP(dev, regs, K_MEM_CACHE_NONE);
-	DEVICE_MMIO_NAMED_MAP(dev, tx_buf, K_MEM_CACHE_WB);
-	DEVICE_MMIO_NAMED_MAP(dev, rx_buf, K_MEM_CACHE_WB);
 
 	/* Soft-reset both channels */
 	int ret = do_soft_reset(dev, CH_TX);
@@ -1293,8 +1285,6 @@ static int dma_xlnx_sg_init(const struct device *dev)
                                                                                                    \
 	static const struct dma_xlnx_sg_cfg dma_xlnx_sg_cfg_##inst = {                             \
 		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(regs, DT_DRV_INST(inst)),                       \
-		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(tx_buf, DT_DRV_INST(inst)),                     \
-		DEVICE_MMIO_NAMED_ROM_INIT_BY_NAME(rx_buf, DT_DRV_INST(inst)),                     \
 		.irq_config = dma_xlnx_sg_irq_config_##inst,                                       \
 		.tx_buf_phys = DT_INST_REG_ADDR_BY_NAME(inst, tx_buf),                             \
 		.rx_buf_phys = DT_INST_REG_ADDR_BY_NAME(inst, rx_buf),                             \
