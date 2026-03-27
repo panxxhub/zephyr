@@ -739,7 +739,8 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	 */
 	size_t total;
 
-	if (dma_cfg->head_block != NULL && dma_cfg->head_block->block_size > 0) {
+	if (channel == CH_RX && dma_cfg->head_block != NULL &&
+	    dma_cfg->head_block->block_size > 0) {
 		total = dma_cfg->head_block->block_size;
 	} else {
 		total = buf_size(dev, channel);
