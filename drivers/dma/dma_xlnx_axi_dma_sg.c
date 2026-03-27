@@ -331,25 +331,68 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 	 * addresses via k_mem_phys_addr() or equivalent.
 	 */
 
-	/* One-shot TX: single BD with caller's buffer address and size */
+	/* TX with caller's buffer: single-BD if it fits, multi-BD otherwise */
 	if (channel == CH_TX && ch->tx_src_addr != 0) {
-		if (ch->tx_xfer_size > len_mask) {
-			LOG_ERR("TX transfer size %u exceeds hardware max %u", ch->tx_xfer_size,
-				len_mask);
-			return -EINVAL;
+		if (ch->tx_xfer_size <= len_mask) {
+			/* Small transfer: single BD */
+			memset(&ch->bds[0], 0, sizeof(ch->bds[0]));
+			ch->bds[0].next_desc = (uint32_t)(uintptr_t)&ch->bds[0];
+			ch->bds[0].next_desc_msb = 0U;
+			ch->bds[0].buf_addr = ch->tx_src_addr;
+			ch->bds[0].buf_addr_msb = 0U;
+			ch->bds[0].control = (ch->tx_xfer_size & len_mask) |
+					     BD_CTRL_SOF | BD_CTRL_EOF;
+			for (int a = 0; a < 5; a++) {
+				ch->bds[0].app[a] = ch->tx_app.app[a];
+			}
+			ch->bds[0].status = 0U;
+			cache_flush(ch->bds, sizeof(struct xlnx_sg_bd));
+			return 0;
 		}
 
-		memset(&ch->bds[0], 0, sizeof(ch->bds[0]));
-		ch->bds[0].next_desc = (uint32_t)(uintptr_t)&ch->bds[0];
-		ch->bds[0].next_desc_msb = 0U;
-		ch->bds[0].buf_addr = ch->tx_src_addr;
-		ch->bds[0].buf_addr_msb = 0U;
-		ch->bds[0].control = (ch->tx_xfer_size & len_mask) | BD_CTRL_SOF | BD_CTRL_EOF;
-		for (int a = 0; a < 5; a++) {
-			ch->bds[0].app[a] = ch->tx_app.app[a];
+		/* Large transfer: one multi-BD packet.
+		 * SOF on first BD, EOF on last. DMA engine streams all BDs
+		 * as one continuous packet with TLAST only at EOF. */
+		uint32_t per_bd = ch->bd_buf_bytes;
+
+		if (per_bd > len_mask) {
+			per_bd = len_mask;
 		}
-		ch->bds[0].status = 0U;
-		cache_flush(ch->bds, sizeof(struct xlnx_sg_bd));
+		uint32_t num_needed = (ch->tx_xfer_size + per_bd - 1U) / per_bd;
+
+		if (num_needed > ch->num_bds) {
+			LOG_ERR("TX needs %u BDs but only %u available", num_needed, ch->num_bds);
+			return -ENOMEM;
+		}
+
+		uint32_t remaining = ch->tx_xfer_size;
+
+		for (uint32_t i = 0; i < num_needed; i++) {
+			uint32_t next = (i + 1) % num_needed;
+			uint32_t chunk = (remaining > per_bd) ? per_bd : remaining;
+			uint32_t flags = 0;
+
+			if (i == 0) {
+				flags |= BD_CTRL_SOF;
+			}
+			if (i == num_needed - 1) {
+				flags |= BD_CTRL_EOF;
+			}
+
+			memset(&ch->bds[i], 0, sizeof(ch->bds[i]));
+			ch->bds[i].next_desc = (uint32_t)(uintptr_t)&ch->bds[next];
+			ch->bds[i].next_desc_msb = 0U;
+			ch->bds[i].buf_addr = ch->tx_src_addr + i * per_bd;
+			ch->bds[i].buf_addr_msb = 0U;
+			ch->bds[i].control = (chunk & len_mask) | flags;
+			for (int a = 0; a < 5; a++) {
+				ch->bds[i].app[a] = ch->tx_app.app[a];
+			}
+			ch->bds[i].status = 0U;
+			remaining -= chunk;
+		}
+
+		cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * num_needed);
 		return 0;
 	}
 
@@ -447,14 +490,23 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 	} else {
 		/*
 		 * Non-cyclic: TAILDESC triggers processing up to this BD.
-		 * For one-shot TX (tx_src_addr != 0), only bds[0] is used.
+		 * For TX with caller buffer, compute last BD from transfer size.
 		 * For finite RX (active_bds > 0), use active_bds - 1.
 		 * For multi-BD transfers, submit through the last BD.
 		 */
 		uint32_t tail_idx;
 
-		if (ch->tx_src_addr != 0) {
-			tail_idx = 0;
+		if (ch->tx_src_addr != 0 && ch->tx_xfer_size > 0 && ch->bd_buf_bytes > 0) {
+			/* Use capped per_bd matching build_bd_ring to avoid divergence */
+			uint32_t per_bd = ch->bd_buf_bytes;
+			uint32_t lm = DEV_CFG(dev)->sg_len_mask;
+
+			if (per_bd > lm) {
+				per_bd = lm;
+			}
+			uint32_t num_used = (ch->tx_xfer_size + per_bd - 1U) / per_bd;
+
+			tail_idx = (num_used > 0) ? (num_used - 1) : 0;
 		} else if (ch->active_bds > 0) {
 			tail_idx = ch->active_bds - 1;
 		} else {
