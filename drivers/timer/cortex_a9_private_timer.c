@@ -19,7 +19,6 @@
 #include <zephyr/sys_clock.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/device_mmio.h>
-#include <zephyr/arch/cpu.h>
 
 /* ------------------------------------------------------------------ */
 /* DTS nodes                                                          */
@@ -124,9 +123,6 @@ static struct k_spinlock lock;
 static uint64_t last_cycle;
 static uint64_t last_tick;
 static uint32_t last_elapsed;
-static int tickless_owner_cpu = -1;
-
-#define NO_TICKLESS_OWNER (-1)
 
 #if defined(CONFIG_TEST)
 const int32_t z_sys_timer_irq_for_test = PT_IRQ;
@@ -218,23 +214,9 @@ static void private_timer_isr(const void *arg)
 {
 	ARG_UNUSED(arg);
 
-	int cpu = arch_curr_cpu()->id;
 	k_spinlock_key_t key = k_spin_lock(&lock);
 
 	pt_clear_isr();
-
-	/*
-	 * In tickless SMP mode, only the current owner CPU is allowed to
-	 * advance kernel time. A previously-owned timer may still fire once
-	 * after ownership moved to another CPU; treat that as a stale local
-	 * interrupt and quiesce it locally.
-	 */
-	if (IS_ENABLED(CONFIG_TICKLESS_KERNEL) &&
-	    tickless_owner_cpu != cpu) {
-		pt_disable();
-		k_spin_unlock(&lock, key);
-		return;
-	}
 
 	uint64_t now = global_timer_count();
 	uint64_t delta = now - last_cycle;
@@ -248,11 +230,11 @@ static void private_timer_isr(const void *arg)
 		/* Periodic mode: auto-reload keeps running. */
 	} else {
 		/*
-		 * One-shot timer has served its purpose. Leave all CPUs
-		 * quiescent until the kernel chooses the next owner via
-		 * sys_clock_set_timeout().
+		 * In tickless mode the one-shot timer has served its purpose.
+		 * Do not synthesize a fallback tick here; the kernel will arm
+		 * the next timeout on whichever CPU makes the next global
+		 * sys_clock_set_timeout() call.
 		 */
-		tickless_owner_cpu = NO_TICKLESS_OWNER;
 		pt_disable();
 	}
 
@@ -271,18 +253,15 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 		return;
 	}
 
-	int cpu = arch_curr_cpu()->id;
 	k_spinlock_key_t key = k_spin_lock(&lock);
 
 	if (idle && ticks == K_TICKS_FOREVER) {
 		/*
-		 * No timeout is currently required anywhere in the system.
-		 * Disarm the local timer on this CPU and drop ownership.
-		 * A stale timer on a previous owner may still fire once,
-		 * but the ISR will recognize it as stale and suppress it.
+		 * Mirror arm_arch_timer.c behavior. If the system has no
+		 * pending timeouts, leave the timer state alone and let the
+		 * CPU idle. A stale local interrupt is harmless because
+		 * spurious sys_clock_announce() calls are permitted.
 		 */
-		tickless_owner_cpu = NO_TICKLESS_OWNER;
-		pt_disable();
 		k_spin_unlock(&lock, key);
 		return;
 	}
@@ -310,7 +289,6 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 
 	uint32_t delay = (uint32_t)(target - elapsed);
 
-	tickless_owner_cpu = cpu;
 	pt_set_oneshot(delay);
 
 	k_spin_unlock(&lock, key);
@@ -403,7 +381,6 @@ static int sys_clock_driver_init(void)
 	last_tick = global_timer_count() / CYC_PER_TICK;
 	last_cycle = last_tick * CYC_PER_TICK;
 	last_elapsed = 0;
-	tickless_owner_cpu = NO_TICKLESS_OWNER;
 
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		pt_set_periodic(CYC_PER_TICK);
