@@ -28,6 +28,8 @@ config CPU_CORTEX_A9
 	select ARMV7_A
 	select CPU_HAS_ICACHE
 	select CPU_HAS_DCACHE
+	select SCHED_IPI_SUPPORTED if SMP
+	select ARCH_HAS_DIRECTED_IPIS if SMP
 	help
 	  This option signifies the use of a Cortex-A9 CPU.
 
