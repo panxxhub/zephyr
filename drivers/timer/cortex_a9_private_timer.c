@@ -124,6 +124,9 @@ static struct k_spinlock lock;
 static uint64_t last_cycle;
 static uint64_t last_tick;
 static uint32_t last_elapsed;
+static int tickless_owner_cpu = -1;
+
+#define NO_TICKLESS_OWNER (-1)
 
 #if defined(CONFIG_TEST)
 const int32_t z_sys_timer_irq_for_test = PT_IRQ;
@@ -171,6 +174,13 @@ static ALWAYS_INLINE void pt_clear_isr(void)
 	sys_write32(PT_ISR_EVENT_FLAG, PT_REG(PT_ISR));
 }
 
+static ALWAYS_INLINE void pt_disable(void)
+{
+	sys_write32(0, PT_REG(PT_CONTROL));
+	pt_clear_isr();
+	barrier_dsync_fence_full();
+}
+
 /*
  * Load the Private Timer with a one-shot countdown.
  * The timer starts immediately and fires an IRQ when it reaches zero.
@@ -178,8 +188,7 @@ static ALWAYS_INLINE void pt_clear_isr(void)
 static ALWAYS_INLINE void pt_set_oneshot(uint32_t cycles)
 {
 	/* Stop timer, clear pending interrupt */
-	sys_write32(0, PT_REG(PT_CONTROL));
-	pt_clear_isr();
+	pt_disable();
 
 	/* Load countdown value and start */
 	sys_write32(cycles, PT_REG(PT_LOAD));
@@ -193,8 +202,7 @@ static ALWAYS_INLINE void pt_set_oneshot(uint32_t cycles)
  */
 static ALWAYS_INLINE void pt_set_periodic(uint32_t cycles)
 {
-	sys_write32(0, PT_REG(PT_CONTROL));
-	pt_clear_isr();
+	pt_disable();
 
 	sys_write32(cycles, PT_REG(PT_LOAD));
 	sys_write32(PT_CTRL_ENABLE | PT_CTRL_AUTO_RELOAD | PT_CTRL_IRQ_ENABLE,
@@ -210,9 +218,23 @@ static void private_timer_isr(const void *arg)
 {
 	ARG_UNUSED(arg);
 
+	int cpu = arch_curr_cpu()->id;
 	k_spinlock_key_t key = k_spin_lock(&lock);
 
 	pt_clear_isr();
+
+	/*
+	 * In tickless SMP mode, only the current owner CPU is allowed to
+	 * advance kernel time. A previously-owned timer may still fire once
+	 * after ownership moved to another CPU; treat that as a stale local
+	 * interrupt and quiesce it locally.
+	 */
+	if (IS_ENABLED(CONFIG_TICKLESS_KERNEL) &&
+	    tickless_owner_cpu != cpu) {
+		pt_disable();
+		k_spin_unlock(&lock, key);
+		return;
+	}
 
 	uint64_t now = global_timer_count();
 	uint64_t delta = now - last_cycle;
@@ -226,22 +248,12 @@ static void private_timer_isr(const void *arg)
 		/* Periodic mode: auto-reload keeps running. */
 	} else {
 		/*
-		 * Tickless: re-arm with a one-tick fallback.
-		 *
-		 * On SMP, sys_clock_set_timeout() may run on a different
-		 * CPU than the one whose ISR just fired.  Since the
-		 * Private Timer is per-CPU banked, only the calling CPU's
-		 * timer gets programmed.  If we stop or mask this CPU's
-		 * timer here, it stays dead until the kernel happens to
-		 * call sys_clock_set_timeout() on this CPU again.
-		 *
-		 * Instead, always re-arm with CYC_PER_TICK so the timer
-		 * never goes silent.  sys_clock_set_timeout() will
-		 * override with the real delay if it runs on this CPU.
-		 * Worst case: an extra tick interrupt — same cost as
-		 * non-tickless periodic mode.
+		 * One-shot timer has served its purpose. Leave all CPUs
+		 * quiescent until the kernel chooses the next owner via
+		 * sys_clock_set_timeout().
 		 */
-		pt_set_oneshot(CYC_PER_TICK);
+		tickless_owner_cpu = NO_TICKLESS_OWNER;
+		pt_disable();
 	}
 
 	k_spin_unlock(&lock, key);
@@ -259,17 +271,21 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 		return;
 	}
 
+	int cpu = arch_curr_cpu()->id;
+	k_spinlock_key_t key = k_spin_lock(&lock);
+
 	if (idle && ticks == K_TICKS_FOREVER) {
 		/*
-		 * No pending timeouts and going idle.  Do NOT stop the
-		 * timer — just leave it masked.  If a timeout was armed
-		 * before we entered idle, stopping would destroy it.
-		 * The original arm_arch_timer.c simply returns here.
+		 * No timeout is currently required anywhere in the system.
+		 * Disarm the local timer on this CPU and drop ownership.
+		 * A stale timer on a previous owner may still fire once,
+		 * but the ISR will recognize it as stale and suppress it.
 		 */
+		tickless_owner_cpu = NO_TICKLESS_OWNER;
+		pt_disable();
+		k_spin_unlock(&lock, key);
 		return;
 	}
-
-	k_spinlock_key_t key = k_spin_lock(&lock);
 
 	uint64_t now = global_timer_count();
 	uint64_t elapsed = now - last_cycle;
@@ -277,8 +293,10 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 
 	if (ticks == K_TICKS_FOREVER) {
 		target = (uint64_t)PT_MAX_CYCLES;
+	} else if (ticks <= 0) {
+		target = elapsed + MIN_DELAY;
 	} else {
-		target = (uint64_t)(last_tick + last_elapsed + ticks)
+		target = (uint64_t)(last_tick + last_elapsed + (uint32_t)ticks)
 			 * CYC_PER_TICK - last_cycle;
 		if (target > PT_MAX_CYCLES) {
 			target = PT_MAX_CYCLES;
@@ -292,6 +310,7 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 
 	uint32_t delay = (uint32_t)(target - elapsed);
 
+	tickless_owner_cpu = cpu;
 	pt_set_oneshot(delay);
 
 	k_spin_unlock(&lock, key);
@@ -359,7 +378,7 @@ void smp_timer_init(void)
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		pt_set_periodic(CYC_PER_TICK);
 	} else {
-		pt_set_oneshot(CYC_PER_TICK);
+		pt_disable();
 	}
 
 	irq_enable(PT_IRQ);
@@ -383,11 +402,13 @@ static int sys_clock_driver_init(void)
 
 	last_tick = global_timer_count() / CYC_PER_TICK;
 	last_cycle = last_tick * CYC_PER_TICK;
+	last_elapsed = 0;
+	tickless_owner_cpu = NO_TICKLESS_OWNER;
 
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		pt_set_periodic(CYC_PER_TICK);
 	} else {
-		pt_set_oneshot(CYC_PER_TICK);
+		pt_disable();
 	}
 
 	irq_enable(PT_IRQ);
