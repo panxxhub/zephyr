@@ -96,7 +96,7 @@ static ALWAYS_INLINE bool thread_defines_time_slice_size(struct k_thread *thread
 
 void k_sched_time_slice_set(int32_t slice, int prio)
 {
-	k_spinlock_key_t key = k_spin_lock(&_sched_spinlock);
+	k_spinlock_key_t key = k_spin_lock(sched_spinlock());
 
 	slice_ticks = k_ms_to_ticks_ceil32(slice);
 	slice_max_prio = prio;
@@ -111,14 +111,14 @@ void k_sched_time_slice_set(int32_t slice, int prio)
 		z_reset_time_slice(_current);
 	}
 
-	k_spin_unlock(&_sched_spinlock, key);
+	k_spin_unlock(sched_spinlock(), key);
 }
 
 #ifdef CONFIG_TIMESLICE_PER_THREAD
 void k_thread_time_slice_set(struct k_thread *thread, int32_t thread_slice_ticks,
 			     k_thread_timeslice_fn_t expired, void *data)
 {
-	K_SPINLOCK(&_sched_spinlock) {
+	K_SPINLOCK(sched_spinlock()) {
 		thread->base.slice_ticks = thread_slice_ticks;
 		thread->base.slice_expired = expired;
 		thread->base.slice_data = data;
@@ -130,13 +130,13 @@ void k_thread_time_slice_set(struct k_thread *thread, int32_t thread_slice_ticks
 /* Called out of each timer and IPI interrupt */
 void z_time_slice(void)
 {
-	k_spinlock_key_t key = k_spin_lock(&_sched_spinlock);
+	k_spinlock_key_t key = k_spin_lock(sched_spinlock());
 	struct k_thread *curr = _current;
 
 #ifdef CONFIG_SWAP_NONATOMIC
 	if (pending_current == curr) {
 		z_reset_time_slice(curr);
-		k_spin_unlock(&_sched_spinlock, key);
+		k_spin_unlock(sched_spinlock(), key);
 		return;
 	}
 	pending_current = NULL;
@@ -147,9 +147,9 @@ void z_time_slice(void)
 		k_thread_timeslice_fn_t handler = curr->base.slice_expired;
 
 		if (handler != NULL) {
-			k_spin_unlock(&_sched_spinlock, key);
+			k_spin_unlock(sched_spinlock(), key);
 			handler(curr, curr->base.slice_data);
-			key = k_spin_lock(&_sched_spinlock);
+			key = k_spin_lock(sched_spinlock());
 		}
 #endif
 		if (!z_is_thread_prevented_from_running(curr)) {
@@ -157,5 +157,5 @@ void z_time_slice(void)
 		}
 		z_reset_time_slice(curr);
 	}
-	k_spin_unlock(&_sched_spinlock, key);
+	k_spin_unlock(sched_spinlock(), key);
 }

@@ -17,7 +17,7 @@ extern void z_check_stack_sentinel(void);
 #define z_check_stack_sentinel() /**/
 #endif /* CONFIG_STACK_SENTINEL */
 
-extern struct k_spinlock _sched_spinlock;
+/* _sched_spinlock declared in ksched.h — use sched_spinlock() helpers */
 
 /* In SMP, the irq_lock() is a spinlock which is implicitly released
  * and reacquired on context switch to preserve the existing
@@ -111,13 +111,13 @@ static ALWAYS_INLINE unsigned int do_swap(unsigned int key,
 	 * have it.  We "release" other spinlocks here.  But we never
 	 * drop the interrupt lock.
 	 */
-	if (is_spinlock && lock != NULL && lock != &_sched_spinlock) {
+	if (is_spinlock && lock != NULL && !is_sched_spinlock(lock)) {
 		k_spin_release(lock);
 	}
 	if (IS_ENABLED(CONFIG_SMP) || IS_ENABLED(CONFIG_SPIN_VALIDATE)) {
 		/* Taking a nested uniprocessor lock in void context is a noop */
-		if (!is_spinlock || lock != &_sched_spinlock) {
-			(void)k_spin_lock(&_sched_spinlock);
+		if (!is_spinlock || !is_sched_spinlock(lock)) {
+			(void)k_spin_lock(sched_spinlock());
 		}
 	}
 
@@ -146,7 +146,7 @@ static ALWAYS_INLINE unsigned int do_swap(unsigned int key,
 #endif /* CONFIG_TIMESLICING */
 
 #ifdef CONFIG_SPIN_VALIDATE
-		z_spin_lock_set_owner(&_sched_spinlock);
+		z_spin_lock_set_owner(sched_spinlock());
 #endif /* CONFIG_SPIN_VALIDATE */
 
 		arch_cohere_stacks(old_thread, NULL, new_thread);
@@ -168,10 +168,10 @@ static ALWAYS_INLINE unsigned int do_swap(unsigned int key,
 			new_thread->switch_handle = NULL;
 			barrier_dmem_fence_full(); /* write barrier */
 		}
-		k_spin_release(&_sched_spinlock);
+		k_spin_release(sched_spinlock());
 		arch_switch(newsh, &old_thread->switch_handle);
 	} else {
-		k_spin_release(&_sched_spinlock);
+		k_spin_release(sched_spinlock());
 	}
 
 	if (is_spinlock) {

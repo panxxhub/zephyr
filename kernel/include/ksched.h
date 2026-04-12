@@ -41,14 +41,53 @@ BUILD_ASSERT(K_LOWEST_APPLICATION_THREAD_PRIO
 #if (CONFIG_MP_MAX_NUM_CPUS == 1)
 #define LOCK_SCHED_SPINLOCK
 #else
-#define LOCK_SCHED_SPINLOCK   K_SPINLOCK(&_sched_spinlock)
+#define LOCK_SCHED_SPINLOCK   K_SPINLOCK(sched_spinlock())
 #endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+#ifdef CONFIG_SCHED_CPU_MASK_PIN_ONLY
+extern struct k_spinlock _sched_spinlock[CONFIG_MP_MAX_NUM_CPUS];
+
+/* Return the scheduler lock for the given CPU index. */
+static ALWAYS_INLINE struct k_spinlock *sched_spinlock_for_cpu(int cpu)
+{
+	return &_sched_spinlock[cpu];
+}
+
+/* Return the scheduler lock for the current CPU (hot path). */
+static ALWAYS_INLINE struct k_spinlock *sched_spinlock(void)
+{
+	return &_sched_spinlock[_current_cpu->id];
+}
+
+/* Check whether a lock pointer is ANY of the per-CPU scheduler locks. */
+static ALWAYS_INLINE bool is_sched_spinlock(struct k_spinlock *lock)
+{
+	return lock >= &_sched_spinlock[0] &&
+	       lock < &_sched_spinlock[CONFIG_MP_MAX_NUM_CPUS];
+}
+#else
 extern struct k_spinlock _sched_spinlock;
+
+static ALWAYS_INLINE struct k_spinlock *sched_spinlock_for_cpu(int cpu)
+{
+	ARG_UNUSED(cpu);
+	return &_sched_spinlock;
+}
+
+static ALWAYS_INLINE struct k_spinlock *sched_spinlock(void)
+{
+	return &_sched_spinlock;
+}
+
+static ALWAYS_INLINE bool is_sched_spinlock(struct k_spinlock *lock)
+{
+	return lock == &_sched_spinlock;
+}
+#endif /* CONFIG_SCHED_CPU_MASK_PIN_ONLY */
 
 extern struct k_thread _thread_dummy;
 
