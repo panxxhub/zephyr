@@ -6,6 +6,7 @@
 #include <zephyr/arch/cpu.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
 
@@ -16,6 +17,12 @@
 /* System Level Control Registers (SLCR) */
 #define SLCR_UNLOCK     0x0008
 #define SLCR_UNLOCK_KEY 0xdf0d
+
+/* Zynq-7000 MPCore SCU */
+#define ZYNQ_SCU_BASE		0xF8F00000U
+#define ZYNQ_SCU_CTRL		(ZYNQ_SCU_BASE + 0x0000U)
+#define ZYNQ_SCU_INV_ALL	(ZYNQ_SCU_BASE + 0x000CU)
+#define ZYNQ_SCU_CTRL_ENABLE	BIT(0)
 #define AXI_GPIO_MMU_ENTRY(id)\
 	MMU_REGION_FLAT_ENTRY("axigpio",\
 			      DT_REG_ADDR(id),\
@@ -80,6 +87,36 @@ const struct arm_mmu_config mmu_config = {
 	.mmu_regions = mmu_regions,
 };
 
+static void zynq_scu_enable(void)
+{
+	uint32_t scu_ctrl;
+
+	/*
+	 * JTAG boots bypass the FSBL, so Zephyr must invalidate the duplicate
+	 * tags and enable the SCU before SMP state becomes cacheable.
+	 */
+	sys_write32(0x0000FFFFU, ZYNQ_SCU_INV_ALL);
+	barrier_dsync_fence_full();
+
+	scu_ctrl = sys_read32(ZYNQ_SCU_CTRL);
+	if ((scu_ctrl & ZYNQ_SCU_CTRL_ENABLE) == 0U) {
+		sys_write32(scu_ctrl | ZYNQ_SCU_CTRL_ENABLE, ZYNQ_SCU_CTRL);
+		barrier_dsync_fence_full();
+		barrier_isync_fence_full();
+	}
+}
+
+static void zynq_enable_smp_mode(void)
+{
+	uint32_t actlr = __get_ACTLR();
+
+	if ((actlr & ACTLR_SMP_Msk) == 0U) {
+		__set_ACTLR(actlr | ACTLR_SMP_Msk);
+		barrier_dsync_fence_full();
+		barrier_isync_fence_full();
+	}
+}
+
 /* Platform-specific early initialization */
 
 void soc_reset_hook(void)
@@ -116,6 +153,14 @@ void soc_reset_hook(void)
 	sctlr &= ~SCTLR_C_Msk;
 	sctlr &= ~SCTLR_A_Msk;
 	__set_SCTLR(sctlr);
+
+#ifdef CONFIG_SMP
+	if (MPIDR_TO_CORE(GET_MPIDR()) == 0U) {
+		zynq_scu_enable();
+	}
+
+	zynq_enable_smp_mode();
+#endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(slcr))
 	mm_reg_t addr = DT_REG_ADDR(DT_NODELABEL(slcr));
