@@ -410,13 +410,14 @@ void z_yield_testing_only(void)
  * deadlocks (but not complex ones involving cycles of 3+ threads!).
  * Acts to release the provided lock before returning.
  */
-static void thread_halt_spin(struct k_thread *thread, k_spinlock_key_t key)
+static void thread_halt_spin(struct k_thread *thread,
+			     struct k_spinlock *lock, k_spinlock_key_t key)
 {
 	if (z_is_thread_halting(_current)) {
 		halt_thread(_current,
 			    z_is_thread_aborting(_current) ? _THREAD_DEAD : _THREAD_SUSPENDED);
 	}
-	k_spin_unlock(sched_spinlock(), key);
+	k_spin_unlock(lock, key);
 	while (z_is_thread_halting(thread)) {
 		unsigned int k = arch_irq_lock();
 
@@ -452,7 +453,9 @@ static ALWAYS_INLINE void z_metairq_preempted_clear(struct k_thread *thread)
 #ifdef IAR_SUPPRESS_ALWAYS_INLINE_WARNING_FLAG
 TOOLCHAIN_DISABLE_WARNING(TOOLCHAIN_WARNING_ALWAYS_INLINE)
 #endif
-static ALWAYS_INLINE void z_thread_halt(struct k_thread *thread, k_spinlock_key_t key,
+static ALWAYS_INLINE void z_thread_halt(struct k_thread *thread,
+					struct k_spinlock *lock,
+					k_spinlock_key_t key,
 					bool terminate)
 {
 	_wait_q_t *wq = &thread->join_queue;
@@ -482,23 +485,23 @@ static ALWAYS_INLINE void z_thread_halt(struct k_thread *thread, k_spinlock_key_
 #endif /* CONFIG_ARCH_HAS_DIRECTED_IPIS */
 #endif /* CONFIG_SMP && CONFIG_SCHED_IPI_SUPPORTED */
 		if (arch_is_in_isr()) {
-			thread_halt_spin(thread, key);
+			thread_halt_spin(thread, lock, key);
 		} else  {
 			add_to_waitq_locked(_current, wq);
-			z_swap(sched_spinlock(), key);
+			z_swap(lock, key);
 		}
 	} else {
 		halt_thread(thread, terminate ? _THREAD_DEAD : _THREAD_SUSPENDED);
 		if ((thread == _current) && !arch_is_in_isr()) {
 			if (z_is_thread_essential(thread)) {
-				k_spin_unlock(sched_spinlock(), key);
+				k_spin_unlock(lock, key);
 				k_panic();
-				key = k_spin_lock(sched_spinlock());
+				key = k_spin_lock(lock);
 			}
-			z_swap(sched_spinlock(), key);
+			z_swap(lock, key);
 			__ASSERT(!terminate, "aborted _current back from dead");
 		} else {
-			k_spin_unlock(sched_spinlock(), key);
+			k_spin_unlock(lock, key);
 		}
 	}
 	/* NOTE: the scheduler lock has been released.  Don't put
@@ -529,17 +532,18 @@ void z_impl_k_thread_suspend(k_tid_t thread)
 		return;
 	}
 
-	k_spinlock_key_t  key = k_spin_lock(sched_spinlock());
+	struct k_spinlock *lock = sched_spinlock_for_thread(thread);
+	k_spinlock_key_t  key = k_spin_lock(lock);
 
 	if (unlikely(z_is_thread_suspended(thread))) {
 
 		/* The target thread is already suspended. Nothing to do. */
 
-		k_spin_unlock(sched_spinlock(), key);
+		k_spin_unlock(lock, key);
 		return;
 	}
 
-	z_thread_halt(thread, key, false);
+	z_thread_halt(thread, lock, key, false);
 
 	SYS_PORT_TRACING_OBJ_FUNC_EXIT(k_thread, suspend, thread);
 }
@@ -706,7 +710,7 @@ void z_thread_timeout(struct _timeout *timeout)
 	struct k_thread *thread = CONTAINER_OF(timeout,
 					       struct k_thread, base.timeout);
 
-	K_SPINLOCK(sched_spinlock()) {
+	K_SPINLOCK(sched_spinlock_for_thread(thread)) {
 		z_sched_wake_thread_locked(thread);
 	}
 }
@@ -1431,14 +1435,15 @@ TOOLCHAIN_ENABLE_WARNING(TOOLCHAIN_WARNING_ALWAYS_INLINE)
 void z_thread_abort(struct k_thread *thread)
 {
 	bool essential = z_is_thread_essential(thread);
-	k_spinlock_key_t key = k_spin_lock(sched_spinlock());
+	struct k_spinlock *lock = sched_spinlock_for_thread(thread);
+	k_spinlock_key_t key = k_spin_lock(lock);
 
 	if (z_is_thread_dead(thread)) {
-		k_spin_unlock(sched_spinlock(), key);
+		k_spin_unlock(lock, key);
 		return;
 	}
 
-	z_thread_halt(thread, key, true);
+	z_thread_halt(thread, lock, key, true);
 
 	if (essential) {
 		__ASSERT(!essential, "aborted essential thread %p", thread);
@@ -1553,6 +1558,10 @@ bool z_sched_wake(_wait_q_t *wait_q, int swap_retval, void *swap_data)
 	struct k_thread *thread;
 	bool ret = false;
 
+	/* Unpend under the local CPU lock.  The caller's object lock
+	 * (semaphore, workqueue, event) serializes wait-queue access;
+	 * the scheduler lock protects thread-state transitions.
+	 */
 	K_SPINLOCK(sched_spinlock()) {
 		thread = _priq_wait_best(&wait_q->waitq);
 
@@ -1562,9 +1571,15 @@ bool z_sched_wake(_wait_q_t *wait_q, int swap_retval, void *swap_data)
 							    swap_data);
 			unpend_thread_no_timeout(thread);
 			z_abort_thread_timeout(thread);
-			ready_thread(thread);
 			ret = true;
 		}
+	}
+
+	/* Ready the thread under its pinned CPU's lock so we never
+	 * mutate a remote run queue without holding its lock.
+	 */
+	if (ret) {
+		z_ready_thread(thread);
 	}
 
 	return ret;
