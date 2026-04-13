@@ -345,10 +345,12 @@ GROUP_START(OCM)
 		*(.ocm_data)
 		*(".ocm_data.*")
 		__ocm_data_end = .;
-	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME(DT_CHOSEN(zephyr_ocm)))
+	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME(DT_CHOSEN(zephyr_ocm)) AT> ROMABLE_REGION)
 
-  __ocm_end = .;
-  __ocm_size = __ocm_end - __ocm_start;
+	__ocm_end = .;
+	__ocm_size = __ocm_end - __ocm_start;
+
+	__ocm_data_load_start = LOADADDR(_OCM_DATA_SECTION_NAME);
 
 GROUP_END(OCM)
 #endif

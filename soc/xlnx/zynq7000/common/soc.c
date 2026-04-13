@@ -3,9 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <string.h>
+
 #include <zephyr/arch/cpu.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/linker/linker-defs.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
@@ -42,7 +45,7 @@ static const struct arm_mmu_region mmu_regions[] = {
 	MMU_REGION_FLAT_ENTRY("ocm",
 			      DT_REG_ADDR(DT_CHOSEN(zephyr_ocm)),
 			      DT_REG_SIZE(DT_CHOSEN(zephyr_ocm)),
-			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+			      MT_NORMAL | MPERM_R | MPERM_W),
 	/* ARM Arch timer, GIC are covered by the MPCore mapping */
 
 /* GEMs */
@@ -115,6 +118,21 @@ static void zynq_enable_smp_mode(void)
 		barrier_dsync_fence_full();
 		barrier_isync_fence_full();
 	}
+}
+
+/*
+ * Copy .ocm_data from its ROM load address (in DDR) to OCM.
+ * On Zynq-7000 there is no XIP — the bootloader/JTAG loads the entire
+ * image into DDR — so the xip.c copy path never runs.  We do the copy
+ * here in soc_early_init_hook(), which fires after the MMU is up but
+ * before any Zephyr subsystem init that might touch OCM data.
+ */
+void soc_early_init_hook(void)
+{
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm))
+	memcpy(&__ocm_data_start, &__ocm_data_load_start,
+	       __ocm_data_end - __ocm_data_start);
+#endif
 }
 
 /* Platform-specific early initialization */
