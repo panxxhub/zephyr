@@ -45,7 +45,10 @@ static const struct arm_mmu_region mmu_regions[] = {
 	MMU_REGION_FLAT_ENTRY("ocm",
 			      DT_REG_ADDR(DT_CHOSEN(zephyr_ocm)),
 			      DT_REG_SIZE(DT_CHOSEN(zephyr_ocm)),
-			      MT_NORMAL | MPERM_R | MPERM_W),
+			      MT_NORMAL | MATTR_SHARED |
+				      MATTR_CACHE_OUTER_WB_WA |
+				      MATTR_CACHE_INNER_WB_WA |
+				      MPERM_R | MPERM_W),
 	/* ARM Arch timer, GIC are covered by the MPCore mapping */
 
 /* GEMs */
