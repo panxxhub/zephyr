@@ -46,6 +46,10 @@ void arch_data_copy(void)
 	arch_early_memcpy(&__dtcm_data_start, &__dtcm_data_load_start,
 		       __dtcm_data_end - __dtcm_data_start);
 #endif
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm))
+	arch_early_memcpy(&__ocm_data_start, &__ocm_data_load_start,
+		       __ocm_data_end - __ocm_data_start);
+#endif
 #ifdef CONFIG_CODE_DATA_RELOCATION
 	extern void data_copy_xip_relocation(void);
 
