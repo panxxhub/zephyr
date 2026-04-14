@@ -395,7 +395,7 @@ SECTIONS
 
     /* [mapping:esp_psram] */
     *libzephyr.a:mmu_psram_flash.*(.literal .literal.* .text .text.*)
-    *libzephyr.a:esp_psram_impl_quad.*(.literal .literal.* .text .text.*)
+    *libzephyr.a:esp_psram_impl_ap_quad.*(.literal .literal.* .text .text.*)
     *libzephyr.a:esp_psram_impl_octal.*(.literal .literal.* .text .text.*)
 
     /* [mapping:hal] */
@@ -644,7 +644,7 @@ SECTIONS
     /* [mapping:esp_psram] */
     *libzephyr.a:mmu_psram_flash.*(.rodata .rodata.*)
     *libzephyr.a:esp_psram_impl_octal.*(.rodata .rodata.*)
-    *libzephyr.a:esp_psram_impl_quad.*(.rodata .rodata.*)
+    *libzephyr.a:esp_psram_impl_ap_quad.*(.rodata .rodata.*)
 
     /* [mapping:hal] */
     *libzephyr.a:efuse_hal.*(.rodata .rodata.*)
@@ -775,8 +775,8 @@ SECTIONS
   } GROUP_DATA_LINK_IN(RAMABLE_REGION, ROMABLE_REGION)
 #endif /* CONFIG_ESP_SIMPLE_BOOT */
 
-  #include <snippets-data-sections.ld>
   #include <zephyr/linker/common-ram.ld>
+  #include <snippets-data-sections.ld>
   #include <snippets-ram-sections.ld>
   #include <zephyr/linker/cplusplus-ram.ld>
   #include <zephyr/linker/kobject-data.ld>

@@ -19,6 +19,12 @@
 
 LOG_MODULE_REGISTER(stm32_temp, CONFIG_SENSOR_LOG_LEVEL);
 
+#ifdef CONFIG_STM32_HAL2
+#define STM32_ADC_COMMON_INSTANCE	ADC_COMMON_INSTANCE
+#else /* CONFIG_STM32_HAL2 */
+#define STM32_ADC_COMMON_INSTANCE	__LL_ADC_COMMON_INSTANCE
+#endif /* CONFIG_STM32_HAL2 */
+
 #define CAL_RES			12U
 #define MAX_CALIB_POINTS	2
 
@@ -90,9 +96,9 @@ struct stm32_temp_config {
 
 static void stm32_temp_enable_tempsensor_channel(ADC_TypeDef *adc)
 {
-	const uint32_t path = LL_ADC_GetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(adc));
+	const uint32_t path = LL_ADC_GetCommonPathInternalCh(STM32_ADC_COMMON_INSTANCE(adc));
 
-	LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(adc),
+	LL_ADC_SetCommonPathInternalCh(STM32_ADC_COMMON_INSTANCE(adc),
 					path | LL_ADC_PATH_INTERNAL_TEMPSENSOR);
 
 	k_usleep(LL_ADC_DELAY_TEMPSENSOR_STAB_US);
@@ -100,9 +106,9 @@ static void stm32_temp_enable_tempsensor_channel(ADC_TypeDef *adc)
 
 __maybe_unused static void stm32_temp_disable_tempsensor_channel(ADC_TypeDef *adc)
 {
-	const uint32_t path = LL_ADC_GetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(adc));
+	const uint32_t path = LL_ADC_GetCommonPathInternalCh(STM32_ADC_COMMON_INSTANCE(adc));
 
-	LL_ADC_SetCommonPathInternalCh(__LL_ADC_COMMON_INSTANCE(adc),
+	LL_ADC_SetCommonPathInternalCh(STM32_ADC_COMMON_INSTANCE(adc),
 					path & ~LL_ADC_PATH_INTERNAL_TEMPSENSOR);
 }
 
@@ -291,7 +297,7 @@ static int read_calibration_data(const struct stm32_temp_config *cfg,
 #  endif
 
 #  if defined(CONFIG_SOC_SERIES_STM32H5X)
-	/* Re-enable the ICACHE (unconditonally - it should always be turned on) */
+	/* Re-enable the ICACHE (unconditionally - it should always be turned on) */
 	sys_cache_instr_enable();
 #  endif /* CONFIG_SOC_SERIES_STM32H5X */
 # endif /* CONFIG_STM32_TEMP_READ_CALIB_VIA_NVMEM */

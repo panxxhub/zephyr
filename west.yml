@@ -147,7 +147,7 @@ manifest:
       groups:
         - fs
     - name: hal_adi
-      revision: fc36ee1f5118caa62d9c151cf2e47c193d18d926
+      revision: 44545c0b31a765c702132f22e797271c3f111eae
       path: modules/hal/adi
       groups:
         - hal
@@ -172,7 +172,7 @@ manifest:
       groups:
         - hal
     - name: hal_espressif
-      revision: cbf74978350266a45edbfb4508553a3990341dd2
+      revision: b7953b8019361d09e613f7011d2ccc41b984d087
       path: modules/hal/espressif
       west-commands: west/west-commands.yml
       groups:
@@ -198,22 +198,22 @@ manifest:
       groups:
         - hal
     - name: hal_microchip
-      revision: f35096e9b10a002bc4f319ac22382c1abaaf6af7
+      revision: 86f3ea6b389d860332bd81ae8b97543def619395
       path: modules/hal/microchip
       groups:
         - hal
     - name: hal_nordic
-      revision: 70c1b32dd68753b0604beab377392ed5ebc19176
+      revision: 44fd3d44b15cb75f80a25b4679f91d2787e28664
       path: modules/hal/nordic
       groups:
         - hal
     - name: hal_nuvoton
-      revision: 8f1bf948a94cf59926ea7b686985e1d6c6f954c7
+      revision: fe26f3a5b3b85fb6b61cc3f744f195e3ab391194
       path: modules/hal/nuvoton
       groups:
         - hal
     - name: hal_nxp
-      revision: b342e847b851e2c3e2d7d909a8c4eb871164f9a6
+      revision: 2c2f28ac333e995d7279777409817c4b4f92c1ec
       path: modules/hal/nxp
       groups:
         - hal
@@ -258,7 +258,7 @@ manifest:
       groups:
         - hal
     - name: hal_stm32
-      revision: b6c5718872a4e08b2754e5c5c0ebcf5019a65330
+      revision: 39130f29ae37c1db34095478ca02b6419b70dcdc
       path: modules/hal/stm32
       groups:
         - hal
@@ -273,7 +273,7 @@ manifest:
       groups:
         - hal
     - name: hal_ti
-      revision: b0347dba143798dafa3b57babfb754228398e5c5
+      revision: afbcfffd393be03ca2c9b41f9ce8d94a4c2f2fbd
       path: modules/hal/ti
       groups:
         - hal
@@ -294,7 +294,7 @@ manifest:
         - hal
     - name: hostap
       path: modules/lib/hostap
-      revision: 849cff2b2eb3532cfa829df9003f194ba3bd1919
+      revision: aa993679725360c1e370c9695960c6730cb07e8b
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
       path: modules/lib/liblc3
@@ -324,18 +324,18 @@ manifest:
       revision: 85aa60d18b3d5e5588d7b247abf90198f07c8a63
       path: modules/lib/gui/lvgl
     - name: mbedtls
-      revision: 26158d1c012477e77765d138b26a791db917c881
+      revision: a3e190fe44c78d1ba67f55979e1257328cc7d0d8
       path: modules/crypto/mbedtls
       groups:
         - crypto
     - name: mbedtls-3.6 # Required for TF-M build until we bump it to v2.3
       repo-path: mbedtls
-      revision: 93344a458295c891f71fe31beaa3a3a8d8057790
+      revision: a00e23de17b6b0a0de28e180cb186da6f0008836
       path: modules/crypto/mbedtls-3.6
       groups:
         - crypto
     - name: mcuboot
-      revision: cf5810201c84d6e266aeda2abdab80854066ac08
+      revision: 2d42e8eadcdb76737f99a0e03e6c6e322f8f1639
       path: bootloader/mcuboot
       groups:
         - bootloader
@@ -345,8 +345,8 @@ manifest:
         - debug
       revision: 5a9d6055b62edc54566d6d0034d9daec91749b98
     - name: mldsa-native
-      revision: 5772b4f4a0105694b1203abb582273f78fa951b7
-      path: modules/crypto/mbedtls/tf-psa-crypto/drivers/pqpc/mldsa-native
+      revision: 3fc19982839305d305071f0de0c540bc9c9bea8a
+      path: modules/crypto/mldsa-native
       groups:
         - crypto
     - name: nanopb
@@ -358,7 +358,7 @@ manifest:
       groups:
         - tools
     - name: nrf_hw_models
-      revision: 2b09581c7654f4dfd38681270350c9ae6b0438a2
+      revision: 158b9710d6e10c57b2c623f8f4178f0bbc85c23f
       path: modules/bsim_hw_models/nrf_hw_models
     - name: nrf_wifi
       revision: cebea8e27ceb91a7d4580d17db65f93669befe72
@@ -395,8 +395,8 @@ manifest:
         - testing
         - tee
     - name: tf-psa-crypto
-      revision: 6820f1dadc67c289d2dc63aec495519c9d589d8e
-      path: modules/crypto/mbedtls/tf-psa-crypto
+      revision: dc575a2ddcc8cb16275d24c42a52eaf79ebe2231
+      path: modules/crypto/tf-psa-crypto
       groups:
         - crypto
     - name: trusted-firmware-a
@@ -405,7 +405,7 @@ manifest:
       groups:
         - tee
     - name: trusted-firmware-m
-      revision: 7e8bf231496cc4d43b2fab0bc133425b47756065
+      revision: 9a4cb1a280b63a5e66bd469e82eb75f2b3e05a78
       path: modules/tee/tf-m/trusted-firmware-m
       groups:
         - tee
