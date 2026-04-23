@@ -523,6 +523,7 @@ static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 static int mc_ytphy_init(const struct device *dev)
 {
 	struct mc_ytphy_data *const data = dev->data;
+	const struct mc_ytphy_config *const cfg = dev->config;
 	int ret;
 
 	k_sem_init(&data->sem, 1, 1);
@@ -531,14 +532,27 @@ static int mc_ytphy_init(const struct device *dev)
 	data->dev = dev;
 	data->cb = NULL;
 
+	if (!device_is_ready(cfg->mdio)) {
+		LOG_ERR_DEVICE_NOT_READY(cfg->mdio);
+		return -ENODEV;
+	}
+
 	if (mc_ytphy_get_id(dev, NULL)) {
 		return -EIO;
 	}
 
 	/* set default reg space */
-	mc_ytphy_write_ext(dev, YT8521_REG_SPACE_SELECT_REG, YT8521_RSSR_UTP_SPACE);
+	ret = mc_ytphy_write_ext(dev, YT8521_REG_SPACE_SELECT_REG, YT8521_RSSR_UTP_SPACE);
+	if (ret) {
+		LOG_ERR("PHY (%d) failed to select UTP register space", cfg->phy_addr);
+		return ret;
+	}
 
-	mc_ytphy_modify_ext(dev, YTPHY_SYNCE_CFG_REG, YT8521_SCR_SYNCE_ENABLE, 0);
+	ret = mc_ytphy_modify_ext(dev, YTPHY_SYNCE_CFG_REG, YT8521_SCR_SYNCE_ENABLE, 0);
+	if (ret) {
+		LOG_ERR("PHY (%d) failed to disable SyncE", cfg->phy_addr);
+		return ret;
+	}
 
 	/* Reset PHY */
 	ret = mc_ytphy_soft_reset(dev);
@@ -547,11 +561,17 @@ static int mc_ytphy_init(const struct device *dev)
 	}
 
 	/* Enable clock delay */
-	mc_ytphy_cfg_clock_delay(dev);
+	ret = mc_ytphy_cfg_clock_delay(dev);
+	if (ret) {
+		LOG_ERR("PHY (%d) failed to configure RGMII delays", cfg->phy_addr);
+		return ret;
+	}
 
-	mc_ytphy_resume(dev);
-
-	const struct mc_ytphy_config *const cfg = dev->config;
+	ret = mc_ytphy_resume(dev);
+	if (ret) {
+		LOG_ERR("PHY (%d) failed to resume from power save", cfg->phy_addr);
+		return ret;
+	}
 
 	LOG_INF("Motorcomm YT8521 PHY %d initialized", cfg->phy_addr);
 	return 0;
@@ -573,7 +593,12 @@ static int mc_ytphy_initialize_dynamic_link(const struct device *dev)
 	k_work_init_delayable(&data->monitor_work, monitor_work_handler);
 
 	/* Advertise default speeds */
-	mc_ytphy_cfg_link(dev, config->default_speeds, 0);
+	ret = mc_ytphy_cfg_link(dev, config->default_speeds, 0);
+	if ((ret < 0) && (ret != -EALREADY)) {
+		LOG_ERR("PHY (%d) failed to configure advertised speeds (mask=0x%x, err=%d)",
+			config->phy_addr, config->default_speeds, ret);
+		return ret;
+	}
 
 	/* This will schedule the monitor work, if not already scheduled by mc_ytphy_cfg_link(). */
 	k_work_schedule(&data->monitor_work, K_NO_WAIT);
