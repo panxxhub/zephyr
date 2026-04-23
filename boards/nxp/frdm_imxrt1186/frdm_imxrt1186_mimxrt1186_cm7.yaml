@@ -18,6 +18,9 @@ supported:
   - gpio
   - can
   - uart
+  - hwinfo
   - mbox
   - i2c
+  - watchdog
+  - pwm
 vendor: nxp

@@ -147,7 +147,7 @@ manifest:
       groups:
         - fs
     - name: hal_adi
-      revision: 44545c0b31a765c702132f22e797271c3f111eae
+      revision: 1da695cbfbbaefcf166a22165702a7442d5e39c0
       path: modules/hal/adi
       groups:
         - hal
@@ -157,7 +157,7 @@ manifest:
       groups:
         - hal
     - name: hal_ambiq
-      revision: 21565be7baa02f03d27a734bf9939c0dcb3cfec9
+      revision: c03d2f9902cfc3ff0d3f78ead538e9726251f7f9
       path: modules/hal/ambiq
       groups:
         - hal
@@ -172,7 +172,7 @@ manifest:
       groups:
         - hal
     - name: hal_espressif
-      revision: b7953b8019361d09e613f7011d2ccc41b984d087
+      revision: 15789ec576bdb3397c6fc39542b0d9b534d98d2d
       path: modules/hal/espressif
       west-commands: west/west-commands.yml
       groups:
@@ -203,17 +203,17 @@ manifest:
       groups:
         - hal
     - name: hal_nordic
-      revision: 44fd3d44b15cb75f80a25b4679f91d2787e28664
+      revision: 0424db2d8320cfe417af5675b5bfd2b9a8b43d23
       path: modules/hal/nordic
       groups:
         - hal
     - name: hal_nuvoton
-      revision: fe26f3a5b3b85fb6b61cc3f744f195e3ab391194
+      revision: 369198f7f7c034b609a4e530e3ecab74f859af09
       path: modules/hal/nuvoton
       groups:
         - hal
     - name: hal_nxp
-      revision: 2c2f28ac333e995d7279777409817c4b4f92c1ec
+      revision: ef7e991a8e65f154c7c38f183ae8cc4f122ed0ce
       path: modules/hal/nxp
       groups:
         - hal
@@ -273,7 +273,7 @@ manifest:
       groups:
         - hal
     - name: hal_ti
-      revision: afbcfffd393be03ca2c9b41f9ce8d94a4c2f2fbd
+      revision: e66677c8c8d8b5e521c744f6b9788137b41b98fc
       path: modules/hal/ti
       groups:
         - hal
@@ -294,7 +294,7 @@ manifest:
         - hal
     - name: hostap
       path: modules/lib/hostap
-      revision: aa993679725360c1e370c9695960c6730cb07e8b
+      revision: 970cc28c58ab86cfc34a5d6c7486222f998b24dc
     - name: liblc3
       revision: 48bbd3eacd36e99a57317a0a4867002e0b09e183
       path: modules/lib/liblc3
@@ -335,7 +335,7 @@ manifest:
       groups:
         - crypto
     - name: mcuboot
-      revision: 2d42e8eadcdb76737f99a0e03e6c6e322f8f1639
+      revision: ee39e2d694bd827ffd1bebbce2f571a9154e6ec2
       path: bootloader/mcuboot
       groups:
         - bootloader
@@ -353,7 +353,7 @@ manifest:
       revision: 5499fd4c9a478f8139eeb07a82c3b4468d6067f7
       path: modules/lib/nanopb
     - name: net-tools
-      revision: 64d7acc661ae2772282570f21beab85d02f2f35c
+      revision: c3431f482ea8a7b570fa4573aa5d35875b7f2a23
       path: tools/net-tools
       groups:
         - tools

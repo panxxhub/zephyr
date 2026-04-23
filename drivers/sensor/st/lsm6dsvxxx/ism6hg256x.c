@@ -410,6 +410,9 @@ static int32_t ism6hg256x_gyro_set_mode(const struct device *dev, int32_t mode)
 	case 1: /* High Accuracy */
 		mode = ISM6HG256X_GY_HIGH_ACCURACY_ODR_MD;
 		break;
+	case 3: /* ODR triggered */
+		mode = ISM6HG256X_GY_ODR_TRIGGERED_MD;
+		break;
 	case 4: /* Sleep */
 		mode = ISM6HG256X_GY_SLEEP_MD;
 		break;
@@ -447,6 +450,9 @@ static int32_t ism6hg256x_gyro_get_mode(const struct device *dev, int32_t *mode)
 		break;
 	case ISM6HG256X_GY_HIGH_ACCURACY_ODR_MD:
 		*mode = 1;
+		break;
+	case ISM6HG256X_GY_ODR_TRIGGERED_MD:
+		*mode = 3;
 		break;
 	case ISM6HG256X_GY_SLEEP_MD:
 		*mode = 4;
@@ -719,6 +725,9 @@ static void ism6hg256x_config_fifo(const struct device *dev, struct trigger_conf
 	 * Temporarily set Accel and gyro odr same as sensor fusion LP in order to
 	 * make the SFLP gbias setting effective. Then restore it to saved values.
 	 */
+	uint8_t xl_odr_tmp = data->accel_freq;
+	uint8_t gy_odr_tmp = data->gyro_freq;
+
 	switch (sflp_odr) {
 	case LSM6DSVXXX_DT_SFLP_ODR_AT_480Hz:
 		ism6hg256x_accel_set_odr_raw(dev, LSM6DSVXXX_DT_ODR_AT_480Hz);
@@ -759,8 +768,8 @@ static void ism6hg256x_config_fifo(const struct device *dev, struct trigger_conf
 	ism6hg256x_sflp_game_gbias_set(ctx, &gbias);
 
 	/* restore accel/gyro odr to saved values */
-	ism6hg256x_accel_set_odr_raw(dev, data->accel_freq);
-	ism6hg256x_gyro_set_odr_raw(dev, data->gyro_freq);
+	ism6hg256x_accel_set_odr_raw(dev, xl_odr_tmp);
+	ism6hg256x_gyro_set_odr_raw(dev, gy_odr_tmp);
 
 	/* Set pin interrupt (fifo_th could be on or off) */
 	if ((config->drdy_pin == 1) || (ON_I3C_BUS(config) && (!I3C_INT_PIN(config)))) {
