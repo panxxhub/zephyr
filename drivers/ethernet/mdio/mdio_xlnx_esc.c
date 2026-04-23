@@ -152,7 +152,11 @@ static int mdio_xlnx_esc_init(const struct device *dev)
 {
 	struct mdio_xlnx_esc_data *priv = dev->data;
 
-	DEVICE_MMIO_MAP(dev, K_MEM_PERM_RW);
+	/* ESC register space is shared with the main ESC driver and must stay
+	 * strongly ordered / uncached. A cached alias here can break MDIO busy
+	 * polling and command visibility on MMU-enabled Zynq targets.
+	 */
+	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
 	k_mutex_init(&priv->mutex);
 
 	LOG_DBG("ESC MDIO bus initialized (port %u)",
