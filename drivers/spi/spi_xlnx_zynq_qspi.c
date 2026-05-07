@@ -50,11 +50,22 @@ LOG_MODULE_REGISTER(spi_xlnx_zynq_qspi, CONFIG_SPI_LOG_LEVEL);
 #define CR_CPHA		BIT(2)	       /* Clock phase */
 #define CR_BAUD_SHIFT	3
 #define CR_BAUD_MASK	GENMASK(5, 3)  /* Baud rate divider */
+#define CR_FIFO_WIDTH	(0x3 << 6)     /* bits[7:6]: data word size. Must be
+					* 0x3 (32-bit) for the controller to
+					* function — reset state from BootROM
+					* may leave it at 0 (reserved/invalid),
+					* in which case TXD/RXD bytes don't
+					* shift correctly and reads return 0. */
 #define CR_REF_CLK	BIT(8)	       /* Reference clock select */
 #define CR_PCS		BIT(10)	       /* Peripheral chip select (0=assert) */
 #define CR_MANCS	BIT(14)	       /* Manual chip select */
 #define CR_MANSTARTEN	BIT(15)	       /* Manual start enable */
 #define CR_MANSTARTCOM	BIT(16)	       /* Manual start command (trigger) */
+#define CR_HOLDB_DR	BIT(19)	       /* Drive HOLD_B pin high (must be set
+					* whenever a SPI-NOR flash is the slave —
+					* otherwise the chip's HOLD function pulls
+					* MISO low and reads return 0x00). Matches
+					* XQSPIPS_HOLD_B_DRIVE_OPTION in the BSP. */
 #define CR_ENDIAN	BIT(26)	       /* 0=little, 1=big */
 #define CR_IFMODE	BIT(31)	       /* 0=I/O mode, 1=linear mode */
 
@@ -132,7 +143,7 @@ static int zynq_qspi_configure(const struct device *dev,
 	}
 
 	/* Build CR: master, manual CS (deasserted), manual start enable */
-	cr = CR_MSTREN | CR_MANCS | CR_MANSTARTEN | CR_PCS;
+	cr = CR_MSTREN | CR_MANCS | CR_MANSTARTEN | CR_HOLDB_DR | CR_FIFO_WIDTH | CR_PCS;
 
 	if (config->operation & SPI_MODE_CPOL) {
 		cr |= CR_CPOL;
@@ -222,8 +233,14 @@ static int zynq_qspi_transceive(const struct device *dev,
 			}
 		}
 
-		/* Read RX byte and clear status */
-		uint8_t rx_byte = (uint8_t)qspi_read(dev, QSPI_RXD);
+		/* Read RX byte and clear status. With FIFO_WIDTH=32-bit and
+		 * TXD1 (1-byte TX) the controller delivers each received byte
+		 * at [31:24] of RXD, with previous bytes shifted right by 8
+		 * (i.e. RXD acts as a 4-deep shift register). NOT [7:0] as a
+		 * naive cast assumes — discovered via a byte-level dump that
+		 * showed RXD accumulating as 0x00000000 → 0xef000000 →
+		 * 0x40ef0000 → 0x1940ef00 across a JEDEC RDID transaction. */
+		uint8_t rx_byte = (uint8_t)(qspi_read(dev, QSPI_RXD) >> 24);
 
 		qspi_write(dev, QSPI_ISR, ISR_RX_NEMPTY);
 
@@ -287,7 +304,7 @@ static int zynq_qspi_init(const struct device *dev)
 	/* Disable SPI, configure, then enable */
 	qspi_write(dev, QSPI_ER, 0);
 	qspi_write(dev, QSPI_CR,
-		    CR_MSTREN | CR_MANCS | CR_MANSTARTEN | CR_PCS);
+		    CR_MSTREN | CR_MANCS | CR_MANSTARTEN | CR_HOLDB_DR | CR_FIFO_WIDTH | CR_PCS);
 
 	/* Disable all interrupts (polling mode) */
 	qspi_write(dev, QSPI_IDR, 0x7F);
