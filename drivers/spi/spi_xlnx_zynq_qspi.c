@@ -2,14 +2,22 @@
  * Copyright (c) 2025 Moton Intelligent Equipment
  * SPDX-License-Identifier: Apache-2.0
  *
- * Zynq-7000 PS Quad-SPI controller driver (polling mode).
+ * Zynq-7000 PS Quad-SPI controller driver (polling mode, FIFO burst).
  * Reference: UG585 Zynq-7000 TRM, Chapter 12.
  *
- * This is a full-duplex byte-at-a-time SPI controller. RX bytes are
- * produced for every TX byte. Callers that send command/address in TX
- * and expect payload-only in RX MUST use NOP RX buffers (buf=NULL) for
- * the command phase, as spi_nor.c does. Callers that omit NOP segments
- * will get command-phase junk in the RX buffer.
+ * Full-duplex SPI controller — RX bytes are produced for every TX byte.
+ * Callers that send command/address in TX and expect payload-only in RX
+ * MUST use NOP RX buffers (buf=NULL) for the command phase, as spi_nor.c
+ * does. Callers that omit NOP segments will get command-phase junk in
+ * the RX buffer.
+ *
+ * Throughput model: the controller has a 63-deep × 32-bit TX FIFO and a
+ * matching RX FIFO. transceive() chunks each transaction into bursts of
+ * up to 252 bytes (63 slots × 4 bytes via TXD0). Each burst writes all
+ * slots into the TX FIFO, fires a single MANSTARTCOM, then drains the
+ * RX FIFO. This amortises the per-byte register-write overhead across
+ * the burst — the previous TXD1 byte-at-a-time path required one
+ * MANSTARTCOM + one ISR poll per byte.
  */
 
 #define DT_DRV_COMPAT xlnx_zynq_qspi
@@ -17,6 +25,8 @@
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(spi_xlnx_zynq_qspi, CONFIG_SPI_LOG_LEVEL);
 
@@ -178,7 +188,137 @@ static void zynq_qspi_cs_deassert(const struct device *dev)
 	qspi_write(dev, QSPI_CR, cr);
 }
 
-/* ── Transfer (polling, byte-at-a-time) ─────────────────────────── */
+/* ── FIFO burst transfer ─────────────────────────────────────────── */
+
+#define QSPI_FIFO_DEPTH 63U                          /* TX/RX FIFO words */
+#define QSPI_BURST_MAX  (QSPI_FIFO_DEPTH * 4U)        /* 252 bytes per burst */
+#define QSPI_RX_TIMEOUT 100000U                       /* polling iterations */
+
+/* Pack 1..4 source bytes (LE) into a TXDn write. Byte 0 is sent first on
+ * the SPI bus. TXD0 takes 4 bytes, TXD1/2/3 take 1/2/3 bytes (the rest of
+ * the 32-bit word is don't-care).
+ */
+static inline void zynq_qspi_txd_write(const struct device *dev,
+				       const uint8_t *src, uint8_t width)
+{
+	uint32_t word = (uint32_t)src[0];
+
+	if (width >= 2U) {
+		word |= (uint32_t)src[1] << 8;
+	}
+	if (width >= 3U) {
+		word |= (uint32_t)src[2] << 16;
+	}
+	if (width == 4U) {
+		word |= (uint32_t)src[3] << 24;
+	}
+
+	switch (width) {
+	case 1U: qspi_write(dev, QSPI_TXD1, word); break;
+	case 2U: qspi_write(dev, QSPI_TXD2, word); break;
+	case 3U: qspi_write(dev, QSPI_TXD3, word); break;
+	case 4U: qspi_write(dev, QSPI_TXD0, word); break;
+	}
+}
+
+/* Unpack one RX FIFO entry (32 bits) into 1..4 dst bytes.
+ *
+ * The RX shifter is right-shift-into-top: each received bit enters at
+ * bit 31 and shifts existing bits right by 1, so an N-byte transfer
+ * leaves the data top-aligned in the FIFO slot. After N bytes received
+ * (in chronological order b0..b{N-1}):
+ *
+ *   width=4 (TXD0): RXD = (b3<<24)|(b2<<16)|(b1<<8)|b0          [LE]
+ *   width=3 (TXD3): RXD = (b2<<24)|(b1<<16)|(b0<<8)|0
+ *   width=2 (TXD2): RXD = (b1<<24)|(b0<<16)|0
+ *   width=1 (TXD1): RXD = (b0<<24)|0
+ *
+ * General form: byte K (Kth received) sits at bit ((4-N+K)*8). Empirical
+ * baseline: a JEDEC RDID via TXD1 accumulates 0x00000000 → 0xef000000 →
+ * 0x40ef0000 → 0x1940ef00 across 4 separate 1-byte transfers — same shift
+ * pattern as multi-byte TXDn used here.
+ */
+static inline void zynq_qspi_rxd_unpack(uint32_t rxd, uint8_t *dst, uint8_t width)
+{
+	uint32_t shift = (4U - width) * 8U;
+
+	for (uint8_t k = 0; k < width; k++) {
+		dst[k] = (uint8_t)(rxd >> (shift + (uint32_t)k * 8U));
+	}
+}
+
+/* Drain one RX FIFO slot: poll RX_NEMPTY, read RXD, clear ISR, optionally
+ * unpack into `dst` (NULL = discard).
+ */
+static inline int zynq_qspi_drain_slot(const struct device *dev,
+				       uint8_t *dst, uint8_t width)
+{
+	uint32_t timeout = QSPI_RX_TIMEOUT;
+
+	while (!(qspi_read(dev, QSPI_ISR) & ISR_RX_NEMPTY)) {
+		if (--timeout == 0U) {
+			LOG_ERR("RX timeout draining slot (width=%u)", width);
+			return -ETIMEDOUT;
+		}
+	}
+	uint32_t rxd = qspi_read(dev, QSPI_RXD);
+
+	qspi_write(dev, QSPI_ISR, ISR_RX_NEMPTY);
+
+	if (dst != NULL) {
+		zynq_qspi_rxd_unpack(rxd, dst, width);
+	}
+	return 0;
+}
+
+/* Run a single burst of `chunk` bytes (1..QSPI_BURST_MAX): plan slot
+ * widths (TXD0 for full 4-byte slots, plus a 1/2/3-byte tail if needed),
+ * fill TX FIFO, fire one MANSTARTCOM, drain RX FIFO. Caller stages TX
+ * bytes in `tx_stage` and (optionally) receives into `rx_stage`.
+ */
+static int zynq_qspi_burst_xfer(const struct device *dev,
+				const uint8_t *tx_stage, uint8_t *rx_stage,
+				size_t chunk)
+{
+	uint8_t widths[QSPI_FIFO_DEPTH];
+	size_t slots = 0;
+	size_t pos = 0;
+
+	while (pos < chunk) {
+		size_t w = (chunk - pos >= 4U) ? 4U : (chunk - pos);
+
+		widths[slots++] = (uint8_t)w;
+		pos += w;
+	}
+
+	/* Fill TX FIFO. With CR_MANSTARTEN=1 these queue without firing. */
+	pos = 0;
+	for (size_t s = 0; s < slots; s++) {
+		zynq_qspi_txd_write(dev, &tx_stage[pos], widths[s]);
+		pos += widths[s];
+	}
+
+	/* Single trigger drains the entire TX FIFO; CS stays asserted. */
+	uint32_t cr = qspi_read(dev, QSPI_CR);
+
+	qspi_write(dev, QSPI_CR, cr | CR_MANSTARTCOM);
+
+	/* Drain RX FIFO — one entry per TXDn slot, same widths. */
+	pos = 0;
+	for (size_t s = 0; s < slots; s++) {
+		int rc = zynq_qspi_drain_slot(dev,
+					      rx_stage ? &rx_stage[pos] : NULL,
+					      widths[s]);
+
+		if (rc != 0) {
+			return rc;
+		}
+		pos += widths[s];
+	}
+	return 0;
+}
+
+/* ── Transceive ──────────────────────────────────────────────────── */
 
 static int zynq_qspi_transceive(const struct device *dev,
 				 const struct spi_config *config,
@@ -187,6 +327,8 @@ static int zynq_qspi_transceive(const struct device *dev,
 {
 	struct zynq_qspi_data *data = dev->data;
 	struct spi_context *ctx = &data->ctx;
+	uint8_t tx_stage[QSPI_BURST_MAX];
+	uint8_t rx_stage[QSPI_BURST_MAX];
 	int rc;
 
 	spi_context_lock(ctx, false, NULL, NULL, config);
@@ -206,54 +348,53 @@ static int zynq_qspi_transceive(const struct device *dev,
 		zynq_qspi_cs_assert(dev);
 	}
 
-	/* Transfer bytes */
 	while (spi_context_tx_on(ctx) || spi_context_rx_on(ctx)) {
-		uint8_t tx_byte = 0;
+		size_t tx_avail = ctx->tx_len;
+		size_t rx_avail = ctx->rx_len;
+		size_t chunk;
 
-		if (spi_context_tx_buf_on(ctx)) {
-			tx_byte = *ctx->tx_buf;
-		}
-
-		/* Write to 1-byte TX register */
-		qspi_write(dev, QSPI_TXD1, tx_byte);
-
-		/* Trigger transfer (manual start) */
-		uint32_t cr = qspi_read(dev, QSPI_CR);
-
-		qspi_write(dev, QSPI_CR, cr | CR_MANSTARTCOM);
-
-		/* Poll for RX data */
-		uint32_t timeout = 10000;
-
-		while (!(qspi_read(dev, QSPI_ISR) & ISR_RX_NEMPTY)) {
-			if (--timeout == 0) {
-				LOG_ERR("RX timeout");
-				rc = -ETIMEDOUT;
-				goto done;
-			}
-		}
-
-		/* Read RX byte and clear status. With FIFO_WIDTH=32-bit and
-		 * TXD1 (1-byte TX) the controller delivers each received byte
-		 * at [31:24] of RXD, with previous bytes shifted right by 8
-		 * (i.e. RXD acts as a 4-deep shift register). NOT [7:0] as a
-		 * naive cast assumes — discovered via a byte-level dump that
-		 * showed RXD accumulating as 0x00000000 → 0xef000000 →
-		 * 0x40ef0000 → 0x1940ef00 across a JEDEC RDID transaction. */
-		uint8_t rx_byte = (uint8_t)(qspi_read(dev, QSPI_RXD) >> 24);
-
-		qspi_write(dev, QSPI_ISR, ISR_RX_NEMPTY);
-
-		/* spi_nor.c uses NOP RX buffers (buf=NULL) for the command
-		 * phase so junk bytes are discarded here — rx_buf_on()
-		 * returns false when the active RX spi_buf has buf==NULL.
+		/* Don't cross segment boundaries inside a burst — keep the
+		 * per-side spi_context_update_*() calls bounded by the
+		 * current segment. Asymmetric tx/rx (one side exhausted but
+		 * the other still has data) is handled by treating the
+		 * exhausted side as NOP and bursting up to the other side's
+		 * remaining bytes.
 		 */
-		if (spi_context_rx_buf_on(ctx)) {
-			*ctx->rx_buf = rx_byte;
+		if (tx_avail != 0U && rx_avail != 0U) {
+			chunk = MIN(MIN(tx_avail, rx_avail), QSPI_BURST_MAX);
+		} else if (tx_avail != 0U) {
+			chunk = MIN(tx_avail, QSPI_BURST_MAX);
+		} else if (rx_avail != 0U) {
+			chunk = MIN(rx_avail, QSPI_BURST_MAX);
+		} else {
+			/* Defensive: outer condition said _on(), but both
+			 * lens are 0. Step one byte to advance past a
+			 * pending NOP segment boundary.
+			 */
+			chunk = 1U;
 		}
 
-		spi_context_update_tx(ctx, 1, 1);
-		spi_context_update_rx(ctx, 1, 1);
+		bool has_tx = spi_context_tx_buf_on(ctx);
+		bool has_rx = spi_context_rx_buf_on(ctx);
+
+		if (has_tx) {
+			memcpy(tx_stage, ctx->tx_buf, chunk);
+		} else {
+			memset(tx_stage, 0, chunk);
+		}
+
+		rc = zynq_qspi_burst_xfer(dev, tx_stage,
+					  has_rx ? rx_stage : NULL, chunk);
+		if (rc != 0) {
+			goto done;
+		}
+
+		if (has_rx) {
+			memcpy(ctx->rx_buf, rx_stage, chunk);
+		}
+
+		spi_context_update_tx(ctx, 1, MIN(chunk, ctx->tx_len));
+		spi_context_update_rx(ctx, 1, MIN(chunk, ctx->rx_len));
 	}
 
 	rc = 0;
