@@ -24,7 +24,10 @@
 
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/spi.h>
+#include <zephyr/drivers/spi/xlnx_zynq_qspi.h>
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/util.h>
 #include <string.h>
 
@@ -89,6 +92,34 @@ LOG_MODULE_REGISTER(spi_xlnx_zynq_qspi, CONFIG_SPI_LOG_LEVEL);
 
 /* ── ER bit definitions ─────────────────────────────────────────── */
 #define ER_ENABLE	BIT(0)
+
+/* ── LQSPI_CR bit definitions (Linear QSPI mode) ──────────────────
+ * UG585 Table 12-7. With LQSPI_CR.LINEAR_MASK set, the controller
+ * auto-issues the configured read instruction whenever the AXI
+ * master accesses the linear aperture at 0xFC000000.
+ */
+#define LQSPI_CR_LINEAR_MASK	BIT(31) /* LQSPI mode enable */
+#define LQSPI_CR_TWO_MEM_MASK	BIT(30) /* Both memories (stacked) */
+#define LQSPI_CR_SEP_BUS_MASK	BIT(29) /* Separate memory bus */
+#define LQSPI_CR_U_PAGE_MASK	BIT(28) /* Upper memory page */
+#define LQSPI_CR_MODE_EN_MASK	BIT(25) /* Enable mode bits */
+#define LQSPI_CR_MODE_ON_MASK	BIT(24) /* Mode on */
+#define LQSPI_CR_DUMMY_SHIFT	8        /* bits[10:8]: dummy bytes */
+#define LQSPI_CR_INST_MASK	0xFFU    /* Read instruction code */
+
+/* Quad Output Fast Read (0x6B) with 1 dummy byte — Xilinx BSP default
+ * for SINGLE_QSPI_CONFIG_FAST_QUAD_READ. On opus_one_75s + W25Q256FV
+ * this currently produces correct data with a 4-byte 0xFF prefix and
+ * possibly some byte-shift; full clean-read tuning needs a logic
+ * analyzer and explicit QE bit setup (volatile-write 0x50/0x31/0x02
+ * on the W25Q to enable quad output). See follow-up issue.
+ */
+#define LQSPI_CR_QUAD_FAST_READ							\
+	(LQSPI_CR_LINEAR_MASK | (1U << LQSPI_CR_DUMMY_SHIFT) | 0x6BU)
+
+/* LQSPI aperture (Zynq-7000): 16 MiB at 0xFC000000. */
+#define QSPI_LQSPI_APERTURE_PA		0xFC000000UL
+#define QSPI_LQSPI_APERTURE_SIZE	0x01000000UL
 
 /* ── Structures ─────────────────────────────────────────────────── */
 
@@ -420,6 +451,103 @@ static int zynq_qspi_release(const struct device *dev,
 	struct zynq_qspi_data *data = dev->data;
 
 	spi_context_unlock_unconditionally(&data->ctx);
+	return 0;
+}
+
+/* ── LQSPI memory-mapped fast read ──────────────────────────────── */
+
+/* Aperture is mapped lazily on first call (single 16 MiB region for the
+ * whole driver — there is only one Zynq-7000 PS QSPI controller). The
+ * mapping is K_MEM_CACHE_NONE because flash content can change beneath us.
+ */
+static mm_reg_t lqspi_aperture_va;
+static struct k_mutex lqspi_map_lock;
+static bool lqspi_map_lock_inited;
+
+static int zynq_qspi_lqspi_map(void)
+{
+	int rc;
+
+	if (lqspi_aperture_va != 0) {
+		return 0;
+	}
+	if (!lqspi_map_lock_inited) {
+		k_mutex_init(&lqspi_map_lock);
+		lqspi_map_lock_inited = true;
+	}
+	k_mutex_lock(&lqspi_map_lock, K_FOREVER);
+	if (lqspi_aperture_va == 0) {
+		mm_reg_t va;
+
+		device_map(&va, QSPI_LQSPI_APERTURE_PA,
+			   QSPI_LQSPI_APERTURE_SIZE, K_MEM_CACHE_NONE);
+		lqspi_aperture_va = va;
+		rc = (va != 0) ? 0 : -EIO;
+	} else {
+		rc = 0;
+	}
+	k_mutex_unlock(&lqspi_map_lock);
+	return rc;
+}
+
+int xlnx_zynq_qspi_lqspi_read(const struct device *dev,
+			      off_t addr, void *dst, size_t len)
+{
+	struct zynq_qspi_data *data;
+	uint32_t saved_cr;
+	uint32_t saved_lqspi_cr;
+	int rc;
+
+	if (dev == NULL || dst == NULL || len == 0U) {
+		return -EINVAL;
+	}
+	if (addr < 0 ||
+	    (uint64_t)(off_t)addr + (uint64_t)len > QSPI_LQSPI_APERTURE_SIZE) {
+		return -EINVAL;
+	}
+
+	rc = zynq_qspi_lqspi_map();
+	if (rc != 0) {
+		return rc;
+	}
+
+	data = dev->data;
+
+	/* Mutually exclusive with spi_transceive(). config arg is unused
+	 * here — the lock just acquires the underlying mutex.
+	 */
+	spi_context_lock(&data->ctx, false, NULL, NULL, NULL);
+
+	saved_cr = qspi_read(dev, QSPI_CR);
+	saved_lqspi_cr = qspi_read(dev, QSPI_LQSPI_CR);
+
+	/* Enter LQSPI mode:
+	 *   1. Disable controller
+	 *   2. CR: keep baud/master/hold/fifo_width, but CLEAR manual flags
+	 *      (MANCS / MANSTARTEN — those wait for SW intervention which
+	 *      never comes during AXI-driven linear reads, hanging the bus)
+	 *      and SET IFMODE for linear mode
+	 *   3. LQSPI_CR for 0x6B Quad Output Fast Read + 1 dummy byte +
+	 *      LINEAR_MASK
+	 *   4. Re-enable
+	 */
+	uint32_t lqspi_cr_val =
+		(saved_cr & ~(CR_MANCS | CR_MANSTARTEN | CR_PCS)) | CR_IFMODE;
+
+	qspi_write(dev, QSPI_ER, 0);
+	qspi_write(dev, QSPI_CR, lqspi_cr_val);
+	qspi_write(dev, QSPI_LQSPI_CR, LQSPI_CR_QUAD_FAST_READ);
+	qspi_write(dev, QSPI_ER, ER_ENABLE);
+
+	memcpy(dst, (const void *)(uintptr_t)(lqspi_aperture_va + addr), len);
+
+	/* Restore manual I/O mode. */
+	qspi_write(dev, QSPI_ER, 0);
+	qspi_write(dev, QSPI_LQSPI_CR, saved_lqspi_cr);
+	qspi_write(dev, QSPI_CR, saved_cr);
+	qspi_write(dev, QSPI_ER, ER_ENABLE);
+
+	spi_context_release(&data->ctx, 0);
 	return 0;
 }
 
