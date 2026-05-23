@@ -336,7 +336,8 @@ static int update_link_state(const struct device *dev)
 		return -EAGAIN;
 	}
 
-	data->state.is_up = true;
+	data->state.speed = 0;
+	data->state.is_up = false;
 
 	LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
 
@@ -439,6 +440,8 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 	} else {
 		ret = phy_mii_cfg_link_autoneg(dev, adv_speeds, true);
 		if (ret >= 0) {
+			data->state.speed = 0;
+			data->state.is_up = false;
 			LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
 			data->autoneg_in_progress = true;
 			data->autoneg_timeout =
@@ -464,8 +467,10 @@ static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_sta
 
 	k_sem_take(&data->sem, K_FOREVER);
 
-	update_link_state(dev);
 	memcpy(state, &data->state, sizeof(struct phy_link_state));
+	if (state->speed == 0) {
+		state->is_up = false;
+	}
 
 	k_sem_give(&data->sem);
 
