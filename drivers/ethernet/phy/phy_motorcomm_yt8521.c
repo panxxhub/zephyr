@@ -66,8 +66,6 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 #define YTPHY_SYNCE_CFG_REG     0xA012
 #define YT8521_SCR_SYNCE_ENABLE BIT(5)
 
-#define YTPHY_LINK_BOUNDARY_DELAY_MS 500
-
 static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_state *state);
 
 struct mc_ytphy_config {
@@ -85,7 +83,6 @@ struct mc_ytphy_data {
 	struct phy_link_state state;
 	struct k_sem sem;
 	struct k_work_delayable monitor_work;
-	enum phy_link_speed advertised_speeds;
 	bool autoneg_in_progress;
 	k_timepoint_t autoneg_timeout;
 };
@@ -468,7 +465,6 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 {
 	struct mc_ytphy_data *const data = dev->data;
 	const struct mc_ytphy_config *const cfg = dev->config;
-	bool force_link_boundary = false;
 	int ret = 0;
 
 	k_sem_take(&data->sem, K_FOREVER);
@@ -480,25 +476,8 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 			k_work_reschedule(&data->monitor_work, K_NO_WAIT);
 		}
 	} else {
-		force_link_boundary = data->state.is_up && (data->advertised_speeds != 0) &&
-				      (data->advertised_speeds != adv_speeds);
-		if (force_link_boundary) {
-			LOG_DBG("PHY (%d) forcing link boundary before advertised speed change",
-				cfg->phy_addr);
-			data->state.speed = 0;
-			data->state.is_up = false;
-			data->autoneg_in_progress = false;
-			ret = mc_ytphy_reset_datapath(dev);
-			if (ret < 0) {
-				goto cfg_link_end;
-			}
-			k_msleep(YTPHY_LINK_BOUNDARY_DELAY_MS);
-		}
-
 		ret = phy_mii_cfg_link_autoneg(dev, adv_speeds, true);
-		if ((ret >= 0) || (force_link_boundary && (ret == -EALREADY))) {
-			ret = 0;
-			data->advertised_speeds = adv_speeds;
+		if (ret >= 0) {
 			data->state.speed = 0;
 			data->state.is_up = false;
 			LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
@@ -514,7 +493,6 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 		LOG_DBG("PHY (%d) Link already configured", cfg->phy_addr);
 	}
 
-cfg_link_end:
 	k_sem_give(&data->sem);
 
 	return ret;
