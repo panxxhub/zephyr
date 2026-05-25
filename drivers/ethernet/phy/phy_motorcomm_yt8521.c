@@ -21,6 +21,7 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 #include <zephyr/net/phy.h>
 #include <zephyr/net/mdio.h>
 #include <zephyr/net/mii.h>
+#include <string.h>
 
 #include "phy_mii.h"
 
@@ -280,25 +281,43 @@ static inline enum phy_link_speed mc_ytphy_get_link_speed_stat_reg(const struct 
 	return speed;
 }
 
-static int update_link_state(const struct device *dev)
+static int mc_ytphy_read_live_link_state(const struct device *dev, struct phy_link_state *state)
 {
-	const struct mc_ytphy_config *const cfg = dev->config;
-	struct mc_ytphy_data *const data = dev->data;
 	uint32_t stat_reg;
-	uint32_t bmcr_reg;
-	bool link_up;
 
 	if (mc_ytphy_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
 		return -EIO;
 	}
 
-	link_up = (uint16_t)stat_reg & YTPHY_SSR_LINK;
+	state->speed = 0;
+	state->is_up = false;
+
+	if (((uint16_t)stat_reg & YTPHY_SSR_LINK) == 0U) {
+		return 0;
+	}
+
+	state->is_up = true;
+	state->speed = mc_ytphy_get_link_speed_stat_reg(dev, stat_reg);
+
+	return 0;
+}
+
+static int update_link_state(const struct device *dev)
+{
+	const struct mc_ytphy_config *const cfg = dev->config;
+	struct mc_ytphy_data *const data = dev->data;
+	uint32_t bmcr_reg;
+	struct phy_link_state old_state = data->state;
+	struct phy_link_state live_state;
+
+	if (mc_ytphy_read_live_link_state(dev, &live_state) < 0) {
+		return -EIO;
+	}
 
 	/* If link is down, we can stop here. */
-	if (!link_up) {
-		data->state.speed = 0;
-		if (link_up != data->state.is_up) {
-			data->state.is_up = false;
+	if (!live_state.is_up) {
+		data->state = live_state;
+		if (old_state.is_up) {
 			LOG_INF("PHY (%d) is down", cfg->phy_addr);
 			return 0;
 		}
@@ -311,14 +330,12 @@ static int update_link_state(const struct device *dev)
 
 	/* If auto-negotiation is not enabled, we only need to check the link speed */
 	if ((bmcr_reg & MII_BMCR_AUTONEG_ENABLE) == 0U) {
-		enum phy_link_speed new_speed = mc_ytphy_get_link_speed_stat_reg(dev, stat_reg);
+		data->state = live_state;
 
-		if ((data->state.speed != new_speed) || !data->state.is_up) {
-			data->state.is_up = true;
-			data->state.speed = new_speed;
-
+		if (memcmp(&old_state, &data->state, sizeof(data->state)) != 0) {
 			LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", cfg->phy_addr,
-				PHY_LINK_IS_SPEED_1000M(data->state.speed) ? "1000"
+				PHY_LINK_IS_SPEED_1000M(data->state.speed)
+					? "1000"
 					: (PHY_LINK_IS_SPEED_100M(data->state.speed) ? "100"
 										     : "10"),
 				PHY_LINK_IS_FULL_DUPLEX(data->state.speed) ? "full" : "half");
@@ -328,15 +345,23 @@ static int update_link_state(const struct device *dev)
 		return -EAGAIN;
 	}
 
-	/* If auto-negotiation is enabled and the link was already up last time we checked,
-	 * we can return immediately, as the link state has not changed.
-	 * If the link was down, we will start the auto-negotiation sequence.
+	/* If auto-negotiation is enabled and the live link already reports speed,
+	 * publish it immediately. This keeps get_link_state() and monitor callbacks
+	 * coherent with the PHY status register instead of relying on stale cache.
 	 */
-	if (data->state.is_up) {
+	data->state = live_state;
+	if (data->state.speed != 0) {
+		if (memcmp(&old_state, &data->state, sizeof(data->state)) != 0) {
+			LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", cfg->phy_addr,
+				PHY_LINK_IS_SPEED_1000M(data->state.speed)
+					? "1000"
+					: (PHY_LINK_IS_SPEED_100M(data->state.speed) ? "100"
+										     : "10"),
+				PHY_LINK_IS_FULL_DUPLEX(data->state.speed) ? "full" : "half");
+			return 0;
+		}
 		return -EAGAIN;
 	}
-
-	data->state.is_up = true;
 
 	LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
 
@@ -455,21 +480,23 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 	k_sem_give(&data->sem);
 
 	return ret;
-
 }
 
 static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_state *state)
 {
 	struct mc_ytphy_data *const data = dev->data;
+	int ret;
 
 	k_sem_take(&data->sem, K_FOREVER);
 
-	update_link_state(dev);
-	memcpy(state, &data->state, sizeof(struct phy_link_state));
+	ret = mc_ytphy_read_live_link_state(dev, state);
+	if (ret == 0) {
+		data->state = *state;
+	}
 
 	k_sem_give(&data->sem);
 
-	return 0;
+	return ret;
 }
 
 static int mc_ytphy_link_cb_set(const struct device *dev, phy_callback_t cb, void *user_data)
