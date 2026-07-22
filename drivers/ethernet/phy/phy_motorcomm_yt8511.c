@@ -47,6 +47,10 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt8511, CONFIG_PHY_LOG_LEVEL);
 #define YT8511_RC1R_RX_DELAY_MASK	GENMASK(13, 10)
 #define YT8511_RC1R_TX_DELAY_MASK	GENMASK(3, 0)
 
+/* Allow a slow PHY clock/power domain to settle after reset. */
+#define YT8511_PHY_ID_MAX_ATTEMPTS	20
+#define YT8511_PHY_ID_RETRY_DELAY_MS	100
+
 /* Auto-negotiation polling interval */
 #define MII_AUTONEG_POLL_INTERVAL_MS	100
 
@@ -377,7 +381,8 @@ static int yt8511_init(const struct device *dev)
 {
 	struct yt8511_data *data = dev->data;
 	const struct yt8511_config *cfg = dev->config;
-	uint32_t phy_id;
+	uint32_t phy_id = 0;
+	int attempt;
 	int ret;
 
 	k_sem_init(&data->sem, 1, 1);
@@ -385,17 +390,37 @@ static int yt8511_init(const struct device *dev)
 	data->dev = dev;
 	data->cb = NULL;
 
-	/* Verify PHY identity */
-	ret = yt8511_read(dev, MII_PHYID2R, &phy_id);
-	if (ret) {
-		LOG_ERR("PHY (%d) failed to read ID", cfg->phy_addr);
-		return -EIO;
+	/* Verify PHY identity. Some boards need time for the PHY clock and power
+	 * domains to settle after reset, so tolerate transient read failures and
+	 * invalid IDs without logging every attempt.
+	 */
+	for (attempt = 1; attempt <= YT8511_PHY_ID_MAX_ATTEMPTS; attempt++) {
+		ret = yt8511_read(dev, MII_PHYID2R, &phy_id);
+		if (ret == 0 && (phy_id & PHY_ID_YT8511_MASK) == PHY_ID_YT8511) {
+			break;
+		}
+
+		if (attempt < YT8511_PHY_ID_MAX_ATTEMPTS) {
+			k_msleep(YT8511_PHY_ID_RETRY_DELAY_MS);
+		}
 	}
 
-	if ((phy_id & PHY_ID_YT8511_MASK) != PHY_ID_YT8511) {
-		LOG_ERR("PHY (%d) unexpected ID: 0x%04X (expected 0x%04X)",
-			cfg->phy_addr, phy_id, PHY_ID_YT8511);
+	if (attempt > YT8511_PHY_ID_MAX_ATTEMPTS) {
+		if (ret) {
+			LOG_ERR("PHY (%d) failed to read ID after %d attempts (last error %d)",
+				cfg->phy_addr, YT8511_PHY_ID_MAX_ATTEMPTS, ret);
+			return -EIO;
+		}
+
+		LOG_ERR("PHY (%d) unexpected ID after %d attempts: 0x%04X (expected 0x%04X)",
+			cfg->phy_addr, YT8511_PHY_ID_MAX_ATTEMPTS, phy_id,
+			PHY_ID_YT8511);
 		return -ENODEV;
+	}
+
+	if (attempt > 1) {
+		LOG_WRN("PHY (%d) ID became valid after %d attempts", cfg->phy_addr,
+			attempt);
 	}
 
 	LOG_DBG("PHY (%d) ID: 0x%04X", cfg->phy_addr, phy_id);
