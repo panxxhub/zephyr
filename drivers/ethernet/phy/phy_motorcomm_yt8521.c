@@ -28,6 +28,10 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 #define PHY_ID_YT8521 (0x0000011A)
 #define PHY_ID_YT8531 (0x0000E91A)
 
+/* Allow a slow PHY clock/power domain to settle after reset. */
+#define YTPHY_PHY_ID_MAX_ATTEMPTS   20U
+#define YTPHY_PHY_ID_RETRY_DELAY_MS 100
+
 /* PHY Specific Status Register */
 #define SPEC_STATUS_REG_DUPLEX_MASK (1U << 13)
 #define PHY_DUPLEX_HALF             (0U << 13)
@@ -519,23 +523,34 @@ static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 {
 	const struct mc_ytphy_config *const config = dev->config;
 	uint32_t val = 0;
-	bool found = false;
+	uint32_t attempt;
+	int ret = 0;
 
-	for (uint32_t cnt = 1000; cnt > 0; cnt--) {
-		if (mc_ytphy_read(dev, MII_PHYID2R, &val) < 0) {
-			k_msleep(1);
-			continue;
+	for (attempt = 1U; attempt <= YTPHY_PHY_ID_MAX_ATTEMPTS; attempt++) {
+		ret = mc_ytphy_read(dev, MII_PHYID2R, &val);
+		if (ret == 0 && (val == PHY_ID_YT8521 || val == PHY_ID_YT8531)) {
+			break;
 		}
 
-		if (val == PHY_ID_YT8521 || val == PHY_ID_YT8531) {
-			found = true;
-			break;
+		if (attempt < YTPHY_PHY_ID_MAX_ATTEMPTS) {
+			k_msleep(YTPHY_PHY_ID_RETRY_DELAY_MS);
 		}
 	}
 
-	if (!found) {
-		LOG_ERR("PHY (%d) timeout to get PHY ID", config->phy_addr);
+	if (attempt > YTPHY_PHY_ID_MAX_ATTEMPTS) {
+		if (ret < 0) {
+			LOG_ERR("PHY (%d) failed to read ID after %u attempts (last error %d)",
+				config->phy_addr, YTPHY_PHY_ID_MAX_ATTEMPTS, ret);
+		} else {
+			LOG_ERR("PHY (%d) unsupported ID after %u attempts: 0x%X", config->phy_addr,
+				YTPHY_PHY_ID_MAX_ATTEMPTS, val);
+		}
+
 		return -EIO;
+	}
+
+	if (attempt > 1U) {
+		LOG_WRN("PHY (%d) ID became valid after %u attempts", config->phy_addr, attempt);
 	}
 
 	if (phy_id) {
