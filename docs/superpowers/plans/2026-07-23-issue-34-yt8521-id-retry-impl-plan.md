@@ -1,5 +1,17 @@
 # Issue #34: YT8521 PHY ID Settling Retry Implementation Plan
 
+## Progress
+
+- [x] Implement bounded retry for read errors and invalid IDs.
+- [x] Pass `clang-format`, `checkpatch`, and diff validation.
+- [x] Build the Ctrl Gen1 application against the hotfix worktree.
+- [x] Confirm the build selects `CONFIG_PHY_MOTORCOMM_YT8521=y`.
+- [x] JTAG-load the hotfix ELF without writing QSPI.
+- [x] Verify stable ping and CoAP reachability.
+- [ ] Inspect the UART retry warning (intentionally skipped per user request).
+- [ ] Complete PR review/CI and merge.
+- [ ] Tag the merged kernel and advance `zephyr-servo/west.yml`.
+
 ## 1. Establish the failing baseline
 
 - Confirm the worktree is based on `panxxhub/zephyr` `main`.
@@ -72,4 +84,3 @@ After the Zephyr PR is merged:
 - Run `west update`/manifest resolution checks and a clean Ctrl Gen1
   application build.
 - Open, review, and merge the zephyr-servo PR.
-
