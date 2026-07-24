@@ -130,20 +130,44 @@ demux:
     beq offload
     b inv
 offload:
+    /*
+     * SVC entry masks IRQs.  Keep them masked while updating the nesting
+     * state and while running the offload callback, matching the existing
+     * irq_offload behavior.
+     */
+    cpsid i
+
     get_cpu r2
     ldr r3, [r2, #___cpu_t_nested_OFFSET]
     add r3, r3, #1
     str r3, [r2, #___cpu_t_nested_OFFSET]
 
-    /* If not nested: switch to IRQ stack and save current sp on it. */
+    /*
+     * If not nested, save the exception-frame SP on the IRQ stack, then
+     * alias that stack into SYS mode.  Running the callback in IRQ mode
+     * would expose its LR_irq return address to nested IRQ entry.
+     */
     cmp r3, #1
     bhi 1f
     mov r0, sp
     cps #MODE_IRQ
-    push {r0}
+    push {r0, r1}
+    mov r0, sp
+    cps #MODE_SYS
+    mov sp, r0
 
 1:
+    /*
+     * Match the hardware IRQ wrapper's per-level record: preserve the exact
+     * exception-frame SP and align the active stack before calling C.
+     */
+    mov r0, sp
+    and r3, sp, #4
+    sub sp, sp, r3
+    push {r0, r3}
+
     blx z_irq_do_offload
+    cpsid i
     b z_arm_cortex_ar_irq_done
 #endif
     b inv
