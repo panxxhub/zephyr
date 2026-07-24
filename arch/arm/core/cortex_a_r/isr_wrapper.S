@@ -252,13 +252,35 @@ SECTION_FUNC(TEXT, _isr_wrapper)
 	add r0, #1
 	str r0, [r2, #___cpu_t_nested_OFFSET]
 
-	/* If not nested: switch to IRQ stack and save current sp on it. */
+	/*
+	 * If not nested, save the exception-frame SP on the IRQ stack, then
+	 * alias that stack into SYS mode.  Registered ISRs must not run in IRQ
+	 * mode: a nested IRQ would overwrite LR_irq after the handler call but
+	 * before the handler prologue can save it.
+	 *
+	 * Keep the private save record 8 bytes wide so the IRQ stack remains
+	 * aligned at public C call boundaries.
+	 */
 	cmp r0, #1
 	bhi 1f
 	mov r0, sp
 	cps #MODE_IRQ
-	push {r0}
+	push {r0, r1}
+	mov r0, sp
+	cps #MODE_SYS
+	mov sp, r0
 1:
+	/*
+	 * An IRQ may preempt code while its stack is only word-aligned.  Save
+	 * the exact frame pointer, then align the active ISR stack before any
+	 * public C interface is called.  This record is present at every
+	 * nesting level and is removed in z_arm_cortex_ar_irq_done.
+	 */
+	mov r0, sp
+	and r3, sp, #4
+	sub sp, sp, r3
+	push {r0, r3}
+
 #ifdef CONFIG_TRACING_ISR
 	bl sys_trace_isr_enter
 #endif /* CONFIG_TRACING_ISR */
@@ -339,28 +361,51 @@ z_arm_cortex_ar_irq_done:
 	str r0, [r2, #___cpu_t_nested_OFFSET]
 	/* Do not context switch if exiting a nested interrupt */
 	cmp r0, #0
-	/* Note that this function is only called from `z_arm_svc`,
-	 *	while handling irq_offload, with below modes set:
-	 *	```
-	 *		if (cpu interrupts are nested)
-	 *			mode=MODE_SYS
-	 *		else
-	 *			mode=MODE_IRQ
-	 *	```
-	 */
-	bhi __EXIT_INT
 
-	/* retrieve pointer to the current thread */
-	pop {r0}
-	cps #MODE_SYS
+	beq 1f
+
+#ifdef CONFIG_STACK_SENTINEL
+	bl z_check_stack_sentinel
+#endif /* CONFIG_STACK_SENTINEL */
+
+	/* Restore this nesting level's exact exception-frame SP. */
+	pop {r0, r1}
 	mov sp, r0
+	b z_arm_cortex_ar_exit_exc
 
+1:
+	/*
+	 * Ask the scheduler while still on the aligned IRQ-backed SYS stack.
+	 * Save the interrupted thread pointer because the call may update
+	 * _current.
+	 */
 	ldr r1, [r2, #___cpu_t_current_OFFSET]
-	push {r1}
+	push {r1, r2}
 	mov r0, #0
 	bl z_get_next_switch_handle
+	pop {r1, r2}
 
-	pop {r1}
+	/*
+	 * Remove the per-level alignment record, then restore the banked IRQ
+	 * stack and the interrupted thread's exact exception-frame SP.
+	 */
+	pop {r2, r3}
+	mov sp, r2
+	cps #MODE_IRQ
+	pop {r2, r3}
+	cps #MODE_SYS
+	mov sp, r2
+
+	/*
+	 * A thread may also have been interrupted with a word-aligned SP.
+	 * Keep an aligned restore record across a context switch so both the
+	 * assembly switch path and a later resumed exit recover the exact SP.
+	 */
+	mov r2, sp
+	and r3, sp, #4
+	sub sp, sp, r3
+	push {r2, r3}
+
 	cmp r0, #0
 	beq __EXIT_INT
 
@@ -373,10 +418,8 @@ z_arm_cortex_ar_irq_done:
 
 __EXIT_INT:
 
-#ifdef CONFIG_STACK_SENTINEL
-	bl z_check_stack_sentinel
-#endif /* CONFIG_STACK_SENTINEL */
-
+	pop {r2, r3}
+	mov sp, r2
 	b z_arm_cortex_ar_exit_exc
 
 #endif
