@@ -163,6 +163,8 @@
  * IDR         = gem.intr_dis             Interrupt disable            register
  * IMR         = gem.intr_mask            Interrupt mask               register
  * PHYMNTNC    = gem.phy_maint            PHY maintenance              register
+ * HASHL       = gem.hash_bot             Hash register bottom         register
+ * HASHH       = gem.hash_top             Hash register top            register
  * LADDR1L     = gem.spec_addr1_bot       Specific address 1 bottom    register
  * LADDR1H     = gem.spec_addr1_top       Specific address 1 top       register
  * LADDR2L     = gem.spec_addr2_bot       Specific address 2 bottom    register
@@ -191,6 +193,8 @@
 #define ETH_XLNX_GEM_IDR_OFFSET				0x0000002C
 #define ETH_XLNX_GEM_IMR_OFFSET				0x00000030
 #define ETH_XLNX_GEM_PHY_MAINTENANCE_OFFSET		0x00000034
+#define ETH_XLNX_GEM_HASHL_OFFSET			0x00000080
+#define ETH_XLNX_GEM_HASHH_OFFSET			0x00000084
 #define ETH_XLNX_GEM_LADDR1L_OFFSET			0x00000088
 #define ETH_XLNX_GEM_LADDR1H_OFFSET			0x0000008C
 #define ETH_XLNX_GEM_LADDR2L_OFFSET			0x00000090
@@ -218,6 +222,9 @@
 #define ETH_XLNX_GEM_TXSRCLR_MASK			0x000000FF
 #define ETH_XLNX_GEM_RXSRCLR_MASK			0x0000000F
 #define ETH_XLNX_GEM_IDRCLR_MASK			0x07FFFFFF
+
+/* Fixed software membership table, sized to the GEM's 64 hash selectors. */
+#define ETH_XLNX_GEM_MCAST_FILTER_SLOTS			64U
 
 /* (Shift) masks for individual registers' bits / bitfields */
 
@@ -767,6 +774,11 @@ struct eth_xlnx_gem_dev_cfg {
 	bool				enable_ahb_md_endian_swap : 1;
 };
 
+struct eth_xlnx_gem_mcast_filter {
+	uint8_t				mac_addr[6];
+	uint16_t			refcnt;
+};
+
 /**
  * @brief Run-time device configuration data structure.
  *
@@ -778,6 +790,11 @@ struct eth_xlnx_gem_dev_data {
 	struct net_if			*iface;
 	uint8_t				mac_addr[6];
 	enum eth_xlnx_link_speed	eff_link_speed;
+	struct k_spinlock		nwcfg_lock;
+	uint16_t			mcast_hash_refcnt[ETH_XLNX_GEM_MCAST_FILTER_SLOTS];
+	struct eth_xlnx_gem_mcast_filter	mcast_filter[ETH_XLNX_GEM_MCAST_FILTER_SLOTS];
+	uint32_t			hash_baseline[2];
+	uint8_t				mcast_hash_active;
 
 	struct k_work			tx_done_work;
 	struct k_work			rx_pend_work;

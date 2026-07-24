@@ -1773,7 +1773,8 @@ out:
 }
 
 /* To be called when interface comes operational down so that multicast
- * groups are rejoined when back up.
+ * groups are rejoined when back up. Notify monitors of each leave so the
+ * matching rejoin notification cannot duplicate hardware filter references.
  */
 static void clear_joined_ipv6_mcast_groups(struct net_if *iface)
 {
@@ -1790,11 +1791,13 @@ static void clear_joined_ipv6_mcast_groups(struct net_if *iface)
 	}
 
 	ARRAY_FOR_EACH(ipv6->mcast, i) {
-		if (!ipv6->mcast[i].is_used) {
+		if (!ipv6->mcast[i].is_used ||
+		    !net_if_ipv6_maddr_is_joined(&ipv6->mcast[i])) {
 			continue;
 		}
 
 		net_if_ipv6_maddr_leave(iface, &ipv6->mcast[i]);
+		net_if_mcast_monitor(iface, &ipv6->mcast[i].address, false);
 	}
 
 out:
@@ -5293,7 +5296,8 @@ out:
 }
 
 /* To be called when interface comes operational down so that multicast
- * groups are rejoined when back up.
+ * groups are rejoined when back up. Notify monitors of each leave so the
+ * matching rejoin notification cannot duplicate hardware filter references.
  */
 static void clear_joined_ipv4_mcast_groups(struct net_if *iface)
 {
@@ -5310,11 +5314,13 @@ static void clear_joined_ipv4_mcast_groups(struct net_if *iface)
 	}
 
 	ARRAY_FOR_EACH(ipv4->mcast, i) {
-		if (!ipv4->mcast[i].is_used) {
+		if (!ipv4->mcast[i].is_used ||
+		    !net_if_ipv4_maddr_is_joined(&ipv4->mcast[i])) {
 			continue;
 		}
 
 		net_if_ipv4_maddr_leave(iface, &ipv4->mcast[i]);
+		net_if_mcast_monitor(iface, &ipv4->mcast[i].address, false);
 	}
 
 out:
