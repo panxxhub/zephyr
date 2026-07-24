@@ -64,6 +64,8 @@ static void eth_xlnx_gem_reset_hw(const struct device *dev);
 static void eth_xlnx_gem_configure_clocks(const struct device *dev);
 static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev);
 static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev);
+static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
+					     const struct ethernet_filter *filter);
 static void eth_xlnx_gem_set_mac_address(const struct device *dev);
 static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev);
 static void eth_xlnx_gem_phy_link_changed(const struct device *phy_dev,
@@ -649,7 +651,7 @@ static enum ethernet_hw_caps eth_xlnx_gem_get_capabilities(
 		caps |= ETHERNET_HW_TX_CHKSUM_OFFLOAD;
 	}
 
-	caps |= ETHERNET_PROMISC_MODE;
+	caps |= ETHERNET_PROMISC_MODE | ETHERNET_HW_FILTERING;
 
 	return caps;
 }
@@ -730,22 +732,29 @@ static int eth_xlnx_gem_set_config(const struct device *dev,
 
 	switch (type) {
 #ifdef CONFIG_NET_PROMISCUOUS_MODE
-	case ETHERNET_CONFIG_TYPE_PROMISC_MODE:
+	case ETHERNET_CONFIG_TYPE_PROMISC_MODE: {
 		const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-		uint32_t reg_val = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+		k_spinlock_key_t key;
+		uint32_t reg_val;
 
+		key = k_spin_lock(&dev_data->nwcfg_lock);
+		reg_val = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
 		if (config->promisc_mode) {
 			reg_val |= ETH_XLNX_GEM_NWCFG_COPYALLEN_BIT;
 		} else {
 			reg_val &= ~ETH_XLNX_GEM_NWCFG_COPYALLEN_BIT;
 		}
 		sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+		k_spin_unlock(&dev_data->nwcfg_lock, key);
 		break;
+	}
 #endif
 	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
 		memcpy(dev_data->mac_addr, config->mac_address.addr, sizeof(dev_data->mac_addr));
 		eth_xlnx_gem_set_mac_address(dev);
 		break;
+	case ETHERNET_CONFIG_TYPE_FILTER:
+		return eth_xlnx_gem_set_multicast_filter(dev, &config->filter);
 	default:
 		return -ENOTSUP;
 	};
@@ -779,6 +788,7 @@ static struct net_stats_eth *eth_xlnx_gem_stats(const struct device *dev)
 static void eth_xlnx_gem_reset_hw(const struct device *dev)
 {
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
 
 	/*
 	 * Controller reset sequence as described in the Zynq-7000 TRM,
@@ -808,6 +818,18 @@ static void eth_xlnx_gem_reset_hw(const struct device *dev)
 		    dev_conf->base_addr + ETH_XLNX_GEM_RXQBASE_OFFSET);
 	sys_write32(0x00000000,
 		    dev_conf->base_addr + ETH_XLNX_GEM_TXQBASE_OFFSET);
+	/*
+	 * The unicast and multicast hash filters share these registers.
+	 * Preserve entries installed before this driver starts, while resetting
+	 * the run-time multicast reference state deterministically.
+	 */
+	dev_data->hash_baseline[0] =
+		sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_HASHL_OFFSET);
+	dev_data->hash_baseline[1] =
+		sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_HASHH_OFFSET);
+	memset(dev_data->mcast_hash_refcnt, 0, sizeof(dev_data->mcast_hash_refcnt));
+	memset(dev_data->mcast_filter, 0, sizeof(dev_data->mcast_filter));
+	dev_data->mcast_hash_active = 0U;
 #ifdef CONFIG_SOC_XILINX_ZYNQMP
 	sys_write32(0x00000000,
 		    dev_conf->base_addr + ETH_XLNX_GEM_RX1QBASEL_OFFSET);
@@ -1077,12 +1099,14 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev)
 {
 	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
 	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	k_spinlock_key_t key;
 	uint32_t reg_val;
 
 	/*
 	 * Read the current gem.net_cfg register contents and mask out
 	 * the link speed-related bits
 	 */
+	key = k_spin_lock(&dev_data->nwcfg_lock);
 	reg_val  = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
 	reg_val &= ~(ETH_XLNX_GEM_NWCFG_1000_BIT | ETH_XLNX_GEM_NWCFG_100_BIT);
 
@@ -1095,6 +1119,139 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev)
 
 	/* Write the assembled register contents to gem.net_cfg */
 	sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+	k_spin_unlock(&dev_data->nwcfg_lock, key);
+}
+
+/**
+ * @brief Calculate the GEM hash index for an Ethernet MAC address.
+ *
+ * Each of the six hash bits is the XOR of every sixth bit in the 48-bit
+ * address, starting with bit zero as the least-significant bit of the first
+ * octet.
+ */
+static uint8_t eth_xlnx_gem_get_hash_index(const struct net_eth_addr *mac)
+{
+	uint8_t hash = 0U;
+
+	for (uint8_t bit = 0U; bit < 48U; bit++) {
+		if ((mac->addr[bit / 8U] & BIT(bit % 8U)) != 0U) {
+			hash ^= BIT(bit % 6U);
+		}
+	}
+
+	return hash;
+}
+
+/**
+ * @brief Add or remove a destination multicast MAC hash entry.
+ *
+ * @retval 0 The filter was updated.
+ * @retval -ENOENT An unset was requested for an address that is not present.
+ * @retval -ENOSPC The fixed exact-address membership table is full.
+ * @retval -ENOTSUP The filter is not a destination multicast address.
+ * @retval -EOVERFLOW The exact address reference count is saturated.
+ */
+static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
+					     const struct ethernet_filter *filter)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	struct net_eth_addr *mac = (struct net_eth_addr *)&filter->mac_address;
+	uint32_t hash_offset;
+	uint32_t hash_mask;
+	uint32_t reg_val;
+	uint8_t hash;
+	int filter_slot = -1;
+	int free_slot = -1;
+	k_spinlock_key_t key;
+
+	if (filter->type != ETHERNET_FILTER_TYPE_DST_MAC_ADDRESS ||
+	    !net_eth_is_addr_multicast(mac) || net_eth_is_addr_broadcast(mac)) {
+		return -ENOTSUP;
+	}
+
+	hash = eth_xlnx_gem_get_hash_index(mac);
+	hash_offset = hash < 32U ? ETH_XLNX_GEM_HASHL_OFFSET : ETH_XLNX_GEM_HASHH_OFFSET;
+	hash_mask = BIT(hash % 32U);
+
+	key = k_spin_lock(&dev_data->nwcfg_lock);
+
+	/*
+	 * Track exact addresses as well as hardware buckets. Exact membership
+	 * prevents an unset for a never-added colliding address from consuming
+	 * another address's bucket reference.
+	 */
+	for (size_t i = 0U; i < ARRAY_SIZE(dev_data->mcast_filter); i++) {
+		if (dev_data->mcast_filter[i].refcnt == 0U) {
+			if (free_slot < 0) {
+				free_slot = (int)i;
+			}
+		} else if (memcmp(dev_data->mcast_filter[i].mac_addr, mac->addr,
+				  sizeof(dev_data->mcast_filter[i].mac_addr)) == 0) {
+			filter_slot = (int)i;
+			break;
+		}
+	}
+
+	if (filter->set) {
+		if (filter_slot >= 0) {
+			if (dev_data->mcast_filter[filter_slot].refcnt == UINT16_MAX) {
+				k_spin_unlock(&dev_data->nwcfg_lock, key);
+				return -EOVERFLOW;
+			}
+
+			dev_data->mcast_filter[filter_slot].refcnt++;
+		} else {
+			if (free_slot < 0) {
+				k_spin_unlock(&dev_data->nwcfg_lock, key);
+				return -ENOSPC;
+			}
+
+			memcpy(dev_data->mcast_filter[free_slot].mac_addr, mac->addr,
+			       sizeof(dev_data->mcast_filter[free_slot].mac_addr));
+			dev_data->mcast_filter[free_slot].refcnt = 1U;
+
+			if (dev_data->mcast_hash_refcnt[hash]++ == 0U) {
+				reg_val = sys_read32(dev_conf->base_addr + hash_offset);
+				sys_write32(reg_val | hash_mask,
+					    dev_conf->base_addr + hash_offset);
+				dev_data->mcast_hash_active++;
+			}
+		}
+
+		reg_val = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+		sys_write32(reg_val | ETH_XLNX_GEM_NWCFG_MCASTHASHEN_BIT,
+			    dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+	} else {
+		if (filter_slot < 0) {
+			k_spin_unlock(&dev_data->nwcfg_lock, key);
+			return -ENOENT;
+		}
+
+		if (--dev_data->mcast_filter[filter_slot].refcnt == 0U) {
+			dev_data->mcast_hash_refcnt[hash]--;
+
+			if (dev_data->mcast_hash_refcnt[hash] == 0U) {
+				reg_val = sys_read32(dev_conf->base_addr + hash_offset);
+				reg_val &= ~hash_mask;
+				reg_val |= dev_data->hash_baseline[hash / 32U] & hash_mask;
+				sys_write32(reg_val, dev_conf->base_addr + hash_offset);
+				dev_data->mcast_hash_active--;
+
+				if (dev_data->mcast_hash_active == 0U &&
+				    !dev_conf->enable_mcast_hash) {
+					reg_val = sys_read32(dev_conf->base_addr +
+							     ETH_XLNX_GEM_NWCFG_OFFSET);
+					reg_val &= ~ETH_XLNX_GEM_NWCFG_MCASTHASHEN_BIT;
+					sys_write32(reg_val, dev_conf->base_addr +
+								    ETH_XLNX_GEM_NWCFG_OFFSET);
+				}
+			}
+		}
+	}
+
+	k_spin_unlock(&dev_data->nwcfg_lock, key);
+	return 0;
 }
 
 /**

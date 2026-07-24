@@ -1,0 +1,7 @@
+tests:
+  drivers.ethernet.xlnx_gem_filter:
+    platform_allow:
+      - qemu_cortex_a9
+    tags:
+      - drivers
+      - ethernet
