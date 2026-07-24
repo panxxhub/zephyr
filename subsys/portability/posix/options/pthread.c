@@ -84,14 +84,13 @@ BUILD_ASSERT(CONFIG_POSIX_PTHREAD_ATTR_STACKSIZE_BITS + CONFIG_POSIX_PTHREAD_ATT
 
 static void posix_thread_recycle(void);
 
-__pinned_data
 static sys_dlist_t posix_thread_q[] = {
 	SYS_DLIST_STATIC_INIT(&posix_thread_q[POSIX_THREAD_READY_Q]),
 	SYS_DLIST_STATIC_INIT(&posix_thread_q[POSIX_THREAD_RUN_Q]),
 	SYS_DLIST_STATIC_INIT(&posix_thread_q[POSIX_THREAD_DONE_Q]),
 };
 
-static __pinned_bss struct posix_thread posix_thread_pool[CONFIG_POSIX_THREAD_THREADS_MAX];
+static struct posix_thread posix_thread_pool[CONFIG_POSIX_THREAD_THREADS_MAX];
 
 static SYS_SEM_DEFINE(pthread_pool_lock, 1, 1);
 static int pthread_concurrency;
@@ -351,8 +350,9 @@ int pthread_attr_setstack(pthread_attr_t *_attr, void *stackaddr, size_t stacksi
 		return EACCES;
 	}
 
-	if (!__attr_is_initialized(attr) || stacksize == 0 || stacksize < PTHREAD_STACK_MIN ||
-	    stacksize > PTHREAD_STACK_MAX) {
+	if (!__attr_is_initialized(attr) || (stacksize == 0) ||
+	    (PTHREAD_STACK_MIN > 0 && stacksize < PTHREAD_STACK_MIN) ||
+	    (stacksize > PTHREAD_STACK_MAX)) {
 		LOG_DBG("Invalid stacksize %zu", stacksize);
 		return EINVAL;
 	}
@@ -1310,8 +1310,9 @@ int pthread_attr_setstacksize(pthread_attr_t *_attr, size_t stacksize)
 	void *new_stack;
 	struct posix_thread_attr *attr = (struct posix_thread_attr *)_attr;
 
-	if (!__attr_is_initialized(attr) || stacksize == 0 || stacksize < PTHREAD_STACK_MIN ||
-	    stacksize > PTHREAD_STACK_MAX) {
+	if (!__attr_is_initialized(attr) || (stacksize == 0) ||
+	    (PTHREAD_STACK_MIN > 0 && stacksize < PTHREAD_STACK_MIN) ||
+	    (stacksize > PTHREAD_STACK_MAX)) {
 		return EINVAL;
 	}
 

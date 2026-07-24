@@ -572,7 +572,7 @@ static int uart_xlnx_ps_irq_is_pending(const struct device *dev)
 	return (imr & isr) != 0;
 }
 
-static int uart_xlnx_ps_irq_update(const struct device *dev)
+static void uart_xlnx_ps_irq_update(const struct device *dev)
 {
 	uintptr_t reg_base = DEVICE_MMIO_GET(dev);
 	uint32_t isr = sys_read32(reg_base + XUARTPS_ISR_OFFSET);
@@ -580,7 +580,6 @@ static int uart_xlnx_ps_irq_update(const struct device *dev)
 
 	/* Clear only the flags that are both pending and enabled */
 	sys_write32(isr & imr, reg_base + XUARTPS_ISR_OFFSET);
-	return 1;
 }
 
 static void uart_xlnx_ps_irq_callback_set(const struct device *dev,

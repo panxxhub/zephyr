@@ -8,8 +8,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_BLUETOOTH_PBAP_H_
-#define ZEPHYR_INCLUDE_BLUETOOTH_PBAP_H_
+#ifndef ZEPHYR_INCLUDE_BLUETOOTH_CLASSIC_PBAP_H_
+#define ZEPHYR_INCLUDE_BLUETOOTH_CLASSIC_PBAP_H_
 
 /**
  * @brief Phone Book Access Profile (PBAP)
@@ -400,6 +400,9 @@ struct bt_pbap_pce {
 	/** @brief Callback operations structure. */
 	struct bt_pbap_pce_cb *cb;
 
+	/** @internal Underlying GOEP transport instance */
+	struct bt_goep_transport _goep_transport;
+
 	/** @internal GOEP (Generic Object Exchange Profile) instance. */
 	struct bt_goep _goep;
 
@@ -769,6 +772,9 @@ struct bt_pbap_pse {
 	/** @brief Callback operations structure. */
 	struct bt_pbap_pse_cb *cb;
 
+	/** @internal Underlying GOEP transport instance */
+	struct bt_goep_transport _goep_transport;
+
 	/** @internal GOEP (Generic Object Exchange Profile) instance. */
 	struct bt_goep _goep;
 
@@ -961,6 +967,9 @@ int bt_pbap_pse_abort_rsp(struct bt_pbap_pse *pbap_pse, uint8_t rsp_code, struct
  *               (@ref BT_OBEX_CHALLENGE_TAG_NONCE_LEN bytes).
  *
  *  @return 0 on success, negative error code on failure.
+ *
+ *  @warning PBAP v1.x uses MD5 for authentication, which is cryptographically weak.
+ *           PBAP authentication provides limited security.
  */
 int bt_pbap_calculate_nonce(const uint8_t *pwd, uint8_t nonce[BT_OBEX_CHALLENGE_TAG_NONCE_LEN]);
 
@@ -977,6 +986,9 @@ int bt_pbap_calculate_nonce(const uint8_t *pwd, uint8_t nonce[BT_OBEX_CHALLENGE_
  *                    (@ref BT_OBEX_RESPONSE_TAG_REQ_DIGEST_LEN bytes).
  *
  *  @return 0 on success, negative error code on failure.
+ *
+ *  @warning PBAP v1.x uses MD5 for authentication, which is cryptographically weak.
+ *           PBAP authentication provides limited security.
  */
 int bt_pbap_calculate_rsp_digest(const uint8_t *pwd,
 				 const uint8_t nonce[BT_OBEX_CHALLENGE_TAG_NONCE_LEN],
@@ -995,6 +1007,9 @@ int bt_pbap_calculate_rsp_digest(const uint8_t *pwd,
  *  @param pwd Password string used for authentication (null-terminated).
  *
  *  @return 0 if authentication is successful, negative error code on failure.
+ *
+ *  @warning PBAP v1.x uses MD5 for authentication, which is cryptographically weak.
+ *           PBAP authentication provides limited security.
  */
 int bt_pbap_verify_authentication(uint8_t nonce[BT_OBEX_CHALLENGE_TAG_NONCE_LEN],
 				  uint8_t rsp_digest[BT_OBEX_RESPONSE_TAG_REQ_DIGEST_LEN],
@@ -1008,4 +1023,4 @@ int bt_pbap_verify_authentication(uint8_t nonce[BT_OBEX_CHALLENGE_TAG_NONCE_LEN]
  * @}
  */
 
-#endif /* ZEPHYR_INCLUDE_BLUETOOTH_PBAP_H_ */
+#endif /* ZEPHYR_INCLUDE_BLUETOOTH_CLASSIC_PBAP_H_ */

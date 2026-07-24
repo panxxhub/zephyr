@@ -252,7 +252,7 @@ struct bt_le_ext_adv_cb {
 	void (*scanned)(struct bt_le_ext_adv *adv,
 			struct bt_le_ext_adv_scanned_info *info);
 
-#if defined(CONFIG_BT_PRIVACY)
+#if defined(CONFIG_BT_PRIVACY) || defined(__DOXYGEN__)
 	/**
 	 * @brief The RPA validity of the advertising set has expired.
 	 *
@@ -815,6 +815,19 @@ enum bt_le_adv_opt {
 	 * @kconfig_dep{BT_EXT_ADV_CODING_SELECTION}
 	 */
 	BT_LE_ADV_OPT_REQUIRE_S8_CODING = BIT(21),
+
+	/**
+	 * @brief Request a specific TX power level for the advertising set.
+	 *
+	 * When set, the @ref bt_le_adv_param.tx_power field is passed to the
+	 * controller as the desired TX power. The controller selects the closest
+	 * supported level and reports the actual value via
+	 * @ref bt_le_ext_adv_info.tx_power.
+	 *
+	 * When not set, the controller chooses the TX power freely
+	 * (equivalent to @ref BT_HCI_LE_ADV_TX_POWER_NO_PREF).
+	 */
+	BT_LE_ADV_OPT_TX_POWER = BIT(22),
 };
 
 /** LE Advertising Parameters. */
@@ -851,6 +864,17 @@ struct bt_le_adv_param {
 	 */
 	uint8_t  secondary_max_skip;
 
+	/**
+	 * @brief Requested TX power in dBm.
+	 *
+	 * Only used when @ref BT_LE_ADV_OPT_TX_POWER is set in @ref options.
+	 * Valid range is @ref BT_HCI_LE_ADV_TX_POWER_MIN to
+	 * @ref BT_HCI_LE_ADV_TX_POWER_MAX.
+	 * The controller selects the closest supported level and reports the
+	 * actual value via @ref bt_le_ext_adv_info.tx_power.
+	 */
+	int8_t tx_power;
+
 	/** @brief Bit-field of advertising options, see the @ref bt_le_adv_opt field. */
 	uint32_t options;
 
@@ -861,8 +885,10 @@ struct bt_le_adv_param {
 	 * Advertising Interval. The Minimum Advertising Interval and Maximum Advertising Interval
 	 * aren't recommended to be the same value to enable the Controller to determine the best
 	 * advertising interval given other activities.
-	 * (See Bluetooth Core Spec 6.0, Vol 4, Part E, section 7.8.5)
-	 * Range: 0x0020 to 0x4000
+	 * (See Bluetooth Core Spec 6.2, Vol 4, Part E, section 7.8.5)
+	 * Range for legacy advertising: 0x0020 to 0x4000
+	 * (See Bluetooth Core Spec 6.2, Vol 4, Part E, section 7.8.53)
+	 * Range for extended advertising: 0x0020 to 0xFFFFFF
 	 */
 	uint32_t interval_min;
 
@@ -873,8 +899,10 @@ struct bt_le_adv_param {
 	 * Advertising Interval. The Minimum Advertising Interval and Maximum Advertising Interval
 	 * aren't recommended to be the same value to enable the Controller to determine the best
 	 * advertising interval given other activities.
-	 * (See Bluetooth Core Spec 6.0, Vol 4, Part E, section 7.8.5)
-	 * Range: 0x0020 to 0x4000
+	 * (See Bluetooth Core Spec 6.2, Vol 4, Part E, section 7.8.5)
+	 * Range for legacy advertising: 0x0020 to 0x4000
+	 * (See Bluetooth Core Spec 6.2, Vol 4, Part E, section 7.8.53)
+	 * Range for extended advertising: 0x0020 to 0xFFFFFF
 	 */
 	uint32_t interval_max;
 
@@ -896,6 +924,23 @@ struct bt_le_adv_param {
 	const bt_addr_le_t *peer;
 };
 
+/**
+ * @brief Set the TX power in an advertising parameter struct.
+ *
+ * Convenience helper that sets @ref bt_le_adv_param.tx_power and enables
+ * @ref BT_LE_ADV_OPT_TX_POWER in @ref bt_le_adv_param.options in a single
+ * call.
+ *
+ * @param param    Advertising parameters to update.
+ * @param tx_power Requested TX power in dBm. Valid range is
+ *                 @ref BT_HCI_LE_ADV_TX_POWER_MIN to
+ *                 @ref BT_HCI_LE_ADV_TX_POWER_MAX.
+ */
+static inline void bt_le_adv_param_set_tx_power(struct bt_le_adv_param *param, int8_t tx_power)
+{
+	param->options |= BT_LE_ADV_OPT_TX_POWER;
+	param->tx_power = tx_power;
+}
 
 /** Periodic Advertising options */
 enum bt_le_per_adv_opt {
@@ -1472,7 +1517,7 @@ struct bt_le_ext_adv_info {
 	/** Local identity handle. */
 	uint8_t                    id;
 
-	/** Currently selected Transmit Power (dBM). */
+	/** Currently selected Transmit Power in dBm. Range: -127 to +20. */
 	int8_t                     tx_power;
 
 	/** Advertising Set ID */
@@ -1508,7 +1553,9 @@ int bt_le_ext_adv_get_info(const struct bt_le_ext_adv *adv,
  * and will be called for any discovered LE device.
  *
  * @param addr Advertiser LE address and type.
- * @param rssi Strength of advertiser signal.
+ * @param rssi Strength of advertiser signal in dBm. Range: -127 to +20.
+ *             May be set to @ref BT_GAP_RSSI_INVALID when the value is not
+ *             available.
  * @param adv_type Type of advertising response from advertiser.
  *                 Uses the @ref bt_gap_adv_type values.
  * @param buf Buffer containing advertiser data.
@@ -1548,6 +1595,27 @@ int bt_le_per_adv_set_param(struct bt_le_ext_adv *adv,
  */
 int bt_le_per_adv_set_data(const struct bt_le_ext_adv *adv,
 			   const struct bt_data *ad, size_t ad_len);
+
+/**
+ * @brief Update the Advertising Data Identifier (DID) for periodic advertising
+ *        without changing the data.
+ *
+ * This sends a HCI command with operation set to "unchanged data" which causes
+ * the controller to update the ADI field (DID) in the periodic advertising PDU
+ * without modifying the advertising data payload.
+ *
+ * @kconfig_dep{CONFIG_BT_PER_ADV}
+ *
+ * @note The advertising set must have periodic advertising started
+ *       (via @ref bt_le_per_adv_start), must contain data, and ADI inclusion
+ *       must have been enabled via @ref BT_LE_PER_ADV_OPT_INCLUDE_ADI
+ *       before calling this function.
+ *
+ * @param adv       Advertising set object.
+ *
+ * @return 0 on success, negative errno value on failure.
+ */
+int bt_le_per_adv_update_did(const struct bt_le_ext_adv *adv);
 
 /**
  * @brief Parameters for setting data for a specific periodic advertising with response subevent.
@@ -1665,7 +1733,7 @@ struct bt_le_per_adv_sync_synced_info {
 	 *
 	 */
 	struct bt_conn *conn;
-#if defined(CONFIG_BT_PER_ADV_SYNC_RSP)
+#if defined(CONFIG_BT_PER_ADV_SYNC_RSP) || defined(__DOXYGEN__)
 	/** Number of subevents */
 	uint8_t num_subevents;
 
@@ -1720,15 +1788,23 @@ struct bt_le_per_adv_sync_recv_info {
 	/** Advertising Set Identifier, valid range @ref BT_GAP_SID_MIN to @ref BT_GAP_SID_MAX. */
 	uint8_t sid;
 
-	/** The TX power of the advertisement. */
+	/** @brief The TX power of the advertisement in dBm.
+	 *
+	 *  Range: -127 to +20. May be set to @ref BT_GAP_TX_POWER_INVALID when the
+	 *  value is not available.
+	 */
 	int8_t tx_power;
 
-	/** The RSSI of the advertisement excluding any CTE. */
+	/** @brief The RSSI of the advertisement (excluding any CTE), in dBm.
+	 *
+	 *  Range: -127 to +20. May be set to @ref BT_GAP_RSSI_INVALID when the value
+	 *  is not available.
+	 */
 	int8_t rssi;
 
 	/** The Constant Tone Extension (CTE) of the advertisement (@ref bt_df_cte_type) */
 	uint8_t cte_type;
-#if defined(CONFIG_BT_PER_ADV_SYNC_RSP)
+#if defined(CONFIG_BT_PER_ADV_SYNC_RSP) || defined(__DOXYGEN__)
 	/** The value of the event counter where the subevent indication was received. */
 	uint16_t periodic_event_counter;
 
@@ -2360,10 +2436,18 @@ struct bt_le_scan_recv_info {
 	/** Advertising Set Identifier, valid range @ref BT_GAP_SID_MIN to @ref BT_GAP_SID_MAX. */
 	uint8_t sid;
 
-	/** Strength of advertiser signal. */
+	/** @brief Strength of advertiser signal in dBm.
+	 *
+	 *  Range: -127 to +20. May be set to @ref BT_GAP_RSSI_INVALID when the value
+	 *  is not available.
+	 */
 	int8_t rssi;
 
-	/** Transmit power of the advertiser. */
+	/** @brief Transmit power of the advertiser in dBm.
+	 *
+	 *  Range: -127 to +20. May be set to @ref BT_GAP_TX_POWER_INVALID when the
+	 *  value is not available.
+	 */
 	int8_t tx_power;
 
 	/**
@@ -2637,7 +2721,7 @@ int bt_le_filter_accept_list_clear(void);
  * channels are bad or unknown by setting the corresponding bit in the channel map to respectively
  * 0 or 1.
  *
- * @note The interval between two succesive calls to this function must be at least one second.
+ * @note The interval between two successive calls to this function must be at least one second.
  *
  * @param chan_map Channel map. 5 octets where each bit represents a channel. Only the lower 37 bits
  *        are valid.

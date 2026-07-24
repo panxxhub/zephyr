@@ -25,6 +25,8 @@
 			compatible = "arm,cortex-a55";
 			cpu-power-states = <&idle>;
 			reg = <0>;
+			i-cache-line-size = <64>;
+			d-cache-line-size = <64>;
 		};
 
 		cpu@100 {
@@ -32,6 +34,8 @@
 			compatible = "arm,cortex-a55";
 			cpu-power-states = <&idle>;
 			reg = <0x100>;
+			i-cache-line-size = <64>;
+			d-cache-line-size = <64>;
 		};
 	};
 
@@ -558,7 +562,7 @@
 	};
 
 	enet: enet@42890000 {
-		compatible = "nxp,enet1g";
+		compatible = "nxp,enet";
 		reg = <0x42890000 DT_SIZE_K(64)>;
 		clocks = <&ccm IMX_CCM_ENET_CLK 0 0>;
 		status = "disabled";

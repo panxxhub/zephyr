@@ -49,7 +49,7 @@ LOG_MODULE_REGISTER(bt_mcs, CONFIG_BT_MCS_LOG_LEVEL);
  */
 #define MUTEX_TIMEOUT K_MSEC(1000U)
 
-static void notify(const struct bt_uuid *uuid, const void *data, uint16_t len);
+static int notify(struct bt_conn *conn, const struct bt_uuid *uuid, const void *data, uint16_t len);
 
 static struct media_proxy_sctrl_cbs cbs;
 
@@ -97,6 +97,8 @@ static struct mcs_inst {
 
 static void disconnected(struct bt_conn *conn, uint8_t reason)
 {
+	ARG_UNUSED(reason);
+
 	__maybe_unused int err;
 
 	err = k_mutex_lock(&mcs_inst.mutex, MUTEX_TIMEOUT);
@@ -154,6 +156,8 @@ static ssize_t read_player_name(struct bt_conn *conn,
 static void player_name_cfg_changed(const struct bt_gatt_attr *attr,
 				    uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -211,6 +215,8 @@ static ssize_t read_icon_url(struct bt_conn *conn,
 
 static void track_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -252,6 +258,8 @@ static ssize_t read_track_title(struct bt_conn *conn,
 static void track_title_cfg_changed(const struct bt_gatt_attr *attr,
 				    uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -269,6 +277,8 @@ static ssize_t read_track_duration(struct bt_conn *conn,
 
 static void track_duration_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -291,6 +301,10 @@ static ssize_t write_track_position(struct bt_conn *conn,
 {
 	int32_t position;
 
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
 	if (offset != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
@@ -311,6 +325,8 @@ static ssize_t write_track_position(struct bt_conn *conn,
 static void track_position_cfg_changed(const struct bt_gatt_attr *attr,
 				       uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -330,6 +346,10 @@ static ssize_t write_playback_speed(struct bt_conn *conn, const struct bt_gatt_a
 {
 	int8_t speed;
 
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
 	if (offset != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
 	}
@@ -348,6 +368,8 @@ static ssize_t write_playback_speed(struct bt_conn *conn, const struct bt_gatt_a
 
 static void playback_speed_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -365,6 +387,8 @@ static ssize_t read_seeking_speed(struct bt_conn *conn, const struct bt_gatt_att
 static void seeking_speed_cfg_changed(const struct bt_gatt_attr *attr,
 				      uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -406,6 +430,10 @@ static ssize_t write_current_track_id(struct bt_conn *conn,
 {
 	uint64_t id;
 
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
 	if (offset != 0) {
 		LOG_DBG("Invalid offset");
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
@@ -432,6 +460,8 @@ static ssize_t write_current_track_id(struct bt_conn *conn,
 static void current_track_id_cfg_changed(const struct bt_gatt_attr *attr,
 					 uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -463,6 +493,10 @@ static ssize_t write_next_track_id(struct bt_conn *conn,
 {
 	uint64_t id;
 
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
 	if (offset != 0) {
 		LOG_DBG("Invalid offset");
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
@@ -489,6 +523,8 @@ static ssize_t write_next_track_id(struct bt_conn *conn,
 static void next_track_id_cfg_changed(const struct bt_gatt_attr *attr,
 				      uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -510,6 +546,8 @@ static ssize_t read_parent_group_id(struct bt_conn *conn,
 static void parent_group_id_cfg_changed(const struct bt_gatt_attr *attr,
 					uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -534,6 +572,10 @@ static ssize_t write_current_group_id(struct bt_conn *conn,
 				      uint8_t flags)
 {
 	uint64_t id;
+
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
 
 	if (offset != 0) {
 		LOG_DBG("Invalid offset");
@@ -561,6 +603,8 @@ static ssize_t write_current_group_id(struct bt_conn *conn,
 
 static void current_group_id_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 #endif /* CONFIG_BT_OTS */
@@ -579,6 +623,10 @@ static ssize_t read_playing_order(struct bt_conn *conn,
 static ssize_t write_playing_order(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 				   const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
 {
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(flags);
+
 	LOG_DBG("Playing order write");
 
 	int8_t order;
@@ -601,6 +649,8 @@ static ssize_t write_playing_order(struct bt_conn *conn, const struct bt_gatt_at
 
 static void playing_order_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -629,6 +679,8 @@ static ssize_t read_media_state(struct bt_conn *conn, const struct bt_gatt_attr 
 static void media_state_cfg_changed(const struct bt_gatt_attr *attr,
 				    uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -637,6 +689,9 @@ static ssize_t write_control_point(struct bt_conn *conn, const struct bt_gatt_at
 				   uint8_t write_flags)
 {
 	struct mpl_cmd command;
+
+	ARG_UNUSED(attr);
+	ARG_UNUSED(write_flags);
 
 	if (offset != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
@@ -658,10 +713,15 @@ static ssize_t write_control_point(struct bt_conn *conn, const struct bt_gatt_at
 			.requested_opcode = command.opcode,
 			.result_code = BT_MCS_OPC_NTF_NOT_SUPPORTED,
 		};
+		int err;
 
 		LOG_DBG("Opcode 0x%02X is invalid", command.opcode);
 
-		notify(BT_UUID_MCS_MEDIA_CONTROL_POINT, &cmd_ntf, sizeof(cmd_ntf));
+		/* TODO: Offload to systemwq */
+		err = notify(conn, BT_UUID_MCS_MEDIA_CONTROL_POINT, &cmd_ntf, sizeof(cmd_ntf));
+		if (err != 0) {
+			LOG_WRN("Couldn't notify CP: %d", err);
+		}
 
 		return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
 	}
@@ -686,7 +746,13 @@ static ssize_t write_control_point(struct bt_conn *conn, const struct bt_gatt_at
 
 			LOG_DBG("Busy with other operation");
 
-			notify(BT_UUID_MCS_MEDIA_CONTROL_POINT, &cmd_ntf, sizeof(cmd_ntf));
+			/* TODO: Offload to systemwq */
+			err = notify(conn, BT_UUID_MCS_MEDIA_CONTROL_POINT, &cmd_ntf,
+				     sizeof(cmd_ntf));
+			if (err != 0) {
+				LOG_WRN("Couldn't notify CP: %d", err);
+				/* TODO: Ignore? Not much else we can do */
+			}
 
 			return BT_GATT_ERR(BT_ATT_ERR_PROCEDURE_IN_PROGRESS);
 		}
@@ -711,6 +777,8 @@ static ssize_t write_control_point(struct bt_conn *conn, const struct bt_gatt_at
 static void control_point_cfg_changed(const struct bt_gatt_attr *attr,
 				      uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -728,6 +796,8 @@ static ssize_t read_opcodes_supported(struct bt_conn *conn,
 
 static void opcodes_supported_cfg_changed(const struct bt_gatt_attr *attr, uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -737,6 +807,9 @@ static ssize_t write_search_control_point(struct bt_conn *conn, const struct bt_
 					  uint8_t write_flags)
 {
 	struct mpl_search search = {0};
+
+	ARG_UNUSED(attr);
+	ARG_UNUSED(write_flags);
 
 	if (offset != 0) {
 		return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
@@ -763,7 +836,12 @@ static ssize_t write_search_control_point(struct bt_conn *conn, const struct bt_
 
 			LOG_DBG("Busy with other operation");
 
-			notify(BT_UUID_MCS_SEARCH_CONTROL_POINT, &result_code, sizeof(result_code));
+			/* TODO: Offload to systemwq */
+			err = notify(conn, BT_UUID_MCS_SEARCH_CONTROL_POINT, &result_code,
+				     sizeof(result_code));
+			if (err != 0) {
+				LOG_WRN("Failed to notify cp: %d", err);
+			}
 
 			return BT_GATT_ERR(BT_ATT_ERR_PROCEDURE_IN_PROGRESS);
 		}
@@ -787,6 +865,8 @@ static ssize_t write_search_control_point(struct bt_conn *conn, const struct bt_
 static void search_control_point_cfg_changed(const struct bt_gatt_attr *attr,
 					     uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 
@@ -807,7 +887,7 @@ static ssize_t read_search_results_id(struct bt_conn *conn,
 	/* *Spec requirement - IDs may not be valid, in which case the */
 	/* characteristic shall be zero length. */
 
-	if (search_id == 0) {
+	if (search_id == 0U) {
 		return bt_gatt_attr_read(conn, attr, buf, len, offset,
 					 NULL, 0);
 	} else {
@@ -823,6 +903,8 @@ static ssize_t read_search_results_id(struct bt_conn *conn,
 static void search_results_id_cfg_changed(const struct bt_gatt_attr *attr,
 					  uint16_t value)
 {
+	ARG_UNUSED(attr);
+
 	LOG_DBG("value 0x%04x", value);
 }
 #endif /* CONFIG_BT_OTS */
@@ -987,32 +1069,26 @@ struct bt_ots *bt_mcs_get_ots(void)
 
 /* Callback functions from the media player, notifying attributes */
 /* Placed here, after the service definition, because they reference it. */
-
-/* Helper function to notify non-string values */
-static void notify(const struct bt_uuid *uuid, const void *data, uint16_t len)
-{
-	int err = bt_gatt_notify_uuid(NULL, uuid, mcs.attrs, data, len);
-
-	if (err) {
-		if (err == -ENOTCONN) {
-			LOG_DBG("Notification error: ENOTCONN (%d)", err);
-		} else {
-			LOG_ERR("Notification error: %d", err);
-		}
-	}
-}
-
-static void notify_string(struct bt_conn *conn, const struct bt_uuid *uuid, const char *str)
+static int notify(struct bt_conn *conn, const struct bt_uuid *uuid, const void *data, uint16_t len)
 {
 	const uint16_t max_ntf_size = bt_audio_get_max_ntf_size(conn);
 	int err;
 
-	/* Send notification potentially truncated to the MTU */
-	err = bt_gatt_notify_uuid(conn, uuid, mcs.attrs, (void *)str,
-				  MIN(strlen(str), max_ntf_size));
-	if (err != 0) {
-		LOG_ERR("Notification error: %d", err);
+	if (max_ntf_size < len) {
+		LOG_DBG("Truncating notification to %u (was %u) for %p", max_ntf_size, len, conn);
+		len = max_ntf_size;
 	}
+
+	err = bt_gatt_notify_uuid(conn, uuid, mcs.attrs, data, len);
+	if (err == -ENOMEM || err == -EAGAIN) {
+		/* Only return error if it makes sense to retry, else just treat as completed (e.g.
+		 * in case of security issues or unsubscribe it does not make sense to try)
+		 */
+		return err;
+	}
+	__ASSERT(err != -EINVAL, "bt_gatt_notify_uuid returned -EINVAL");
+
+	return 0;
 }
 
 struct mcs_notify_cb_info {
@@ -1061,7 +1137,7 @@ static void set_value_changed(void (*value_cb)(struct mcs_flags *flags), const s
 	err = k_mutex_lock(&mcs_inst.mutex, MUTEX_TIMEOUT);
 	__ASSERT(err == 0, "Failed to lock mutex: %d", err);
 
-	__ASSERT(cb_info.attr != NULL, "Failed to look attribute for %s", bt_uuid_str(uuid));
+	__ASSERT(cb_info.attr != NULL, "Failed to find attribute for %s", bt_uuid_str(uuid));
 	bt_conn_foreach(BT_CONN_TYPE_LE, set_value_changed_cb, &cb_info);
 
 	err = k_mutex_unlock(&mcs_inst.mutex);
@@ -1074,6 +1150,8 @@ static void notify_cb(struct bt_conn *conn, void *data)
 	struct mcs_flags *flags;
 	struct bt_conn_info info;
 	int err;
+
+	ARG_UNUSED(data);
 
 	err = bt_conn_get_info(conn, &info);
 	if (err != 0) {
@@ -1089,7 +1167,7 @@ static void notify_cb(struct bt_conn *conn, void *data)
 	err = k_mutex_lock(&mcs_inst.mutex, K_NO_WAIT);
 	if (err != 0) {
 		LOG_DBG("Failed to take mutex: %d", err);
-		err = k_work_reschedule(&mcs_inst.notify_work, K_USEC(info.le.interval_us));
+		err = k_work_schedule(&mcs_inst.notify_work, K_USEC(info.le.interval_us));
 		__ASSERT(err >= 0, "Failed to reschedule work: %d", err);
 		return;
 	}
@@ -1101,18 +1179,24 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		const char *name = media_proxy_sctrl_get_player_name();
 
 		LOG_DBG("Notifying player name: %s", name);
-		notify_string(conn, BT_UUID_MCS_PLAYER_NAME, name);
-
-		flags->player_name_changed = false;
+		err = notify(conn, BT_UUID_MCS_PLAYER_NAME, name, strlen(name));
+		if (err == 0) {
+			flags->player_name_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->track_title_changed) {
 		const char *title = media_proxy_sctrl_get_track_title();
 
 		LOG_DBG("Notifying track title: %s", title);
-		notify_string(conn, BT_UUID_MCS_TRACK_TITLE, title);
-
-		flags->track_title_changed = false;
+		err = notify(conn, BT_UUID_MCS_TRACK_TITLE, title, strlen(title));
+		if (err == 0) {
+			flags->track_title_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->track_duration_changed) {
@@ -1120,9 +1204,12 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		int32_t duration_le = sys_cpu_to_le32(duration);
 
 		LOG_DBG("Notifying track duration: %d", duration);
-		notify(BT_UUID_MCS_TRACK_DURATION, &duration_le, sizeof(duration_le));
-
-		flags->track_duration_changed = false;
+		err = notify(conn, BT_UUID_MCS_TRACK_DURATION, &duration_le, sizeof(duration_le));
+		if (err == 0) {
+			flags->track_duration_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->track_position_changed) {
@@ -1130,27 +1217,36 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		int32_t position_le = sys_cpu_to_le32(position);
 
 		LOG_DBG("Notifying track position: %d", position);
-		notify(BT_UUID_MCS_TRACK_POSITION, &position_le, sizeof(position_le));
-
-		flags->track_position_changed = false;
+		err = notify(conn, BT_UUID_MCS_TRACK_POSITION, &position_le, sizeof(position_le));
+		if (err == 0) {
+			flags->track_position_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->playback_speed_changed) {
 		int8_t speed = media_proxy_sctrl_get_playback_speed();
 
 		LOG_DBG("Notifying playback speed: %d", speed);
-		notify(BT_UUID_MCS_PLAYBACK_SPEED, &speed, sizeof(speed));
-
-		flags->playback_speed_changed = false;
+		err = notify(conn, BT_UUID_MCS_PLAYBACK_SPEED, &speed, sizeof(speed));
+		if (err == 0) {
+			flags->playback_speed_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->seeking_speed_changed) {
 		int8_t speed = media_proxy_sctrl_get_seeking_speed();
 
 		LOG_DBG("Notifying seeking speed: %d", speed);
-		notify(BT_UUID_MCS_SEEKING_SPEED, &speed, sizeof(speed));
-
-		flags->seeking_speed_changed = false;
+		err = notify(conn, BT_UUID_MCS_SEEKING_SPEED, &speed, sizeof(speed));
+		if (err == 0) {
+			flags->seeking_speed_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 #if defined(CONFIG_BT_OTS)
@@ -1161,9 +1257,13 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		sys_put_le48(track_id, track_id_le);
 
 		LOG_DBG_OBJ_ID("Notifying current track ID: ", track_id);
-		notify(BT_UUID_MCS_CURRENT_TRACK_OBJ_ID, track_id_le, sizeof(track_id_le));
-
-		flags->current_track_obj_id_changed = false;
+		err = notify(conn, BT_UUID_MCS_CURRENT_TRACK_OBJ_ID, track_id_le,
+			     sizeof(track_id_le));
+		if (err == 0) {
+			flags->current_track_obj_id_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->next_track_obj_id_changed) {
@@ -1174,17 +1274,22 @@ static void notify_cb(struct bt_conn *conn, void *data)
 			 * characteristic shall be zero."
 			 */
 			LOG_DBG_OBJ_ID("Notifying EMPTY next track ID: ", track_id);
-			notify(BT_UUID_MCS_NEXT_TRACK_OBJ_ID, NULL, 0);
+			err = notify(conn, BT_UUID_MCS_NEXT_TRACK_OBJ_ID, NULL, 0);
 		} else {
 			uint8_t track_id_le[BT_OTS_OBJ_ID_SIZE];
 
 			sys_put_le48(track_id, track_id_le);
 
 			LOG_DBG_OBJ_ID("Notifying next track ID: ", track_id);
-			notify(BT_UUID_MCS_NEXT_TRACK_OBJ_ID, track_id_le, sizeof(track_id_le));
+			err = notify(conn, BT_UUID_MCS_NEXT_TRACK_OBJ_ID, track_id_le,
+				     sizeof(track_id_le));
 		}
 
-		flags->next_track_obj_id_changed = false;
+		if (err == 0) {
+			flags->next_track_obj_id_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->parent_group_obj_id_changed) {
@@ -1194,9 +1299,13 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		sys_put_le48(group_id, group_id_le);
 
 		LOG_DBG_OBJ_ID("Notifying parent group ID: ", group_id);
-		notify(BT_UUID_MCS_PARENT_GROUP_OBJ_ID, &group_id_le, sizeof(group_id_le));
-
-		flags->parent_group_obj_id_changed = false;
+		err = notify(conn, BT_UUID_MCS_PARENT_GROUP_OBJ_ID, &group_id_le,
+			     sizeof(group_id_le));
+		if (err == 0) {
+			flags->parent_group_obj_id_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->current_group_obj_id_changed) {
@@ -1206,35 +1315,48 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		sys_put_le48(group_id, group_id_le);
 
 		LOG_DBG_OBJ_ID("Notifying current group ID: ", group_id);
-		notify(BT_UUID_MCS_CURRENT_GROUP_OBJ_ID, &group_id_le, sizeof(group_id_le));
-
-		flags->current_group_obj_id_changed = false;
+		err = notify(conn, BT_UUID_MCS_CURRENT_GROUP_OBJ_ID, &group_id_le,
+			     sizeof(group_id_le));
+		if (err == 0) {
+			flags->current_group_obj_id_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 #endif /* CONFIG_BT_OTS */
 
 	if (flags->track_changed_changed) {
 		LOG_DBG("Notifying track change");
-		notify(BT_UUID_MCS_TRACK_CHANGED, NULL, 0);
-
-		flags->track_changed_changed = false;
+		err = notify(conn, BT_UUID_MCS_TRACK_CHANGED, NULL, 0);
+		if (err == 0) {
+			flags->track_changed_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->playing_order_changed) {
 		uint8_t order = media_proxy_sctrl_get_playing_order();
 
 		LOG_DBG("Notifying playing order: %d", order);
-		notify(BT_UUID_MCS_PLAYING_ORDER, &order, sizeof(order));
-
-		flags->playing_order_changed = false;
+		err = notify(conn, BT_UUID_MCS_PLAYING_ORDER, &order, sizeof(order));
+		if (err == 0) {
+			flags->playing_order_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->media_state_changed) {
 		uint8_t state = media_proxy_sctrl_get_media_state();
 
 		LOG_DBG("Notifying media state: %d", state);
-		notify(BT_UUID_MCS_MEDIA_STATE, &state, sizeof(state));
-
-		flags->media_state_changed = false;
+		err = notify(conn, BT_UUID_MCS_MEDIA_STATE, &state, sizeof(state));
+		if (err == 0) {
+			flags->media_state_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->media_control_opcodes_changed) {
@@ -1242,9 +1364,13 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		uint32_t opcodes_le = sys_cpu_to_le32(opcodes);
 
 		LOG_DBG("Notifying command opcodes supported: %d (0x%08x)", opcodes, opcodes);
-		notify(BT_UUID_MCS_MEDIA_CONTROL_OPCODES, &opcodes_le, sizeof(opcodes_le));
-
-		flags->media_control_opcodes_changed = false;
+		err = notify(conn, BT_UUID_MCS_MEDIA_CONTROL_OPCODES, &opcodes_le,
+			     sizeof(opcodes_le));
+		if (err == 0) {
+			flags->media_control_opcodes_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 #if defined(CONFIG_BT_OTS)
@@ -1255,27 +1381,46 @@ static void notify_cb(struct bt_conn *conn, void *data)
 		sys_put_le48(search_id, search_id_le);
 
 		LOG_DBG_OBJ_ID("Notifying search results ID: ", search_id);
-		notify(BT_UUID_MCS_SEARCH_RESULTS_OBJ_ID, &search_id_le, sizeof(search_id_le));
-
-		flags->search_results_obj_id_changed = false;
+		err = notify(conn, BT_UUID_MCS_SEARCH_RESULTS_OBJ_ID, &search_id_le,
+			     sizeof(search_id_le));
+		if (err == 0) {
+			flags->search_results_obj_id_changed = false;
+		} else {
+			goto exit;
+		}
 	}
 
 	if (flags->search_control_point_result) {
 		uint8_t result_code = client->search_control_point_result;
 
 		LOG_DBG("Notifying search control point - result: %d", result_code);
-		notify(BT_UUID_MCS_SEARCH_CONTROL_POINT, &result_code, sizeof(result_code));
-
-		flags->search_control_point_result = false;
+		err = notify(conn, BT_UUID_MCS_SEARCH_CONTROL_POINT, &result_code,
+			     sizeof(result_code));
+		if (err == 0) {
+			flags->search_control_point_result = false;
+		} else {
+			goto exit;
+		}
 	}
 #endif /* CONFIG_BT_OTS */
 
 	if (flags->media_control_point_result) {
 		LOG_DBG("Notifying control point command - opcode: %d, result: %d",
 			client->cmd_ntf.requested_opcode, client->cmd_ntf.result_code);
-		notify(BT_UUID_MCS_MEDIA_CONTROL_POINT, &client->cmd_ntf, sizeof(client->cmd_ntf));
+		err = notify(conn, BT_UUID_MCS_MEDIA_CONTROL_POINT, &client->cmd_ntf,
+			     sizeof(client->cmd_ntf));
+		if (err == 0) {
+			flags->media_control_point_result = false;
+		} else {
+			goto exit;
+		}
+	}
 
-		flags->media_control_point_result = false;
+exit:
+	if (err != 0) {
+		LOG_DBG("Notify failed (%d), retrying next connection interval", err);
+		err = k_work_schedule(&mcs_inst.notify_work, K_USEC(info.le.interval_us));
+		__ASSERT(err >= 0, "Failed to reschedule work: %d", err);
 	}
 
 	err = k_mutex_unlock(&mcs_inst.mutex);
@@ -1284,6 +1429,8 @@ static void notify_cb(struct bt_conn *conn, void *data)
 
 static void deferred_nfy_work_handler(struct k_work *work)
 {
+	ARG_UNUSED(work);
+
 	bt_conn_foreach(BT_CONN_TYPE_LE, notify_cb, NULL);
 }
 
@@ -1295,6 +1442,8 @@ static void set_player_name_changed_cb(struct mcs_flags *flags)
 
 static void media_proxy_sctrl_player_name_cb(const char *name)
 {
+	ARG_UNUSED(name);
+
 	set_value_changed(set_player_name_changed_cb, BT_UUID_MCS_PLAYER_NAME);
 }
 
@@ -1305,6 +1454,8 @@ static void set_icon_url_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_icon_url_cb(const char *name)
 {
+	ARG_UNUSED(name);
+
 	set_value_changed(set_icon_url_changed_cb, BT_UUID_MCS_ICON_URL);
 }
 
@@ -1326,6 +1477,8 @@ static void set_track_title_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_track_title_cb(const char *title)
 {
+	ARG_UNUSED(title);
+
 	set_value_changed(set_track_title_changed_cb, BT_UUID_MCS_TRACK_TITLE);
 }
 
@@ -1336,6 +1489,8 @@ static void set_track_position_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_track_position_cb(int32_t position)
 {
+	ARG_UNUSED(position);
+
 	set_value_changed(set_track_position_changed_cb, BT_UUID_MCS_TRACK_POSITION);
 }
 
@@ -1346,6 +1501,8 @@ static void set_track_duration_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_track_duration_cb(int32_t duration)
 {
+	ARG_UNUSED(duration);
+
 	set_value_changed(set_track_duration_changed_cb, BT_UUID_MCS_TRACK_DURATION);
 }
 
@@ -1356,6 +1513,8 @@ static void set_playback_speed_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_playback_speed_cb(int8_t speed)
 {
+	ARG_UNUSED(speed);
+
 	set_value_changed(set_playback_speed_changed_cb, BT_UUID_MCS_PLAYBACK_SPEED);
 }
 
@@ -1366,6 +1525,8 @@ static void set_seeking_speed_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_seeking_speed_cb(int8_t speed)
 {
+	ARG_UNUSED(speed);
+
 	set_value_changed(set_seeking_speed_changed_cb, BT_UUID_MCS_SEEKING_SPEED);
 }
 
@@ -1377,6 +1538,8 @@ static void set_current_track_obj_id_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_current_track_id_cb(uint64_t id)
 {
+	ARG_UNUSED(id);
+
 	set_value_changed(set_current_track_obj_id_changed_cb, BT_UUID_MCS_CURRENT_TRACK_OBJ_ID);
 }
 
@@ -1387,6 +1550,8 @@ static void set_next_track_obj_id_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_next_track_id_cb(uint64_t id)
 {
+	ARG_UNUSED(id);
+
 	set_value_changed(set_next_track_obj_id_changed_cb, BT_UUID_MCS_NEXT_TRACK_OBJ_ID);
 }
 
@@ -1397,6 +1562,8 @@ static void set_parent_group_obj_id_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_parent_group_id_cb(uint64_t id)
 {
+	ARG_UNUSED(id);
+
 	set_value_changed(set_parent_group_obj_id_changed_cb, BT_UUID_MCS_PARENT_GROUP_OBJ_ID);
 }
 
@@ -1407,6 +1574,8 @@ static void set_current_group_obj_id_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_current_group_id_cb(uint64_t id)
 {
+	ARG_UNUSED(id);
+
 	set_value_changed(set_current_group_obj_id_changed_cb, BT_UUID_MCS_CURRENT_GROUP_OBJ_ID);
 }
 #endif /* CONFIG_BT_OTS */
@@ -1418,6 +1587,8 @@ static void set_playing_order_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_playing_order_cb(uint8_t order)
 {
+	ARG_UNUSED(order);
+
 	set_value_changed(set_playing_order_changed_cb, BT_UUID_MCS_PLAYING_ORDER);
 }
 
@@ -1428,6 +1599,8 @@ static void set_media_state_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_media_state_cb(uint8_t state)
 {
+	ARG_UNUSED(state);
+
 	set_value_changed(set_media_state_changed_cb, BT_UUID_MCS_MEDIA_STATE);
 }
 
@@ -1482,6 +1655,8 @@ static void set_media_control_opcodes_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_commands_supported_cb(uint32_t opcodes)
 {
+	ARG_UNUSED(opcodes);
+
 	set_value_changed(set_media_control_opcodes_changed_cb, BT_UUID_MCS_MEDIA_CONTROL_OPCODES);
 }
 
@@ -1537,6 +1712,8 @@ static void set_search_results_obj_id_changed_cb(struct mcs_flags *flags)
 
 void media_proxy_sctrl_search_results_id_cb(uint64_t id)
 {
+	ARG_UNUSED(id);
+
 	set_value_changed(set_search_results_obj_id_changed_cb, BT_UUID_MCS_SEARCH_RESULTS_OBJ_ID);
 }
 #endif /* CONFIG_BT_OTS */
@@ -1572,7 +1749,7 @@ int bt_mcs_init(struct bt_ots_cb *ots_cbs)
 
 	/* Initialize OTS instance. */
 	err = bt_ots_init(ots, &ots_init);
-	if (err) {
+	if (err != 0) {
 		LOG_ERR("Failed to init OTS (err:%d)\n", err);
 		return err;
 	}
@@ -1587,7 +1764,7 @@ int bt_mcs_init(struct bt_ots_cb *ots_cbs)
 
 	err = bt_gatt_service_register(&mcs);
 
-	if (err) {
+	if (err != 0) {
 		LOG_ERR("Could not register the MCS service");
 #ifdef CONFIG_BT_OTS
 		/* TODO: How does one un-register the OTS? */

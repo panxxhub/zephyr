@@ -221,6 +221,7 @@ enum modem_chat_script_send_state {
  * @warning Do not modify any members of this struct directly
  */
 struct modem_chat {
+	/** @cond INTERNAL_HIDDEN */
 	/* Pipe used to send and receive data */
 	struct modem_pipe *pipe;
 
@@ -233,16 +234,16 @@ struct modem_chat {
 	uint16_t receive_buf_len;
 
 	/* Work buffer */
-	uint8_t work_buf[32];
+	uint8_t work_buf[CONFIG_MODEM_CHAT_WORK_BUFFER_SIZE];
 	uint16_t work_buf_len;
 
 	/* Chat delimiter */
-	uint8_t *delimiter;
+	const uint8_t *delimiter;
 	uint16_t delimiter_size;
 	uint16_t delimiter_match_len;
 
 	/* Array of bytes which are discarded out by parser */
-	uint8_t *filter;
+	const uint8_t *filter;
 	uint16_t filter_size;
 
 	/* Parsed arguments */
@@ -280,6 +281,10 @@ struct modem_chat {
 	uint16_t parse_match_len;
 	uint16_t parse_arg_len;
 	uint16_t parse_match_type;
+#if defined(CONFIG_MODEM_CHAT_LOG_RAW_RX)
+	uint8_t raw_log_separators[CONFIG_MODEM_CHAT_LOG_BUFFER_SIZE];
+	uint16_t raw_log_separators_len;
+#endif
 
 	/* Process received data */
 	struct k_work receive_work;
@@ -289,6 +294,7 @@ struct modem_chat {
 	struct modem_stats_buffer receive_buf_stats;
 	struct modem_stats_buffer work_buf_stats;
 #endif
+	/** @endcond */
 };
 
 /**
@@ -302,11 +308,11 @@ struct modem_chat_config {
 	/** Size of receive buffer should be longest line + longest match */
 	uint16_t receive_buf_size;
 	/** Delimiter */
-	uint8_t *delimiter;
+	const uint8_t *delimiter;
 	/** Size of delimiter */
 	uint8_t delimiter_size;
 	/** Bytes which are discarded by parser */
-	uint8_t *filter;
+	const uint8_t *filter;
 	/** Size of filter */
 	uint8_t filter_size;
 	/** Array of pointers used to point to parsed arguments */

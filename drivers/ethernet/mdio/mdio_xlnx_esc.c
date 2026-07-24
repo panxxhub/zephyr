@@ -45,8 +45,10 @@ struct mdio_xlnx_esc_config {
 
 struct mdio_xlnx_esc_data {
 	DEVICE_MMIO_RAM;
-	struct k_mutex mutex;
 };
+
+/* All logical ESC MDIO ports share one hardware command/data engine. */
+K_MUTEX_DEFINE(mdio_xlnx_esc_lock);
 
 static inline uint32_t esc_mdio_read32(const struct device *dev, uint32_t offset)
 {
@@ -88,11 +90,10 @@ static int mdio_xlnx_esc_read_c22(const struct device *dev, uint8_t prtad,
 				   uint8_t regad, uint16_t *data)
 {
 	const struct mdio_xlnx_esc_config *cfg = dev->config;
-	struct mdio_xlnx_esc_data *priv = dev->data;
 	uint32_t ctrl;
 	int ret;
 
-	k_mutex_lock(&priv->mutex, K_FOREVER);
+	k_mutex_lock(&mdio_xlnx_esc_lock, K_FOREVER);
 
 	ret = mdio_xlnx_esc_wait_idle(dev);
 	if (ret) {
@@ -114,7 +115,7 @@ static int mdio_xlnx_esc_read_c22(const struct device *dev, uint8_t prtad,
 	*data = esc_mdio_read16(dev, ESC_MII_DATA_OFFSET);
 
 out:
-	k_mutex_unlock(&priv->mutex);
+	k_mutex_unlock(&mdio_xlnx_esc_lock);
 	return ret;
 }
 
@@ -122,11 +123,10 @@ static int mdio_xlnx_esc_write_c22(const struct device *dev, uint8_t prtad,
 				    uint8_t regad, uint16_t data)
 {
 	const struct mdio_xlnx_esc_config *cfg = dev->config;
-	struct mdio_xlnx_esc_data *priv = dev->data;
 	uint32_t ctrl;
 	int ret;
 
-	k_mutex_lock(&priv->mutex, K_FOREVER);
+	k_mutex_lock(&mdio_xlnx_esc_lock, K_FOREVER);
 
 	ret = mdio_xlnx_esc_wait_idle(dev);
 	if (ret) {
@@ -144,20 +144,17 @@ static int mdio_xlnx_esc_write_c22(const struct device *dev, uint8_t prtad,
 	ret = mdio_xlnx_esc_wait_idle(dev);
 
 out:
-	k_mutex_unlock(&priv->mutex);
+	k_mutex_unlock(&mdio_xlnx_esc_lock);
 	return ret;
 }
 
 static int mdio_xlnx_esc_init(const struct device *dev)
 {
-	struct mdio_xlnx_esc_data *priv = dev->data;
-
 	/* ESC register space is shared with the main ESC driver and must stay
 	 * strongly ordered / uncached. A cached alias here can break MDIO busy
 	 * polling and command visibility on MMU-enabled Zynq targets.
 	 */
 	DEVICE_MMIO_MAP(dev, K_MEM_CACHE_NONE);
-	k_mutex_init(&priv->mutex);
 
 	LOG_DBG("ESC MDIO bus initialized (port %u)",
 		((const struct mdio_xlnx_esc_config *)dev->config)->port_id);

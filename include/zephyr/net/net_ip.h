@@ -310,6 +310,12 @@ struct net_cmsghdr {
 	z_max_align_t cmsg_data[]; /**< Flexible array member to force alignment of net_cmsghdr */
 };
 
+/** Linger option struct for the SO_LINGER socket option */
+struct net_linger {
+	int l_onoff;  /**< Whether the linger behaviour is enabled */
+	int l_linger; /**< Linger time in seconds */
+};
+
 /** @cond INTERNAL_HIDDEN */
 
 /* Alignment for headers and data. These are arch specific but define
@@ -640,6 +646,29 @@ struct net_udp_hdr {
 	uint16_t len;
 	uint16_t chksum;
 } __packed;
+
+/** @brief UDP Options Maximum Reassembled Datagram Size (MRDS), RFC 9868.
+ *
+ * Value type for the @c ZSOCK_UDP_OPT_MRDS socket option and the
+ * @c ZSOCK_UDP_OPT_CMSG_MRDS ancillary control message.
+ */
+struct net_udp_opt_mrds {
+	/** Maximum reassembled datagram size in bytes. */
+	uint16_t size;
+	/** Maximum number of fragments, or 0 if unspecified. */
+	uint8_t segs;
+};
+
+/** @brief UDP Options Timestamp (TIME), RFC 9868.
+ *
+ * Value type for the @c ZSOCK_UDP_OPT_CMSG_TIME ancillary control message.
+ */
+struct net_udp_opt_time {
+	/** Timestamp value of the sender. */
+	uint32_t tsval;
+	/** Timestamp echo reply (last @c tsval received from the peer). */
+	uint32_t tsecr;
+};
 
 struct net_tcp_hdr {
 	uint16_t src_port;
@@ -2121,6 +2150,26 @@ const char *net_ipaddr_parse_mask(const char *str, size_t str_len,
  * @return 0 if ok, <0 if error
  */
 int net_port_set_default(struct net_sockaddr *addr, uint16_t default_port);
+
+/**
+ * @brief Set the port in the sockaddr structure.
+ *
+ * @param addr Pointer to user supplied struct sockaddr.
+ * @param port Port number to set.
+ *
+ * @return 0 if ok, <0 if error
+ */
+int net_port_set(struct net_sockaddr *addr, uint16_t port);
+
+/**
+ * @brief Get the port in the sockaddr structure.
+ *
+ * @param addr Pointer to user supplied struct sockaddr.
+ * @param port Pointer to a variable where the port number is returned.
+ *
+ * @return 0 if ok, < 0 if error
+ */
+int net_port_get(struct net_sockaddr *addr, uint16_t *port);
 
 /**
  * @brief Compare TCP sequence numbers.

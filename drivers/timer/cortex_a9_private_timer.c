@@ -120,7 +120,6 @@ DEVICE_MMIO_TOPLEVEL_STATIC(gt_regs, GT_NODE);
 /* Driver state                                                       */
 /* ------------------------------------------------------------------ */
 
-static struct k_spinlock lock;
 static uint64_t last_cycle;
 static uint64_t last_tick;
 static uint32_t last_elapsed;
@@ -210,7 +209,7 @@ static void private_timer_isr(const void *arg)
 {
 	ARG_UNUSED(arg);
 
-	k_spinlock_key_t key = k_spin_lock(&lock);
+	k_spinlock_key_t key = sys_clock_lock();
 
 	pt_clear_isr();
 
@@ -244,17 +243,17 @@ static void private_timer_isr(const void *arg)
 		pt_set_oneshot(CYC_PER_TICK);
 	}
 
-	k_spin_unlock(&lock, key);
-
-	sys_clock_announce(dticks);
+	sys_clock_announce_locked(dticks, key);
 }
 
 /* ------------------------------------------------------------------ */
 /* Kernel timer API                                                   */
 /* ------------------------------------------------------------------ */
 
-void sys_clock_set_timeout(int32_t ticks, bool idle)
+void sys_clock_set_timeout(uint32_t ticks, bool idle)
 {
+	__ASSERT(sys_clock_is_locked(), "system clock lock not held");
+
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		return;
 	}
@@ -268,8 +267,6 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 		 */
 		return;
 	}
-
-	k_spinlock_key_t key = k_spin_lock(&lock);
 
 	uint64_t now = global_timer_count();
 	uint64_t elapsed = now - last_cycle;
@@ -293,17 +290,15 @@ void sys_clock_set_timeout(int32_t ticks, bool idle)
 	uint32_t delay = (uint32_t)(target - elapsed);
 
 	pt_set_oneshot(delay);
-
-	k_spin_unlock(&lock, key);
 }
 
 uint32_t sys_clock_elapsed(void)
 {
+	__ASSERT(sys_clock_is_locked(), "system clock lock not held");
+
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		return 0;
 	}
-
-	k_spinlock_key_t key = k_spin_lock(&lock);
 
 	uint64_t now = global_timer_count();
 	uint64_t delta = now - last_cycle;
@@ -311,7 +306,6 @@ uint32_t sys_clock_elapsed(void)
 
 	last_elapsed = dticks;
 
-	k_spin_unlock(&lock, key);
 	return dticks;
 }
 

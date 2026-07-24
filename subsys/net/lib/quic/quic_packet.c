@@ -6,6 +6,150 @@
 
 static int quic_send_max_stream_data(struct quic_endpoint *ep,
 				     struct quic_stream *stream);
+static int quic_send_frame_close(struct quic_endpoint *ep, uint8_t frame_type,
+				 uint64_t error_code, const char *reason)
+{
+	int ret;
+
+	ret = quic_endpoint_send_transport_close(ep, error_code, frame_type, reason);
+	if (ret < 0) {
+		NET_WARN("[EP:%p/%d] Failed to send CONNECTION_CLOSE for frame 0x%02x: %d",
+			 ep, quic_get_by_ep(ep), frame_type, ret);
+	}
+
+	return -EPROTO;
+}
+
+static int quic_handle_frame_error(struct quic_endpoint *ep, uint8_t frame_type, int ret)
+{
+	if (ret == -EINVAL || ret == -ENOTSUP) {
+		return quic_send_frame_close(ep, frame_type,
+					     QUIC_ERROR_FRAME_ENCODING_ERROR,
+					     "Malformed frame");
+	}
+
+	return ret;
+}
+
+static int quic_handle_crypto_frame_error(struct quic_endpoint *ep, int ret)
+{
+	uint64_t error_code;
+	const char *reason;
+
+	switch (ret) {
+	/* Transport-level errors kept as-is. -EPROTO covers a CRYPTO overlap
+	 * mismatch and a prohibited TLS KeyUpdate (RFC 9001 Section 6).
+	 */
+	case -EPROTO:
+		error_code = QUIC_ERROR_PROTOCOL_VIOLATION;
+		reason = "CRYPTO protocol violation";
+		break;
+	case -ENOMEM:
+		error_code = QUIC_ERROR_CRYPTO_BUFFER_EXCEEDED;
+		reason = "CRYPTO reassembly exceeded";
+		break;
+	/* RFC 9001 Section 4.8: surface TLS handshake failures as a
+	 * CONNECTION_CLOSE with error 0x0100 + TLS alert so a standard peer
+	 * gets a meaningful reason instead of a generic frame-encoding error.
+	 *
+	 * -EACCES means the peer certificate was required but not
+	 * provided/verifiable, which maps to the "certificate_required" alert
+	 * (116), not "bad_certificate" (42).
+	 */
+	case -EACCES:
+		error_code = QUIC_ERROR_CRYPTO_BASE + QUIC_CRYPTO_ERROR_CERTIFICATE_REQUIRED;
+		reason = "certificate required";
+		break;
+	case -EBADMSG:
+		error_code = QUIC_ERROR_CRYPTO_BASE + QUIC_CRYPTO_ERROR_DECRYPT_ERROR;
+		reason = "decrypt error";
+		break;
+	case -ENOPROTOOPT:
+		error_code = QUIC_ERROR_CRYPTO_BASE + QUIC_CRYPTO_ERROR_NO_APPLICATION_PROTOCOL;
+		reason = "no application protocol";
+		break;
+	case -ENOTSUP:
+		error_code = QUIC_ERROR_CRYPTO_BASE + QUIC_CRYPTO_ERROR_HANDSHAKE_FAILURE;
+		reason = "handshake failure";
+		break;
+	case -EIO:
+		error_code = QUIC_ERROR_CRYPTO_BASE + QUIC_CRYPTO_ERROR_INTERNAL_ERROR;
+		reason = "internal error";
+		break;
+	case -EINVAL:
+		error_code = QUIC_ERROR_CRYPTO_BASE + QUIC_CRYPTO_ERROR_DECODE_ERROR;
+		reason = "decode error";
+		break;
+	default:
+		/* Not a recognized crypto/handshake failure: let the caller
+		 * decide (no CONNECTION_CLOSE emitted here).
+		 */
+		return ret;
+	}
+
+	return quic_send_frame_close(ep, QUIC_FRAME_TYPE_CRYPTO, error_code, reason);
+}
+
+static int quic_handle_stream_frame_error(struct quic_endpoint *ep, uint8_t frame_type,
+					  int ret)
+{
+	/* STREAM protocol violations already emit a specific CONNECTION_CLOSE
+	 * inside handle_stream_frame() or quic_stream_receive_data().
+	 */
+	if (ret == -EPROTO) {
+		return ret;
+	}
+
+	return quic_handle_frame_error(ep, frame_type, ret);
+}
+
+ZTESTABLE_STATIC int quic_validate_frame_type(uint8_t frame_type,
+					      enum quic_secret_level level)
+{
+	switch (frame_type) {
+	case QUIC_FRAME_TYPE_PADDING:
+	case QUIC_FRAME_TYPE_PING:
+	case QUIC_FRAME_TYPE_CONNECTION_CLOSE_TRANSPORT:
+	case QUIC_FRAME_TYPE_CONNECTION_CLOSE_APPLICATION:
+		return 0;
+
+	case QUIC_FRAME_TYPE_ACK:
+	case QUIC_FRAME_TYPE_ACK_ECN:
+		return level == QUIC_SECRET_LEVEL_EARLY ? -EPROTO : 0;
+
+	case QUIC_FRAME_TYPE_CRYPTO:
+		return level == QUIC_SECRET_LEVEL_EARLY ? -EPROTO : 0;
+
+	case QUIC_FRAME_TYPE_NEW_TOKEN:
+	case QUIC_FRAME_TYPE_RETIRE_CONNECTION_ID:
+	case QUIC_FRAME_TYPE_PATH_RESPONSE:
+	case QUIC_FRAME_TYPE_HANDSHAKE_DONE:
+		return level == QUIC_SECRET_LEVEL_APPLICATION ? 0 : -EPROTO;
+
+	case QUIC_FRAME_TYPE_MAX_DATA:
+	case QUIC_FRAME_TYPE_MAX_STREAM_DATA:
+	case QUIC_FRAME_TYPE_MAX_STREAMS_BIDI:
+	case QUIC_FRAME_TYPE_MAX_STREAMS_UNI:
+	case QUIC_FRAME_TYPE_DATA_BLOCKED:
+	case QUIC_FRAME_TYPE_STREAM_DATA_BLOCKED:
+	case QUIC_FRAME_TYPE_STREAMS_BLOCKED_BIDI:
+	case QUIC_FRAME_TYPE_STREAMS_BLOCKED_UNI:
+	case QUIC_FRAME_TYPE_NEW_CONNECTION_ID:
+	case QUIC_FRAME_TYPE_PATH_CHALLENGE:
+	case QUIC_FRAME_TYPE_RESET_STREAM:
+	case QUIC_FRAME_TYPE_STOP_SENDING:
+		return level == QUIC_SECRET_LEVEL_APPLICATION ||
+		       level == QUIC_SECRET_LEVEL_EARLY ? 0 : -EPROTO;
+
+	default:
+		if ((frame_type & 0xF8) == QUIC_FRAME_TYPE_STREAM_BASE) {
+			return level == QUIC_SECRET_LEVEL_APPLICATION ||
+			       level == QUIC_SECRET_LEVEL_EARLY ? 0 : -EPROTO;
+		}
+
+		return -ENOTSUP;
+	}
+}
 
 /*
  * Handle STREAM frame (frame types 0x08 - 0x0f)
@@ -25,7 +169,8 @@ static int quic_send_max_stream_data(struct quic_endpoint *ep,
  */
 static int handle_stream_frame(struct quic_endpoint *ep,
 			       const uint8_t *buf, size_t len,
-			       size_t *consumed)
+			       size_t *consumed,
+			       enum quic_secret_level level)
 {
 	uint8_t frame_type = buf[0];
 	bool has_offset = (frame_type & 0x04) != 0;
@@ -166,16 +311,26 @@ static int handle_stream_frame(struct quic_endpoint *ep,
 
 	/* Deliver data to the stream */
 	ret = quic_stream_receive_data(stream, offset, &buf[pos], data_len, is_fin);
-	if (ret < 0) {
-		if (ret == -EAGAIN) {
-			/* Out-of-order data. This is not fatal, consume the frame bytes */
-			*consumed = pos + data_len;
-			return pos + data_len;
-		}
-
+	if (ret < 0 && ret != -EAGAIN) {
+		/* A fatal receive error. -EAGAIN is not fatal: it only means the
+		 * data was out of order and has been stashed for later reassembly.
+		 */
 		NET_DBG("[CO:%p/%d] Failed to deliver stream data: %d",
 			conn, quic_get_by_conn(conn), ret);
 		return ret;
+	}
+
+	if (level == QUIC_SECRET_LEVEL_EARLY) {
+		/* RFC 9001 4.6.1: the amount of 0-RTT data a client may send is
+		 * bounded by the connection's flow-control limits (transport
+		 * parameters), which quic_stream_receive_data() enforces above.
+		 * Mark that this stream carried accepted early data only after the
+		 * data has actually been accepted (delivered in order, or stashed
+		 * on -EAGAIN), so a fatal receive error does not leave the stream
+		 * wrongly flagged and trigger replay protection (e.g. HTTP/3 425)
+		 * for early data that was never accepted.
+		 */
+		stream->received_early_data = true;
 	}
 
 	*consumed = pos + data_len;
@@ -395,7 +550,9 @@ static int handle_new_token_frame(struct quic_endpoint *ep,
 
 	NET_DBG("[EP:%p/%d] NEW_TOKEN: len=%" PRIu64, ep, quic_get_by_ep(ep), token_len);
 
-	/* TODO: Store token for future connections */
+	if (!ep->is_server) {
+		quic_token_cache_store(net_sad(&ep->remote_addr), &buf[pos], token_len);
+	}
 
 	return pos + token_len;
 }
@@ -435,6 +592,11 @@ static int handle_max_data_frame(struct quic_endpoint *ep,
 					k_poll_signal_raise(&stream->send.signal, 0);
 				}
 			}
+		}
+
+		if (IS_ENABLED(CONFIG_QUIC_0RTT) &&
+		    ep->crypto.tls.early_data_rejected) {
+			(void)quic_replay_rejected_early_data(ep);
 		}
 	} else {
 		NET_DBG("[EP:%p/%d] MAX_DATA: %" PRIu64 " (no change)",
@@ -477,6 +639,11 @@ static int handle_max_stream_data_frame(struct quic_endpoint *ep,
 			stream->remote_max_data = max_stream_data;
 			/* Signal that stream may now be writable */
 			k_poll_signal_raise(&stream->send.signal, 0);
+
+			if (IS_ENABLED(CONFIG_QUIC_0RTT) &&
+			    ep->crypto.tls.early_data_rejected) {
+				(void)quic_replay_rejected_early_data(ep);
+			}
 		}
 	} else {
 		NET_DBG("[EP:%p/%d] MAX_STREAM_DATA: stream=%" PRIu64
@@ -848,7 +1015,7 @@ static int handle_new_connection_id_frame(struct quic_endpoint *ep,
 		NET_DBG("[EP:%p/%d] NEW_CONNECTION_ID: retire_prior_to (%"
 			PRIu64 ") > seq_num (%" PRIu64 ")",
 			ep, quic_get_by_ep(ep), retire_prior_to, seq_num);
-		return -EPROTO;  /* should trigger CONNECTION_CLOSE */
+		return -EINVAL;
 	}
 
 	cid_len = buf[pos++];
@@ -1036,7 +1203,7 @@ static int handle_ack_frame(struct quic_endpoint *ep,
 
 	/* Build the first ACK range: [largest_ack - first_ack_range, largest_ack] */
 	if (first_ack_range > largest_ack) {
-		return -EPROTO;
+		return -EINVAL;
 	}
 
 	ranges[range_idx].end = largest_ack;
@@ -1226,6 +1393,69 @@ static void crypto_reset_rx_buffer(struct quic_endpoint *ep,
 	}
 }
 
+static int crypto_compare_overlap_range(const struct quic_endpoint *ep,
+					const uint8_t *incoming,
+					uint64_t offset,
+					uint64_t crypto_len,
+					uint64_t range_start,
+					uint64_t range_end)
+{
+	uint64_t overlap_start;
+	uint64_t overlap_end;
+	size_t overlap_len;
+
+	if (incoming == NULL || range_end <= range_start) {
+		return 0;
+	}
+
+	overlap_start = MAX(offset, range_start);
+	overlap_end = MIN(offset + crypto_len, range_end);
+	if (overlap_end <= overlap_start) {
+		return 0;
+	}
+
+	overlap_len = (size_t)(overlap_end - overlap_start);
+	if (memcmp(&ep->crypto.rx_buffer[overlap_start],
+		   &incoming[overlap_start - offset], overlap_len) != 0) {
+		return -EPROTO;
+	}
+
+	return 0;
+}
+
+static int crypto_compare_overlap(const struct quic_endpoint *ep,
+				  const uint8_t *incoming,
+				  enum quic_secret_level level,
+				  uint64_t offset,
+				  uint64_t crypto_len)
+{
+	int i;
+	int ret;
+
+	ret = crypto_compare_overlap_range(ep, incoming, offset, crypto_len, 0,
+					   ep->crypto.stream[level].rx_offset);
+	if (ret < 0) {
+		return ret;
+	}
+
+	for (i = 0; i < CONFIG_QUIC_CRYPTO_OOO_SLOTS; i++) {
+		uint64_t seg_end;
+
+		if (!ep->crypto.ooo[i].valid) {
+			continue;
+		}
+
+		seg_end = (uint64_t)ep->crypto.ooo[i].offset + ep->crypto.ooo[i].len;
+		ret = crypto_compare_overlap_range(ep, incoming, offset, crypto_len,
+						   ep->crypto.ooo[i].offset, seg_end);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 /*
  * Parse and handle CRYPTO frame
  *
@@ -1236,13 +1466,14 @@ static void crypto_reset_rx_buffer(struct quic_endpoint *ep,
  *   Crypto Data (..),
  * }
  */
-static int handle_crypto_frame(struct quic_endpoint *ep,
-			       enum quic_secret_level level,
-			       const uint8_t *data,
-			       size_t len,
-			       size_t *consumed)
+ZTESTABLE_STATIC int handle_crypto_frame(struct quic_endpoint *ep,
+					 enum quic_secret_level level,
+					 const uint8_t *data,
+					 size_t len,
+					 size_t *consumed)
 {
 	size_t pos = 0;
+	uint64_t buffer_size = CONFIG_QUIC_CRYPTO_RX_BUFFER_SIZE;
 	uint64_t offset;
 	uint64_t crypto_len;
 	uint32_t contiguous_bytes;
@@ -1277,6 +1508,26 @@ static int handle_crypto_frame(struct quic_endpoint *ep,
 	NET_DBG("[EP:%p/%d] CRYPTO frame: offset=%" PRIu64 ", len=%" PRIu64,
 		ep, quic_get_by_ep(ep), offset, crypto_len);
 
+	/* Reset buffer if switching to a new encryption level */
+	if (ep->crypto.rx_buf_level != level) {
+		crypto_reset_rx_buffer(ep, level);
+	}
+
+	if (crypto_len > buffer_size || offset > buffer_size - crypto_len) {
+		NET_ERR("CRYPTO data exceeds buffer: offset=%" PRIu64
+			" len=%" PRIu64 " max=%" PRIu64,
+			offset, crypto_len, buffer_size);
+		return -ENOMEM;
+	}
+
+	ret = crypto_compare_overlap(ep, &data[pos], level, offset, crypto_len);
+	if (ret < 0) {
+		NET_ERR("[EP:%p/%d] Conflicting CRYPTO data at offset=%" PRIu64
+			" len=%" PRIu64,
+			ep, quic_get_by_ep(ep), offset, crypto_len);
+		return ret;
+	}
+
 	/* Check for duplicate/already-received CRYPTO data */
 	if (offset + crypto_len <= ep->crypto.stream[level].rx_offset) {
 		NET_DBG("[EP:%p/%d] Duplicate CRYPTO data: offset=%" PRIu64 " len=%" PRIu64
@@ -1285,19 +1536,6 @@ static int handle_crypto_frame(struct quic_endpoint *ep,
 			ep->crypto.stream[level].rx_offset);
 		*consumed = pos + crypto_len;
 		return 0;
-	}
-
-	/* Reset buffer if switching to a new encryption level */
-	if (ep->crypto.rx_buf_level != level) {
-		crypto_reset_rx_buffer(ep, level);
-	}
-
-	/* Check if data fits in reassembly buffer */
-	if (offset + crypto_len > CONFIG_QUIC_CRYPTO_RX_BUFFER_SIZE) {
-		NET_ERR("CRYPTO data exceeds buffer: offset=%" PRIu64
-			" len=%" PRIu64 " max=%d",
-			offset, crypto_len, CONFIG_QUIC_CRYPTO_RX_BUFFER_SIZE);
-		return -ENOMEM;
 	}
 
 	/* Copy data into reassembly buffer at the correct offset */
@@ -1313,8 +1551,7 @@ static int handle_crypto_frame(struct quic_endpoint *ep,
 		/* Out-of-order: store segment info */
 		ret = crypto_store_ooo_segment(ep, (uint32_t)offset, (uint16_t)crypto_len);
 		if (ret < 0) {
-			*consumed = pos + crypto_len;
-			return 0; /* Continue anyway, may reassemble later */
+			return ret;
 		}
 	} else {
 		/* In-order: directly advances contiguous region */
@@ -1454,12 +1691,17 @@ static int quic_send_ack(struct quic_endpoint *ep,
 {
 	uint8_t frame[32];
 	size_t pos = 0;
+	int n;
 
 	/* ACK frame type */
 	frame[pos++] = QUIC_FRAME_TYPE_ACK;
 
 	/* Largest Acknowledged */
-	pos += quic_put_varint(&frame[pos], sizeof(frame) - pos, largest_pn);
+	n = quic_put_varint(&frame[pos], sizeof(frame) - pos, largest_pn);
+	if (n <= 0) {
+		return n < 0 ? n : -EINVAL;
+	}
+	pos += n;
 
 	/* ACK Delay (0 for now) */
 	frame[pos++] = 0;
@@ -1497,12 +1739,30 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 	while (pos < (int)len) {
 		uint8_t frame_type = buf[pos];
 
+		ret = quic_validate_frame_type(frame_type, QUIC_SECRET_LEVEL_APPLICATION);
+		if (ret == -ENOTSUP) {
+			ret = quic_send_frame_close(ep, frame_type,
+						    QUIC_ERROR_FRAME_ENCODING_ERROR,
+						    "Unknown frame type");
+			goto close;
+		} else if (ret == -EPROTO) {
+			ret = quic_send_frame_close(ep, frame_type,
+						    QUIC_ERROR_PROTOCOL_VIOLATION,
+						    "Frame not allowed in packet type");
+			goto close;
+		}
+
 		/* Check for STREAM frames (0x08 - 0x0f) */
 		if ((frame_type & 0xF8) == QUIC_FRAME_TYPE_STREAM_BASE) {
-			ret = handle_stream_frame(ep, &buf[pos], len - pos, &consumed);
+			ret = handle_stream_frame(ep, &buf[pos], len - pos, &consumed,
+						QUIC_SECRET_LEVEL_APPLICATION);
 			if (ret < 0) {
+				ret = quic_handle_stream_frame_error(ep, frame_type, ret);
 				NET_DBG("[EP:%p/%d] Failed to handle STREAM frame: %d",
 					ep, quic_get_by_ep(ep), ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1529,8 +1789,12 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 			ret = handle_ack_frame(ep, QUIC_SECRET_LEVEL_APPLICATION,
 					       &buf[pos], len - pos, &consumed);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
 				NET_DBG("[EP:%p/%d] Failed to handle ACK frame: %d",
 					ep, quic_get_by_ep(ep), ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1543,6 +1807,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_RESET_STREAM:
 			ret = handle_reset_stream_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1552,6 +1820,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_STOP_SENDING:
 			ret = handle_stop_sending_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1563,6 +1835,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 			ret = handle_crypto_frame(ep, QUIC_SECRET_LEVEL_APPLICATION,
 						  &buf[pos], len - pos, &consumed);
 			if (ret < 0) {
+				ret = quic_handle_crypto_frame_error(ep, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1572,6 +1848,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_NEW_TOKEN:
 			ret = handle_new_token_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1581,6 +1861,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_MAX_DATA:
 			ret = handle_max_data_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1590,6 +1874,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_MAX_STREAM_DATA:
 			ret = handle_max_stream_data_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1601,6 +1889,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 			ret = handle_max_streams_frame(ep, frame_type, &buf[pos],
 						       len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1610,6 +1902,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_DATA_BLOCKED:
 			ret = handle_data_blocked_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1619,6 +1915,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_STREAM_DATA_BLOCKED:
 			ret = handle_stream_data_blocked_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1629,6 +1929,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_STREAMS_BLOCKED_UNI:
 			ret = handle_streams_blocked_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1638,6 +1942,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_NEW_CONNECTION_ID:
 			ret = handle_new_connection_id_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1647,6 +1955,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_RETIRE_CONNECTION_ID:
 			ret = handle_retire_connection_id_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1656,6 +1968,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_PATH_CHALLENGE:
 			ret = handle_path_challenge_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1665,6 +1981,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 		case QUIC_FRAME_TYPE_PATH_RESPONSE:
 			ret = handle_path_response_frame(ep, &buf[pos], len - pos);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1676,6 +1996,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 			ret = handle_connection_close_frame(ep, &buf[pos], len - pos,
 							    &consumed);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				if (ret == -EPROTO) {
+					goto close;
+				}
 				goto fail;
 			}
 
@@ -1698,14 +2022,10 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 			break;
 
 		default:
-			NET_DBG("[EP:%p/%d] Unknown frame type 0x%02x in 1-RTT packet",
-				ep, quic_get_by_ep(ep), frame_type);
-
-			/* Unknown frame. We should close the connection with error,
-			 * but for now just skip it until we have support for all the
-			 * messages.
-			 */
-			goto fail;
+			ret = quic_send_frame_close(ep, frame_type,
+						    QUIC_ERROR_FRAME_ENCODING_ERROR,
+						    "Unknown frame type");
+			goto close;
 		}
 	}
 
@@ -1713,6 +2033,8 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 	 * Per RFC 9000 Section 13.2.1: "A sender MUST NOT send an ACK frame
 	 * in response to a packet containing only ACK frames."
 	 */
+	QUIC_EP_STAT_INC(ep, valid_rx);
+
 	if (ack_eliciting) {
 		ret = quic_send_ack(ep, QUIC_SECRET_LEVEL_APPLICATION, pkt->pkt_num);
 		if (ret != 0) {
@@ -1724,12 +2046,19 @@ static int handle_1rtt_packet(struct quic_pkt *pkt)
 	return ret;
 
 close:
+	if (ret == 0) {
+		QUIC_EP_STAT_INC(ep, valid_rx);
+	} else {
+		QUIC_EP_STAT_INC(ep, drop_rx);
+	}
+
 	/* Connection closed by peer. Notify streams and release endpoint */
 	quic_endpoint_notify_streams_closed(ep);
 	quic_endpoint_unref(ep);
 	return ret;
 
 fail:
+	QUIC_EP_STAT_INC(ep, drop_rx);
 	quic_endpoint_unref(ep);
 	return ret;
 }
@@ -1760,11 +2089,24 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 	NET_DBG("[EP:%p/%d] Processing %s packet, payload %zu bytes",
 		ep, quic_get_by_ep(ep),
 		level == QUIC_SECRET_LEVEL_INITIAL ? "Initial" :
-		level == QUIC_SECRET_LEVEL_HANDSHAKE ? "Handshake" : "Application",
+		level == QUIC_SECRET_LEVEL_HANDSHAKE ? "Handshake" :
+		level == QUIC_SECRET_LEVEL_EARLY ? "0-RTT" : "Application",
 		payload_len);
 
 	while (pos < payload_len) {
 		uint8_t frame_type = payload[pos];
+		size_t consumed = 0;
+
+		ret = quic_validate_frame_type(frame_type, level);
+		if (ret == -ENOTSUP) {
+			return quic_send_frame_close(ep, frame_type,
+						     QUIC_ERROR_FRAME_ENCODING_ERROR,
+						     "Unknown frame type");
+		} else if (ret == -EPROTO) {
+			return quic_send_frame_close(ep, frame_type,
+						     QUIC_ERROR_PROTOCOL_VIOLATION,
+						     "Frame not allowed in packet type");
+		}
 
 		/* Handle PADDING frames (type 0x00), just skip them. */
 		/* PADDING is not ack-eliciting */
@@ -1786,11 +2128,10 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 		/* ACK is NOT ack-eliciting per RFC 9000 Section 13.2 */
 		if (frame_type == QUIC_FRAME_TYPE_ACK ||
 		    frame_type == QUIC_FRAME_TYPE_ACK_ECN) {
-			size_t consumed = 0;
-
 			ret = handle_ack_frame(ep, level, &payload[pos],
 					       payload_len - pos, &consumed);
 			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
 				NET_DBG("[EP:%p/%d] Failed to parse %s frame: %d",
 					ep, quic_get_by_ep(ep), "ACK", ret);
 				return ret;
@@ -1802,14 +2143,13 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 
 		/* Handle CRYPTO frames (type 0x06) */
 		if (frame_type == QUIC_FRAME_TYPE_CRYPTO) {
-			size_t consumed = 0;
-
 			ret = handle_crypto_frame(ep, level, &payload[pos],
 						  payload_len - pos, &consumed);
 			NET_DBG("[EP:%p/%d] CRYPTO frame processed: pos=%zu, consumed=%zu, "
 				"payload_len=%zu, ret=%d",
 				ep, quic_get_by_ep(ep), pos, consumed, payload_len, ret);
 			if (ret < 0) {
+				ret = quic_handle_crypto_frame_error(ep, ret);
 				NET_DBG("[EP:%p/%d] Failed to handle %s frame: %d",
 					ep, quic_get_by_ep(ep), "CRYPTO", ret);
 				return ret;
@@ -1833,11 +2173,10 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 
 		/* Handle STREAM frames (type 0x08-0x0f) */
 		if ((frame_type & 0xF8) == QUIC_FRAME_TYPE_STREAM_BASE) {
-			size_t consumed = 0;
-
 			ret = handle_stream_frame(ep, &payload[pos],
-						  payload_len - pos, &consumed);
+						  payload_len - pos, &consumed, level);
 			if (ret < 0) {
+				ret = quic_handle_stream_frame_error(ep, frame_type, ret);
 				NET_DBG("[EP:%p/%d] Failed to handle %s frame: %d",
 					ep, quic_get_by_ep(ep), "STREAM", ret);
 				return ret;
@@ -1851,55 +2190,27 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 		/* Handle CONNECTION_CLOSE frames */
 		if (frame_type == QUIC_FRAME_TYPE_CONNECTION_CLOSE_TRANSPORT ||
 		    frame_type == QUIC_FRAME_TYPE_CONNECTION_CLOSE_APPLICATION) {
-			uint64_t error_code = 0;
-			uint64_t cc_frame_type = 0;
-			uint64_t reason_len = 0;
-			int n;
-
-			NET_DBG("[EP:%p/%d] CONNECTION_CLOSE frame received",
-				ep, quic_get_by_ep(ep));
-
-			n = quic_get_len(&payload[pos], payload_len - pos, &error_code);
-			if (n > 0) {
-				pos += n;
+			ret = handle_connection_close_frame(ep, &payload[pos],
+							    payload_len - pos,
+							    &consumed);
+			if (ret < 0) {
+				ret = quic_handle_frame_error(ep, frame_type, ret);
+				return ret;
 			}
-
-			n = quic_get_len(&payload[pos], payload_len - pos, &cc_frame_type);
-			if (n > 0) {
-				pos += n;
-			}
-
-			n = quic_get_len(&payload[pos], payload_len - pos, &reason_len);
-			if (n > 0) {
-				pos += n;
-			}
-
-			NET_DBG("[EP:%p/%d] Connection closed by peer: error=0x%" PRIx64
-				" (frame_type=0x%" PRIx64 ", reason_len=%" PRIu64 ")",
-				ep, quic_get_by_ep(ep), error_code, cc_frame_type, reason_len);
-
-			/* TLS alerts come in as 0x100 + alert_code.
-			 * TRANSPORT_PARAMETER_ERROR = 0xa
-			 * missing_extension TLS alert = 0x116d
-			 */
 
 			/* Connection close is handled in the caller. */
 			return 1; /* Signal connection closing */
 		}
 
-		/* For Initial packets, only specific frame types are allowed */
-		if (level == QUIC_SECRET_LEVEL_INITIAL) {
-			/* Only CRYPTO, ACK, PADDING, PING, CONNECTION_CLOSE are valid */
-			break;
-		}
-
-		/* Handle Application-level frame types */
-		if (level == QUIC_SECRET_LEVEL_APPLICATION) {
+		/* Handle application-data packet number space frame types. */
+		if (level == QUIC_SECRET_LEVEL_APPLICATION ||
+		    level == QUIC_SECRET_LEVEL_EARLY) {
 			switch (frame_type) {
 			case QUIC_FRAME_TYPE_NEW_CONNECTION_ID:
 				ret = handle_new_connection_id_frame(ep, &payload[pos],
 								     payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1910,6 +2221,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_retire_connection_id_frame(ep, &payload[pos],
 									payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1920,6 +2232,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_path_challenge_frame(ep, &payload[pos],
 								  payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1930,6 +2243,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_path_response_frame(ep, &payload[pos],
 								 payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1958,6 +2272,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_new_token_frame(ep, &payload[pos],
 							     payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1968,6 +2283,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_max_data_frame(ep, &payload[pos],
 							    payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1978,6 +2294,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_max_stream_data_frame(ep, &payload[pos],
 								   payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1989,6 +2306,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_max_streams_frame(ep, frame_type, &payload[pos],
 							       payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -1999,6 +2317,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_data_blocked_frame(ep, &payload[pos],
 								payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -2009,6 +2328,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_stream_data_blocked_frame(ep, &payload[pos],
 								       payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -2020,6 +2340,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_streams_blocked_frame(ep, &payload[pos],
 								   payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -2030,6 +2351,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_reset_stream_frame(ep, &payload[pos],
 								payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -2040,6 +2362,7 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 				ret = handle_stop_sending_frame(ep, &payload[pos],
 								payload_len - pos);
 				if (ret < 0) {
+					ret = quic_handle_frame_error(ep, frame_type, ret);
 					return ret;
 				}
 				pos += ret;
@@ -2054,7 +2377,9 @@ static int handle_crypto_level_packet(struct quic_endpoint *ep,
 		/* Unhandled frame type */
 		NET_DBG("[EP:%p/%d] Unhandled frame type 0x%02x at offset %zu",
 			ep, quic_get_by_ep(ep), frame_type, pos);
-		return -ENOTSUP;
+		return quic_send_frame_close(ep, frame_type,
+					     QUIC_ERROR_FRAME_ENCODING_ERROR,
+					     "Unknown frame type");
 	}
 
 	/* Set ack_only flag: true if we saw ACK frame(s) but no other frames */

@@ -18,11 +18,11 @@
 #include <zephyr/drivers/timer/system_timer.h>
 #include <zephyr/drivers/timer/nxp_os_timer.h>
 #include <zephyr/platform/hooks.h>
-#include "fsl_power.h"
+#include <fsl_power.h>
 
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_DECLARE(soc, CONFIG_SOC_LOG_LEVEL);
+LOG_MODULE_REGISTER(soc, CONFIG_SOC_LOG_LEVEL);
 
 /* Active mode */
 #define POWER_MODE0		0

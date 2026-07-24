@@ -197,11 +197,12 @@ static void input_crsf_report(const struct device *dev, unsigned int crsf_channe
 	const struct input_crsf_config *const config = dev->config;
 	struct input_crsf_data *const data = dev->data;
 	int channel = data->channel_mapping[crsf_channel];
-	const struct crsf_input_channel *channel_info = &config->channel_info[channel];
 
 	if (channel == -1) {
 		return;
 	}
+
+	const struct crsf_input_channel *channel_info = &config->channel_info[channel];
 
 	if (value == data->last_reported_value[channel]) {
 		return;
@@ -508,8 +509,6 @@ static int input_crsf_init(const struct device *dev)
 }
 
 #define INPUT_CHANNEL_CHECK(input_channel_id)                                                      \
-	BUILD_ASSERT(IN_RANGE(DT_PROP(input_channel_id, channel), 1, 16),                          \
-		     "invalid channel number");                                                    \
 	BUILD_ASSERT(DT_PROP(input_channel_id, type) == INPUT_EV_ABS ||                            \
 			     DT_PROP(input_channel_id, type) == INPUT_EV_KEY ||                    \
 			     DT_PROP(input_channel_id, type) == INPUT_EV_MSC,                      \

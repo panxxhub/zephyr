@@ -8,10 +8,12 @@ sphinxcontrib-svg2pdfconverter
 pygments>=2.9,!=2.19.0
 sphinx-notfound-page
 sphinx-copybutton
+sphinx-design
 sphinx-togglebutton
 sphinx-sitemap
 sphinx-autobuild
 sphinxcontrib.programoutput
+sphinxcontrib.mermaid
 
 # YAML validation. Used by zephyr_module.
 PyYAML>=6.0

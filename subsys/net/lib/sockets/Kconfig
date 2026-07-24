@@ -23,13 +23,6 @@ config NET_SOCKETS_PRIORITY_DEFAULT
 	  allows to for instance prioritize offloaded socket processing during
 	  socket creation over the native one, or vice versa.
 
-config NET_SOCKETS_POLL_MAX
-	int "Max number of supported poll() entries [DEPRECATED]"
-	default 0
-	help
-	  This option is deprecated.
-	  Please use CONFIG_ZVFS_POLL_MAX instead.
-
 config NET_SOCKETS_CONNECT_TIMEOUT
 	int "Timeout value in milliseconds to CONNECT"
 	default 3000
@@ -74,7 +67,7 @@ config HEAP_MEM_POOL_ADD_SIZE_GETADDRINFO
 	# a default configuration on 64-bit platform
 	int
 	default 280
-	depends on DNS_RESOLVER
+	depends on DNS_RESOLVER || NET_IP
 
 config NET_SOCKET_MAX_SEND_WAIT
 	int "Max time in milliseconds waiting for a send command"
@@ -102,6 +95,14 @@ config ZVFS_OPEN_ADD_SIZE_SOCKETS_SERVICE
 	help
 	  The socket service opens a permanent zvfs_eventfd, which consumes a file
 	  descriptor.
+
+config ZVFS_EVENTFD_ADD_SIZE_SOCKETS_SERVICE
+	int "Number of eventfds needed by the socket service"
+	default 1
+	depends on NET_SOCKETS_SERVICE
+	help
+	  The socket service dispatcher allocates one permanent zvfs_eventfd to
+	  trigger events during polling.
 
 config NET_SOCKETS_SERVICE_THREAD_PRIO
 	int "Priority of the socket service dispatcher thread"
@@ -162,7 +163,8 @@ config NET_SOCKETS_TLS_SET_MAX_FRAGMENT_LENGTH
 
 	  Maximum Fragment Length (MFL) value is automatically chosen based on
 	  MBEDTLS_SSL_OUT_CONTENT_LEN and MBEDTLS_SSL_IN_CONTENT_LEN mbed TLS
-	  macros (which are configured by CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN in
+	  macros (which are configured by CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN and
+	  CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN in
 	  case of default mbed TLS config). With DTLS, MFL value may be further
 	  limited with NET_SOCKETS_DTLS_MAX_FRAGMENT_LENGTH.
 
@@ -172,6 +174,7 @@ config NET_SOCKETS_TLS_SET_MAX_FRAGMENT_LENGTH
 config NET_SOCKETS_ENABLE_DTLS
 	bool "DTLS socket support"
 	depends on NET_SOCKETS_SOCKOPT_TLS
+	select MBEDTLS_SSL_PROTO_TLS1_2 if NET_NATIVE
 	select MBEDTLS_SSL_PROTO_DTLS if NET_NATIVE
 	help
 	  Enable DTLS socket support. By default only TLS over TCP is supported.
@@ -261,6 +264,10 @@ config NET_SOCKETS_TLS_MAX_CIPHERSUITES
 
 config NET_SOCKETS_TLS_MAX_APP_PROTOCOLS
 	int "Maximum number of supported application layer protocols"
+	default 4 if HTTP_SERVER_VERSION_1 && HTTP_SERVER_VERSION_2 && HTTP_SERVER_VERSION_3
+	default 3 if !HTTP_SERVER_VERSION_1 && HTTP_SERVER_VERSION_2 && HTTP_SERVER_VERSION_3
+	default 3 if HTTP_SERVER_VERSION_1 && !HTTP_SERVER_VERSION_2 && HTTP_SERVER_VERSION_3
+	default 3 if HTTP_SERVER_VERSION_1 && HTTP_SERVER_VERSION_2 && !HTTP_SERVER_VERSION_3
 	default 2
 	depends on NET_SOCKETS_SOCKOPT_TLS && MBEDTLS_SSL_ALPN
 	help
@@ -379,10 +386,9 @@ config NET_SOCKETS_INET_RAW
 	  to receive raw IP datagrams before further processing takes place.
 
 config NET_SOCKETS_CAN
-	bool "Socket CAN support [EXPERIMENTAL]"
+	bool "Socket CAN support"
 	select NET_L2_CANBUS_RAW
 	select NET_CONNECTION_SOCKETS
-	select EXPERIMENTAL
 	help
 	  The value depends on your network needs.
 
@@ -468,10 +474,9 @@ module-help = Enables logging for sockets code.
 source "subsys/net/Kconfig.template.log_config.net"
 
 config NET_SOCKETS_OBJ_CORE
-	bool "Object core socket support [EXPERIMENTAL]"
+	bool "Object core socket support"
 	depends on OBJ_CORE
 	select OBJ_CORE_STATS
-	select EXPERIMENTAL
 	help
 	  Select this if you want to use object core with socket API to get
 	  network socket information and statistics via object core.

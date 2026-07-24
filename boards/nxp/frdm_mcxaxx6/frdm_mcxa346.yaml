@@ -23,7 +23,11 @@ supported:
   - watchdog
   - counter
   - dma
+  - dac
   - opamp
   - can
   - arduino_gpio
+  - edac
+  - pwm
+  - rtc
 vendor: nxp

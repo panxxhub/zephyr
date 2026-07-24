@@ -25,6 +25,8 @@
 #include <zephyr/bluetooth/classic/goep.h>
 #include <zephyr/bluetooth/classic/pbap.h>
 
+#include <mbedtls/constant_time.h>
+
 #include "host/conn_internal.h"
 #include "l2cap_br_internal.h"
 #include "rfcomm_internal.h"
@@ -284,9 +286,11 @@ static int bt_pbap_transport_connect(struct bt_conn *conn, struct bt_pbap_pce *p
 
 	if (channel != 0 && psm == 0) {
 		pbap_pce->_goep.transport_ops = &pbap_rfcomm_transport_ops;
+		BT_GOEP_INIT_V1(&pbap_pce->_goep, &pbap_pce->_goep_transport.v1);
 		err = bt_goep_transport_rfcomm_connect(conn, &pbap_pce->_goep, channel);
 	} else {
 		pbap_pce->_goep.transport_ops = &pbap_l2cap_transport_ops;
+		BT_GOEP_INIT_V2(&pbap_pce->_goep, &pbap_pce->_goep_transport.v2);
 		err = bt_goep_transport_l2cap_connect(conn, &pbap_pce->_goep, psm);
 	}
 
@@ -654,7 +658,7 @@ static int bt_pbap_pce_get(struct bt_pbap_pce *pbap_pce, struct net_buf *buf, co
 			return -EINVAL;
 		}
 
-		if (pbap_pce->_goep._goep_v2 && pbap_pce->_rsp_cb == NULL) {
+		if (pbap_pce->_goep.v2 != NULL && pbap_pce->_rsp_cb == NULL) {
 			err = bt_pbap_check_srm(buf);
 			if (err != 0) {
 				LOG_ERR("SRM check failed %d", err);
@@ -839,6 +843,8 @@ int bt_pbap_calculate_nonce(const uint8_t *pwd, uint8_t nonce[BT_OBEX_CHALLENGE_
 		return -EINVAL;
 	}
 
+	LOG_WRN("PBAP authentication relies on legacy MD5-based OBEX authentication");
+
 	memcpy(hash_input, &timestamp, sizeof(timestamp));
 	hash_input[sizeof(timestamp)] = ':';
 	memcpy(hash_input + sizeof(timestamp) + 1U, pwd, pwd_len);
@@ -882,6 +888,8 @@ int bt_pbap_calculate_rsp_digest(const uint8_t *pwd,
 		return -EINVAL;
 	}
 
+	LOG_WRN("PBAP authentication relies on legacy MD5-based OBEX authentication");
+
 	memcpy(hash_input, nonce, BT_OBEX_CHALLENGE_TAG_NONCE_LEN);
 	hash_input[BT_OBEX_CHALLENGE_TAG_NONCE_LEN] = ':';
 	memcpy(hash_input + BT_OBEX_CHALLENGE_TAG_NONCE_LEN + 1U, pwd, pwd_len);
@@ -904,15 +912,18 @@ int bt_pbap_verify_authentication(uint8_t nonce[BT_OBEX_CHALLENGE_TAG_NONCE_LEN]
 	int err;
 
 	err = bt_pbap_calculate_rsp_digest(pwd, nonce, result);
-	if (err == 0) {
-		err = memcmp(result, rsp_digest, BT_OBEX_RESPONSE_TAG_REQ_DIGEST_LEN);
-		if (err != 0) {
-			LOG_ERR("rsp_digest is invalid");
-			return -EINVAL;
-		}
+	if (err != 0) {
+		LOG_ERR("Failed to calculate response digest %d", err);
+		return err;
 	}
 
-	return err;
+	err = mbedtls_ct_memcmp(result, rsp_digest, BT_OBEX_RESPONSE_TAG_REQ_DIGEST_LEN);
+	if (err != 0) {
+		LOG_ERR("rsp_digest is invalid");
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 #if defined(CONFIG_BT_PBAP_PSE)
@@ -1235,7 +1246,13 @@ static int pbap_pse_rfcomm_accept(struct bt_conn *conn,
 		return err;
 	}
 
+	if (pbap_pse == NULL) {
+		LOG_WRN("Invalid parameter");
+		return -EINVAL;
+	}
+
 	pbap_pse->_goep.transport_ops = &pse_rfcomm_transport_ops;
+	BT_GOEP_INIT_V1(&pbap_pse->_goep, &pbap_pse->_goep_transport.v1);
 	*goep = &pbap_pse->_goep;
 
 	atomic_set(&pbap_pse->_transport_state, BT_PBAP_TRANSPORT_STATE_CONNECTING);
@@ -1260,7 +1277,14 @@ static int pbap_pse_l2cap_accept(struct bt_conn *conn,
 	if (err != 0) {
 		return err;
 	}
+
+	if (pbap_pse == NULL) {
+		LOG_WRN("Invalid parameter");
+		return -EINVAL;
+	}
+
 	pbap_pse->_goep.transport_ops = &pse_l2cap_transport_ops;
+	BT_GOEP_INIT_V2(&pbap_pse->_goep, &pbap_pse->_goep_transport.v2);
 	*goep = &pbap_pse->_goep;
 
 	atomic_set(&pbap_pse->_transport_state, BT_PBAP_TRANSPORT_STATE_CONNECTING);
@@ -1455,7 +1479,7 @@ static int pbap_pse_get_rsp(struct bt_pbap_pse *pbap_pse, uint8_t rsp_code, stru
 
 	if (!atomic_test_and_set_bit(&pbap_pse->_flags, BT_PBAP_FLAG_RSP_ONGOING)) {
 		clear_bit = true;
-		if (pbap_pse->_goep._goep_v2 && rsp_code == BT_OBEX_RSP_CODE_SUCCESS) {
+		if (pbap_pse->_goep.v2 != NULL && rsp_code == BT_OBEX_RSP_CODE_SUCCESS) {
 			err = bt_pbap_check_srm(buf);
 			if (err != 0) {
 				LOG_ERR("SRM check failed %d", err);

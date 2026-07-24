@@ -181,7 +181,11 @@ static void zpacket_set_source_addr(struct net_context *ctx,
 				    net_socklen_t *addrlen)
 {
 	struct net_sockaddr_ll addr = {0};
-	struct net_if *iface = net_context_get_iface(ctx);
+	struct net_if *iface = net_pkt_iface(pkt);
+
+	if (iface == NULL) {
+		iface = net_context_get_iface(ctx);
+	}
 
 	if (iface == NULL) {
 		return;
@@ -480,7 +484,7 @@ static void zpacket_recvmsg_set_control(struct net_context *ctx, struct net_pkt 
 	if (IS_ENABLED(CONFIG_NET_CONTEXT_TIMESTAMPING)) {
 		net_context_get_option(ctx, NET_OPT_TIMESTAMPING, &timestamping, NULL);
 
-		if (timestamping != 0U &&
+		if (timestamping != 0U && net_pkt_is_rx_timestamping(pkt) &&
 		    zpacket_insert_cmsg(msg, ZSOCK_SOL_SOCKET, ZSOCK_SO_TIMESTAMPING,
 					net_pkt_timestamp(pkt), sizeof(struct net_ptp_time)) < 0) {
 			msg->msg_flags |= ZSOCK_MSG_CTRUNC;

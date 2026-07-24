@@ -624,12 +624,21 @@ static void conn_raw_socket_deliver(struct net_pkt *pkt, struct net_conn *conn,
 
 	raw_pkt = net_pkt_clone(pkt, K_MSEC(CONFIG_NET_CONN_PACKET_CLONE_TIMEOUT));
 	if (raw_pkt == NULL) {
+		if (!is_ip) {
+			net_stats_update_raw_drop(net_pkt_iface(pkt));
+		}
 		NET_WARN("pkt cloning failed, pkt %p not delivered", pkt);
 		goto out;
 	}
 
 	if (conn->cb(conn, raw_pkt, NULL, NULL, conn->user_data) == NET_DROP) {
+		if (!is_ip) {
+			net_stats_update_raw_drop(net_pkt_iface(pkt));
+		}
 		net_pkt_unref(raw_pkt);
+	} else if (!is_ip) {
+		net_stats_update_raw_recv(net_pkt_iface(pkt),
+					 net_pkt_get_len(raw_pkt));
 	}
 
 out:
@@ -911,6 +920,11 @@ enum net_verdict net_conn_input(struct net_pkt *pkt,
 	k_mutex_lock(&conn_lock, K_FOREVER);
 
 	SYS_SLIST_FOR_EACH_CONTAINER(&conn_used, conn, node) {
+		/* Is the candidate connection matching the packet's protocol within the family? */
+		if (conn->proto != proto) {
+			continue; /* wrong protocol */
+		}
+
 		/* Is the candidate connection matching the packet's interface? */
 		if (!is_iface_matching(conn, pkt)) {
 			continue; /* wrong interface */
@@ -928,11 +942,6 @@ enum net_verdict net_conn_input(struct net_pkt *pkt,
 			}
 
 			/* We might have a match for v4-to-v6 mapping, check more */
-		}
-
-		/* Is the candidate connection matching the packet's protocol within the family? */
-		if (conn->proto != proto) {
-			continue; /* wrong protocol */
 		}
 
 		/* Apply protocol-specific matching criteria... */

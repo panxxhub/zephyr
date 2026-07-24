@@ -40,10 +40,13 @@ union net_mgmt_events {
 #endif /* CONFIG_NET_L2_WIFI_MGMT */
 #if defined(CONFIG_NET_IPV6)
 	struct net_event_ipv6_prefix ipv6_prefix;
-#if defined(CONFIG_NET_IPV6_MLD)
+#if defined(CONFIG_NET_IPV6_ROUTE)
 	struct net_event_ipv6_route ipv6_route;
-#endif /* CONFIG_NET_IPV6_MLD */
+#endif /* CONFIG_NET_IPV6_ROUTE */
 #endif /* CONFIG_NET_IPV6 */
+#if defined(CONFIG_NET_IPV4_ROUTE)
+	struct net_event_ipv4_route ipv4_route;
+#endif /* CONFIG_NET_IPV4_ROUTE */
 #if defined(CONFIG_NET_HOSTNAME_ENABLE)
 	struct net_event_l4_hostname hostname;
 #endif /* CONFIG_NET_HOSTNAME_ENABLE */
@@ -147,12 +150,6 @@ static inline int net_context_get_local_addr(struct net_context *context,
 
 	return -ENOTSUP;
 }
-#endif
-
-#if defined(CONFIG_DNS_SOCKET_DISPATCHER)
-extern void dns_dispatcher_init(void);
-#else
-static inline void dns_dispatcher_init(void) { }
 #endif
 
 #if defined(CONFIG_MDNS_RESPONDER)
@@ -287,15 +284,6 @@ struct sock_obj {
 void net_if_ipv6_start_dad(struct net_if *iface,
 			   struct net_if_addr *ifaddr);
 #endif
-
-#if defined(CONFIG_NET_GPTP)
-/**
- * @brief Initialize Precision Time Protocol Layer.
- */
-void net_gptp_init(void);
-#else
-#define net_gptp_init()
-#endif /* CONFIG_NET_GPTP */
 
 #if defined(CONFIG_NET_IPV4_FRAGMENT)
 int net_ipv4_send_fragmented_pkt(struct net_if *iface, struct net_pkt *pkt,

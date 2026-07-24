@@ -16,13 +16,12 @@ import sys
 import re
 import xml.etree.ElementTree as etree
 
-# pylint: disable=no-name-in-module
-from conftest import TEST_DATA, ZEPHYR_BASE, suite_filename_mock, clear_log_in_test
+from conftest import TEST_DATA, ZEPHYR_BASE, test_filename_mock, clear_log_in_test
 from twisterlib.statuses import TwisterStatus
 from twisterlib.testplan import TestPlan
 
 
-@mock.patch.object(TestPlan, 'TESTSUITE_FILENAME', suite_filename_mock)
+@mock.patch.object(TestPlan, 'TEST_DEFINITION_FILENAME', test_filename_mock)
 class TestReport:
     TESTDATA_1 = [
         (
@@ -112,9 +111,9 @@ class TestReport:
         (
             os.path.join(TEST_DATA, 'tests', 'one_fail_two_error_one_pass'),
             ['qemu_x86/atom'],
-            [r'one_fail_two_error_one_pass.agnostic.group1.subgroup2 on qemu_x86/atom FAILED \(.*\)',
-            r'one_fail_two_error_one_pass.agnostic.group1.subgroup3 on qemu_x86/atom ERROR \(Build failure.*\)',
-            r'one_fail_two_error_one_pass.agnostic.group1.subgroup4 on qemu_x86/atom ERROR \(Build failure.*\)'],
+            [r'one_fail_two_error_one_pass.agnostic.group1.subgroup2 on qemu_x86/atom \(.*\) FAILED \(.*\)',
+            r'one_fail_two_error_one_pass.agnostic.group1.subgroup3 on qemu_x86/atom \(.*\) ERROR \(Build failure.*\)',
+            r'one_fail_two_error_one_pass.agnostic.group1.subgroup4 on qemu_x86/atom \(.*\) ERROR \(Build failure.*\)'],
         )
     ]
 

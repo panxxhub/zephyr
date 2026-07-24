@@ -15,12 +15,11 @@ import re
 import sys
 import time
 
-# pylint: disable=no-name-in-module
-from conftest import TEST_DATA, ZEPHYR_BASE, suite_filename_mock, clear_log_in_test
+from conftest import TEST_DATA, ZEPHYR_BASE, test_filename_mock, clear_log_in_test
 from twisterlib.testplan import TestPlan
 
 
-@mock.patch.object(TestPlan, 'TESTSUITE_FILENAME', suite_filename_mock)
+@mock.patch.object(TestPlan, 'TEST_DEFINITION_FILENAME', test_filename_mock)
 class TestRunner:
     TESTDATA_1 = [
         (
@@ -644,7 +643,7 @@ class TestRunner:
 
 
         assert re.search(
-            r'one_fail_one_pass.agnostic.group1.subgroup2 on qemu_x86/atom failed \(.*\)', err)
+            r'one_fail_one_pass.agnostic.group1.subgroup2 on qemu_x86/atom \(.*\) failed \(.*\)', err)
 
 
         select_search = re.search(select_regex, err, re.MULTILINE)

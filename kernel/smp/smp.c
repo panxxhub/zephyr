@@ -3,7 +3,6 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/kernel_structs.h>
 #include <zephyr/kernel/smp.h>
 #include <zephyr/spinlock.h>
 #include <kswap.h>
@@ -40,7 +39,7 @@ static struct cpu_start_cb {
 	 */
 	smp_init_fn fn;
 
-	/** Argument to @ref cpu_start_fn.fn. */
+	/** Argument to @ref cpu_start_cb.fn. */
 	void *arg;
 
 	/** Invoke scheduler after CPU has started if true. */
@@ -242,11 +241,7 @@ void z_smp_init(void)
 
 bool z_smp_cpu_mobile(void)
 {
-	unsigned int k = arch_irq_lock();
-	bool pinned = arch_is_in_isr() || !arch_irq_unlocked(k);
-
-	arch_irq_unlock(k);
-	return !pinned;
+	return !arch_is_in_isr() && arch_cpu_irqs_are_enabled();
 }
 
 __attribute_const__ struct k_thread *z_smp_current_get(void)

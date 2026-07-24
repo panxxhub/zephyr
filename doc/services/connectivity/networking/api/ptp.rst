@@ -41,7 +41,7 @@ In the table below all supported features are listed.
     Transparent Clock,
     Management Node,
     End to end delay mechanism, yes
-    Peer to peer delay mechanism,
+    Peer to peer delay mechanism, yes (two-step)
     Multicast operation mode,
     Hybrid operation mode,
     Unicast operation mode,
@@ -133,6 +133,12 @@ the stack logs a warning and skips Follow_Up for that Sync sequence, then
 continues normal Sync transmission on subsequent intervals (best-effort
 behavior).
 
+Peer-to-peer delay measurement can be selected with
+:kconfig:option:`CONFIG_PTP_DELAY_MECHANISM_P2P`. The first supported P2P mode
+is two-step ``Pdelay_Req`` / ``Pdelay_Resp`` /
+``Pdelay_Resp_Follow_Up``. One-step ``Pdelay_Resp`` samples are rejected and
+logged for a later implementation.
+
 Supported hardware
 ******************
 
@@ -145,6 +151,7 @@ Boards supported:
 - :zephyr:board:`nucleo_h743zi`
 - :zephyr:board:`nucleo_h745zi_q`
 - :zephyr:board:`nucleo_f767zi`
+- :zephyr:board:`frdm_mcxn947`
 - :zephyr:board:`native_sim` (only usable for simple testing, limited capabilities
   due to lack of hardware clock)
 
@@ -159,11 +166,12 @@ Testing
 *******
 
 The stack has been informally tested using the
-`Linux ptp4l <https://linuxptp.sourceforge.net/>`_ daemons.
-It has also been tested with the :zephyr:board:`nucleo_h563zi` board against a GPS clock,
-both with a direct Ethernet connection and with a PTP-capable switch in between.
-All tests were performed using the :zephyr:code-sample:`PTP sample application <ptp>`,
-with UDP IPv4, UDP IPv6, and IEEE 802.3 transport.
+`Linux ptp4l <https://linuxptp.sourceforge.net/>`_ daemons. It has also been tested
+with the :zephyr:board:`nucleo_h563zi` and :zephyr:board:`frdm_mcxn947` board
+against a GPS clock, both with a direct Ethernet connection and with a PTP-capable
+switch in between. All tests were performed using the
+:zephyr:code-sample:`PTP sample application <ptp>`, with UDP IPv4, UDP IPv6, and
+IEEE 802.3 transport.
 
 The following table summarizes the informal test matrix:
 
@@ -179,10 +187,9 @@ The following table summarizes the informal test matrix:
 | GPS Clock + PTP-capable switch | yes         | yes      | yes      |
 +--------------------------------+-------------+----------+----------+
 
-For all tested configurations the device was configured as an Ordinary Clock.
-In theory, the stack should also be able to operate as a Boundary Clock,
-but this mode of operation has not been validated due to lack of dev-boards
-with multiple Ethernet interfaces on the market.
+Peer-to-peer delay measurement is implemented and validated for ordinary-clock
+use. Boundary-clock operation is expected to share the same port-level Pdelay
+machinery but has not yet been validated on multi-port hardware.
 
 The :zephyr:code-sample:`PTP sample application <ptp>` from the Zephyr
 source distribution can be used for testing.

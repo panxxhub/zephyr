@@ -5,8 +5,8 @@
  *
  */
 
-#ifndef ZEPHYR_MCTP_I2C_GPIO_CONTROLLER_H_
-#define ZEPHYR_MCTP_I2C_GPIO_CONTROLLER_H_
+#ifndef ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_I2C_GPIO_CONTROLLER_H_
+#define ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_I2C_GPIO_CONTROLLER_H_
 
 #include <stdint.h>
 #include <zephyr/kernel.h>
@@ -63,6 +63,8 @@ struct mctp_binding_i2c_gpio_controller {
 	struct rtio *r_rx;
 	struct mpsc rx_q;
 	struct mctp_i2c_gpio_controller_cb *inflight_rx;
+
+	uint8_t tx_storage[MCTP_PKTBUF_SIZE(MCTP_I2C_GPIO_MAX_PKT_SIZE)] PKTBUF_STORAGE_ALIGN;
 
 	/** INTERNAL_HIDDEN @endcond */
 };
@@ -138,6 +140,7 @@ int mctp_i2c_gpio_controller_tx(struct mctp_binding *binding, struct mctp_pktbuf
 			.start = mctp_i2c_gpio_controller_start,                                   \
 			.tx = mctp_i2c_gpio_controller_tx,                                         \
 			.pkt_size = MCTP_I2C_GPIO_MAX_PKT_SIZE,                                    \
+			.tx_storage = _name.tx_storage,                                            \
 		},                                                                                 \
 		.i2c = DEVICE_DT_GET(DT_PHANDLE(_node_id, i2c)),                                   \
 		.num_endpoints = DT_PROP_LEN(_node_id, endpoint_ids),                              \
@@ -150,4 +153,4 @@ int mctp_i2c_gpio_controller_tx(struct mctp_binding *binding, struct mctp_pktbuf
 		.tx_lock = &_name##_tx_lock,                                                       \
 	};
 
-#endif /* ZEPHYR_MCTP_I2C_GPIO_CONTROLLER_H_ */
+#endif /* ZEPHYR_INCLUDE_PMCI_MCTP_MCTP_I2C_GPIO_CONTROLLER_H_ */
