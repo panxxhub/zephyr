@@ -1,0 +1,12 @@
+/*
+ * Copyright (c) 2026 Moton Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * QEMU's Zynq-7000 model does not provide the physical SLCR setup used by
+ * hardware boot flows. Keep QEMU kernel tests away from that MMIO path.
+ */
+
+&slcr {
+	status = "disabled";
+};

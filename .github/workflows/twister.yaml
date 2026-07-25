@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   twister-build-prep:
-    if: github.repository_owner == 'zephyrproject-rtos'
+    if: github.repository == 'zephyrproject-rtos/zephyr'
     runs-on:
       group: zephyr-runner-v2-linux-x64-4xlarge
     timeout-minutes: 60
@@ -384,12 +384,231 @@ jobs:
           path: |
             twister_report_summary.json
 
+  twister-fork:
+    name: Fork Cortex-A/R integration
+    if: >
+      github.repository != 'zephyrproject-rtos/zephyr' &&
+      github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout current head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: zephyr
+
+      - name: Verify current head
+        working-directory: zephyr
+        shell: bash
+        run: |
+          actual_head=$(git rev-parse HEAD)
+          echo "Expected head: ${EXPECTED_HEAD}"
+          echo "Actual head:   ${actual_head}"
+          test "${actual_head}" = "${EXPECTED_HEAD}"
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: 3.12
+          cache: pip
+          cache-dependency-path: zephyr/scripts/requirements-actions.txt
+
+      - name: Set up Zephyr project
+        uses: zephyrproject-rtos/action-zephyr-setup@5ec39f5cba83346d83a836dfed1524270c660e28
+        with:
+          app-path: zephyr
+          toolchains: arm-zephyr-eabi
+          enable-ccache: false
+
+      - name: Generate fixed Cortex-A/R test plan
+        working-directory: zephyr
+        shell: bash
+        env:
+          ZEPHYR_BASE: ${{ github.workspace }}/zephyr
+        run: |
+          # This is a permanent fork integration gate, not a changed-file
+          # selector. Generate the same high-value Cortex-A/R candidates for
+          # every PR, including PRs that do not touch these test directories.
+          ./scripts/twister -c \
+            --test-config tests/test_config_ci.yaml \
+            --platform qemu_cortex_a9 \
+            --platform qemu_cortex_r5 \
+            --testsuite-root tests/arch/common/interrupt \
+            --testsuite-root tests/kernel/fpu_sharing/float_disable \
+            --testsuite-root tests/kernel/fpu_sharing/generic \
+            --save-tests testplan.json
+
+          test -s testplan.json
+          jq -e '.testsuites | length > 0' testplan.json
+          jq '
+            def relevant:
+              .name == "arch.interrupt" or
+              .name == "arch.interrupt.arm_cortex_ar_fpu" or
+              .name == "kernel.fpu_sharing.float_disable" or
+              .name == "kernel.fpu_sharing.float_disable.arm_cortex_ar_use_switch" or
+              .name == "kernel.fpu_sharing.generic.arm" or
+              .name == "kernel.fpu_sharing.generic.arm_cortex_ar_use_switch";
+
+            {testsuites: [.testsuites[] | select(relevant)]}
+          ' testplan.json > testplan-relevant.json
+
+          jq '
+            {testsuites: [
+              .testsuites[] |
+              select(.platform | startswith("qemu_cortex_a9/"))
+            ]}
+          ' testplan-relevant.json > testplan-a9.json
+          jq '
+            {testsuites: [
+              .testsuites[] |
+              select(.platform | startswith("qemu_cortex_r5/"))
+            ]}
+          ' testplan-relevant.json > testplan-r5.json
+
+          jq -e '
+            ([.testsuites[].name] | sort) ==
+            ([
+              "arch.interrupt",
+              "arch.interrupt.arm_cortex_ar_fpu",
+              "kernel.fpu_sharing.float_disable",
+              "kernel.fpu_sharing.float_disable.arm_cortex_ar_use_switch",
+              "kernel.fpu_sharing.generic.arm",
+              "kernel.fpu_sharing.generic.arm_cortex_ar_use_switch"
+            ] | sort)
+          ' testplan-a9.json
+          jq -e '
+            ([.testsuites[].name] | sort) ==
+            ([
+              "arch.interrupt",
+              "kernel.fpu_sharing.float_disable",
+              "kernel.fpu_sharing.generic.arm"
+            ] | sort)
+          ' testplan-r5.json
+          jq -r '.testsuites[] | [.platform, .name] | @tsv' \
+            testplan-a9.json testplan-r5.json
+
+      - name: Run focused Cortex-A9 test plan
+        working-directory: zephyr
+        shell: bash
+        env:
+          ZEPHYR_BASE: ${{ github.workspace }}/zephyr
+        run: |
+          ./scripts/twister \
+            --load-tests testplan-a9.json \
+            --test-config tests/test_config_ci.yaml \
+            --enable-slow \
+            --force-color \
+            --inline-logs \
+            --post-build-checks \
+            --runtime-artifact-cleanup \
+            --timeout-multiplier 2 \
+            --extra-args \
+              "EXTRA_DTC_OVERLAY_FILE=${ZEPHYR_BASE}/.github/ci/qemu_cortex_a9_no_slcr.overlay" \
+            --outdir twister-out/cortex-a9
+
+      - name: Run focused Cortex-R5 test plan
+        if: ${{ !cancelled() }}
+        working-directory: zephyr
+        shell: bash
+        env:
+          ZEPHYR_BASE: ${{ github.workspace }}/zephyr
+        run: |
+          ./scripts/twister \
+            --load-tests testplan-r5.json \
+            --test-config tests/test_config_ci.yaml \
+            --enable-slow \
+            --force-color \
+            --inline-logs \
+            --post-build-checks \
+            --runtime-artifact-cleanup \
+            --timeout-multiplier 2 \
+            --outdir twister-out/cortex-r5
+
+      - name: Run irq_offload regression
+        if: ${{ !cancelled() }}
+        working-directory: zephyr
+        shell: bash
+        env:
+          ZEPHYR_BASE: ${{ github.workspace }}/zephyr
+        run: |
+          ./scripts/twister \
+            --platform qemu_cortex_a9 \
+            --scenario kernel.common \
+            --test-config tests/test_config_ci.yaml \
+            --force-color \
+            --inline-logs \
+            --post-build-checks \
+            --runtime-artifact-cleanup \
+            --timeout-multiplier 2 \
+            --extra-args \
+              "EXTRA_DTC_OVERLAY_FILE=${ZEPHYR_BASE}/.github/ci/qemu_cortex_a9_no_slcr.overlay" \
+            --outdir twister-out/irq-offload
+
+      - name: Build Xilinx GEM filter regression
+        if: ${{ !cancelled() }}
+        working-directory: zephyr
+        shell: bash
+        env:
+          ZEPHYR_BASE: ${{ github.workspace }}/zephyr
+        run: |
+          ./scripts/twister \
+            --platform qemu_cortex_a9 \
+            --scenario drivers.ethernet.xlnx_gem_filter \
+            --test-config tests/test_config_ci.yaml \
+            --build-only \
+            --force-color \
+            --inline-logs \
+            --post-build-checks \
+            --outdir twister-out/xlnx-gem-filter
+
+      - name: Run downstream ISR deferral regression
+        if: >
+          !cancelled() &&
+          hashFiles('zephyr/tests/drivers/xlnx_isr_deferral/tests.yaml') != ''
+        working-directory: zephyr
+        shell: bash
+        env:
+          ZEPHYR_BASE: ${{ github.workspace }}/zephyr
+        run: |
+          ./scripts/twister \
+            --platform native_sim \
+            --scenario drivers.xlnx.isr_deferral \
+            --test-config tests/test_config_ci.yaml \
+            --force-color \
+            --inline-logs \
+            --post-build-checks \
+            --runtime-artifact-cleanup \
+            --outdir twister-out/xlnx-isr-deferral
+
+      - name: Upload fork Twister results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Fork Cortex-A-R Twister Results
+          if-no-files-found: error
+          path: |
+            zephyr/testplan.json
+            zephyr/testplan-a9.json
+            zephyr/testplan-r5.json
+            zephyr/twister-out/**/twister.json
+            zephyr/twister-out/**/twister.xml
+            zephyr/twister-out/**/build.log
+
   twister-status-check:
-    if: always()
+    if: >
+      always() &&
+      (github.repository == 'zephyrproject-rtos/zephyr' ||
+       github.event_name == 'pull_request')
     name: "Check Twister Status"
     needs:
       - twister-build-prep
       - twister-build
+      - twister-fork
     uses: ./.github/workflows/ready-to-merge.yml
     with:
       needs_context: ${{ toJson(needs) }}
