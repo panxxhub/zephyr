@@ -1,0 +1,8 @@
+tests:
+  drivers.xlnx.isr_deferral:
+    platform_allow:
+      - native_sim
+    tags:
+      - dma
+      - sdhc
+      - interrupt

@@ -1356,7 +1356,6 @@ static void zynq_sdhc_isr(const struct device *dev)
 
 	/* Clear and post error interrupt events (W1C) */
 	if (err_stat) {
-		LOG_ERR("ISR error: 0x%04x", err_stat);
 		regs->err_int_stat = err_stat;
 		k_event_post(&sdhc_data->irq_event, ERR_INTR_STATUS_EVENT(err_stat));
 	}

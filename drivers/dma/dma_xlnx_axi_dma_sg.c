@@ -1,4 +1,8 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * Copyright (c) 2026 Moton Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
 /*
  * Xilinx AXI DMA scatter-gather driver for Zephyr RTOS.
  *
@@ -105,6 +109,14 @@ LOG_MODULE_REGISTER(dma_xlnx_sg, CONFIG_DMA_LOG_LEVEL);
 
 #define DMASR_IRQ_BITS (DMASR_IOC_IRQ | DMASR_DLY_IRQ | DMASR_ERR_IRQ)
 
+/*
+ * Deferred IRQ records fit in one atomic word so an interrupt can never
+ * publish status from one channel session with the generation of another.
+ */
+#define IRQ_EVENT_STATUS_MASK      0x0000FFFFU
+#define IRQ_EVENT_GENERATION_SHIFT 16U
+#define IRQ_EVENT_GENERATION_MASK  0xFFFFU
+
 /* --------------------------------------------------------------------------
  * BD control / status field masks
  * -------------------------------------------------------------------------- */
@@ -155,7 +167,6 @@ struct dma_xlnx_sg_chan {
 	dma_callback_t callback;
 	void *user_data;
 	bool cyclic; /* true for cyclic RX */
-	bool error;  /* sticky error flag */
 	uint16_t irq_threshold;    /* software window size in BDs */
 	uint8_t hw_irq_threshold;  /* hardware threshold (max 255) written to DMACR */
 	uint16_t irq_coalesce_target; /* hw IRQs per software window */
@@ -168,13 +179,20 @@ struct dma_xlnx_sg_chan {
 	uint32_t active_bds;       /* number of BDs used in current transfer (0 = all num_bds) */
 	uint32_t tx_src_addr;      /* one-shot TX: caller's source address (0 = use DT region) */
 	uint32_t tx_xfer_size;     /* one-shot TX: transfer size in bytes */
+	atomic_t irq_event;        /* packed session generation and deferred DMASR bits */
+	atomic_t session_generation;
+	struct k_work irq_work; /* finite-transfer callbacks and error logging */
+	struct k_work_sync irq_work_sync;
+	struct k_spinlock state_lock;
+	bool running;              /* protected by state_lock */
 	atomic_t rx_windows_ready; /* completed stream windows waiting for the worker */
-	bool rx_stream_active;
+	atomic_t rx_stream_active;
 	dma_xlnx_sg_rx_stream_cb_t rx_stream_callback;
 	void *rx_stream_user_data;
 	struct k_work rx_stream_work;
 	struct k_work_sync rx_stream_work_sync;
 	uint32_t tail_idx; /* current TAILDESC BD index for ping-pong */
+	uint16_t last_rx_generation;
 };
 
 /* --------------------------------------------------------------------------
@@ -453,6 +471,43 @@ static uint32_t build_dmacr(const struct dma_xlnx_sg_chan *ch)
 	return dmacr;
 }
 
+static uint16_t dma_xlnx_sg_session_generation(const struct dma_xlnx_sg_chan *ch)
+{
+	return (uint16_t)((uint32_t)atomic_get(&ch->session_generation) &
+			  IRQ_EVENT_GENERATION_MASK);
+}
+
+/* The caller holds state_lock. */
+static void dma_xlnx_sg_begin_session_locked(struct dma_xlnx_sg_chan *ch)
+{
+	(void)atomic_inc(&ch->session_generation);
+	atomic_set(&ch->irq_event, 0);
+	ch->running = true;
+}
+
+/* The caller holds state_lock. */
+static void dma_xlnx_sg_quiesce_channel_locked(struct dma_xlnx_sg_chan *ch)
+{
+	ch->running = false;
+	atomic_set(&ch->rx_stream_active, 0);
+	(void)atomic_inc(&ch->session_generation);
+	atomic_set(&ch->irq_event, 0);
+}
+
+/*
+ * Synchronously drain work before descriptor/callback storage is reused.
+ * A callback is allowed to stop its own channel, so never wait for the
+ * system-workqueue thread to finish itself.
+ */
+static void dma_xlnx_sg_cancel_work(struct k_work *work, struct k_work_sync *sync)
+{
+	if (k_current_get() == k_work_queue_thread_get(&k_sys_work_q)) {
+		(void)k_work_cancel(work);
+	} else {
+		(void)k_work_cancel_sync(work, sync);
+	}
+}
+
 /* --------------------------------------------------------------------------
  * Start a channel: write CURDESC, DMACR (with RS=1), then TAILDESC
  * -------------------------------------------------------------------------- */
@@ -460,8 +515,6 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
-
-	ch->error = false;
 
 	/* CURDESC must be written before RS=1 */
 	barrier_dmem_fence_full();
@@ -480,7 +533,8 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 		 * Ping-pong RX: non-cyclic in hardware (no CYC_BD_EN).
 		 * TAILDESC = first HW threshold boundary.
 		 * DMA processes those BDs, goes IDLE, IOC fires.
-		 * ISR advances TAILDESC by hw_irq_threshold each time.
+		 * The ISR advances TAILDESC by hw_irq_threshold each time so
+		 * system-workqueue latency can never stall the capture stream.
 		 */
 		ch->tail_idx = ch->hw_irq_threshold - 1;
 		chan_write(dev, channel, REG_TAILDESC,
@@ -542,130 +596,245 @@ static void log_dma_errors(uint32_t channel, uint32_t dmasr)
 	}
 }
 
-/* --------------------------------------------------------------------------
- * TX ISR — non-cyclic completion
- * -------------------------------------------------------------------------- */
-static void dma_xlnx_sg_tx_isr(const struct device *dev)
+static bool dma_xlnx_sg_event_is_current(const struct dma_xlnx_sg_chan *ch, uint16_t generation)
 {
-	struct dma_xlnx_sg_data *data = dev->data;
-	struct dma_xlnx_sg_chan *ch = &data->ch[CH_TX];
-	uint32_t dmasr = chan_read(dev, CH_TX, REG_DMASR);
+	return dma_xlnx_sg_session_generation(ch) == generation;
+}
 
-	/* Check for errors */
-	if (dmasr & DMASR_ALL_ERR) {
-		log_dma_errors(CH_TX, dmasr);
-		ch->error = true;
-		/* Clear error IRQ flag */
-		chan_write(dev, CH_TX, REG_DMASR, DMASR_ERR_IRQ);
-	}
+static uint32_t dma_xlnx_sg_take_irq_event(struct dma_xlnx_sg_chan *ch, uint16_t *generation)
+{
+	uint32_t event = (uint32_t)atomic_set(&ch->irq_event, 0);
 
-	/* Completion or delay IRQ */
-	if (dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ)) {
-		/* Clear the IRQ flags (write-1-to-clear) */
-		chan_write(dev, CH_TX, REG_DMASR, dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ));
+	*generation = (uint16_t)(event >> IRQ_EVENT_GENERATION_SHIFT);
+	return event & IRQ_EVENT_STATUS_MASK;
+}
 
-		if (ch->callback) {
-			int status = ch->error ? -EIO : DMA_STATUS_COMPLETE;
+/* --------------------------------------------------------------------------
+ * Deferred IRQ processing
+ *
+ * These handlers may log and invoke client callbacks because they only run
+ * on the system workqueue. A packed generation/status record prevents a
+ * queued event from an old stop/config/start session from observing the new
+ * session's callback or user_data.
+ * --------------------------------------------------------------------------
+ */
+static void dma_xlnx_sg_tx_irq_work_handler(struct k_work *work)
+{
+	struct dma_xlnx_sg_chan *ch = CONTAINER_OF(work, struct dma_xlnx_sg_chan, irq_work);
+	const struct device *dev = ch->dev;
+	uint32_t dmasr;
+	uint16_t generation;
 
-			ch->callback(dev, ch->user_data, CH_TX, status);
+	while ((dmasr = dma_xlnx_sg_take_irq_event(ch, &generation)) != 0U) {
+		if (!dma_xlnx_sg_event_is_current(ch, generation)) {
+			continue;
 		}
-	}
 
-	/* Notify consumer of error even without IOC/DLY */
-	if (ch->error && !(dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ))) {
-		if (ch->callback) {
-			ch->callback(dev, ch->user_data, CH_TX, -EIO);
+		if (dmasr & DMASR_ALL_ERR) {
+			log_dma_errors(CH_TX, dmasr);
+		}
+
+		if (dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ | DMASR_ERR_IRQ | DMASR_ALL_ERR)) {
+			dma_callback_t callback = ch->callback;
+			void *user_data = ch->user_data;
+			int status = (dmasr & (DMASR_ERR_IRQ | DMASR_ALL_ERR))
+					     ? -EIO
+					     : DMA_STATUS_COMPLETE;
+
+			/*
+			 * Snapshot the callback first, then validate again. If
+			 * stop/config raced with the snapshot, the old callback
+			 * is suppressed and the new user_data is never observed.
+			 */
+			if (callback != NULL && dma_xlnx_sg_event_is_current(ch, generation)) {
+				callback(dev, user_data, CH_TX, status);
+			}
 		}
 	}
 }
 
-/* --------------------------------------------------------------------------
- * RX ISR — cyclic streaming completion
- * -------------------------------------------------------------------------- */
-static void dma_xlnx_sg_rx_isr(const struct device *dev)
+static void dma_xlnx_sg_rx_irq_work_handler(struct k_work *work)
 {
-	struct dma_xlnx_sg_data *data = dev->data;
-	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
-	uint32_t dmasr = chan_read(dev, CH_RX, REG_DMASR);
+	struct dma_xlnx_sg_chan *ch = CONTAINER_OF(work, struct dma_xlnx_sg_chan, irq_work);
+	const struct device *dev = ch->dev;
+	uint32_t dmasr;
+	uint16_t generation;
 
-	/* Check for errors */
-	if (dmasr & DMASR_ALL_ERR) {
-		log_dma_errors(CH_RX, dmasr);
-		ch->error = true;
-		chan_write(dev, CH_RX, REG_DMASR, DMASR_ERR_IRQ);
-	}
+	while ((dmasr = dma_xlnx_sg_take_irq_event(ch, &generation)) != 0U) {
+		if (!dma_xlnx_sg_event_is_current(ch, generation)) {
+			continue;
+		}
 
-	/* Completion or delay IRQ */
-	if (dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ)) {
-		chan_write(dev, CH_RX, REG_DMASR, dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ));
+		if (dmasr & DMASR_ALL_ERR) {
+			log_dma_errors(CH_RX, dmasr);
+		}
 
-		if (ch->rx_stream_active) {
-			/*
-			 * Ping-pong: clear CMPLT on the just-completed BDs,
-			 * then advance TAILDESC to resume DMA immediately.
-			 * Use hw_irq_threshold (what HW actually coalesced)
-			 * for the BD-level operations each HW IRQ.
-			 */
-			uint32_t hw_thresh = ch->hw_irq_threshold;
-			uint32_t idx = ch->producer_idx;
+		if (dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ)) {
+			if (atomic_get(&ch->rx_stream_active) == 0) {
+				/*
+				 * Non-streaming finite RX: scan completed BDs to
+				 * compute total bytes received.
+				 */
+				uint32_t total_bytes = 0U;
+				uint32_t ring_count =
+					(ch->active_bds > 0) ? ch->active_bds : ch->num_bds;
+				const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
 
-			for (uint32_t i = 0; i < hw_thresh; i++) {
-				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
-				ch->bds[idx].control &= ~BD_STS_CMPLT;
-				ch->bds[idx].status &= ~BD_STS_CMPLT;
-				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
-				idx = (idx + 1) % ch->num_bds;
-			}
-			ch->producer_idx = idx;
+				for (uint32_t i = 0; i < ring_count; i++) {
+					cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
+					if (ch->bds[i].status & BD_STS_CMPLT) {
+						total_bytes += ch->bds[i].status & len_mask;
+					}
+				}
 
-			/* Advance TAILDESC by hw_thresh BDs */
-			ch->tail_idx = (ch->tail_idx + hw_thresh) % ch->num_bds;
-			barrier_dmem_fence_full();
-			chan_write(dev, CH_RX, REG_TAILDESC,
-				   (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
+				if (dma_xlnx_sg_event_is_current(ch, generation)) {
+					ch->last_rx_bytes = total_bytes;
+					ch->last_rx_generation = generation;
+				}
 
-			/* Software coalescing: only notify work handler
-			 * when enough HW IRQs have accumulated to fill
-			 * one full software window (irq_threshold BDs).
-			 */
-			ch->irq_coalesce_count++;
-			if (ch->irq_coalesce_count >= ch->irq_coalesce_target) {
-				ch->irq_coalesce_count = 0;
-				atomic_inc(&ch->rx_windows_ready);
-				(void)k_work_submit(&ch->rx_stream_work);
-			}
-		} else {
-			/* Non-streaming finite RX: scan completed BDs to
-			 * compute total bytes received.
-			 */
-			uint32_t total_bytes = 0U;
-			uint32_t ring_count = (ch->active_bds > 0)
-						      ? ch->active_bds
-						      : ch->num_bds;
-			const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
+				dma_callback_t callback = ch->callback;
+				void *user_data = ch->user_data;
+				int status = (dmasr & (DMASR_ERR_IRQ | DMASR_ALL_ERR))
+						     ? -EIO
+						     : DMA_STATUS_COMPLETE;
 
-			for (uint32_t i = 0; i < ring_count; i++) {
-				cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
-				if (ch->bds[i].status & BD_STS_CMPLT) {
-					total_bytes += ch->bds[i].status & len_mask;
+				if (callback != NULL &&
+				    dma_xlnx_sg_event_is_current(ch, generation)) {
+					callback(dev, user_data, CH_RX, status);
 				}
 			}
-			ch->last_rx_bytes = total_bytes;
+		}
 
-			if (ch->callback) {
-				int status = ch->error ? -EIO : DMA_STATUS_COMPLETE;
+		if ((dmasr & (DMASR_ERR_IRQ | DMASR_ALL_ERR)) != 0U &&
+		    (dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ)) == 0U) {
+			dma_callback_t callback = ch->callback;
+			void *user_data = ch->user_data;
 
-				ch->callback(dev, ch->user_data, CH_RX, status);
+			if (callback != NULL && dma_xlnx_sg_event_is_current(ch, generation)) {
+				callback(dev, user_data, CH_RX, -EIO);
 			}
 		}
 	}
+}
 
-	/* Notify consumer of error even without IOC/DLY */
-	if (ch->error && !(dmasr & (DMASR_IOC_IRQ | DMASR_DLY_IRQ))) {
-		if (ch->callback) {
-			ch->callback(dev, ch->user_data, CH_RX, -EIO);
+/*
+ * Add status to the deferred event for generation. irq_event contains both
+ * fields so a concurrent lifecycle change cannot tear them apart.
+ */
+static void dma_xlnx_sg_latch_event(struct dma_xlnx_sg_chan *ch, uint16_t generation,
+				    uint32_t status)
+{
+	uint32_t old_event;
+	uint32_t new_event;
+
+	do {
+		old_event = (uint32_t)atomic_get(&ch->irq_event);
+		if ((uint16_t)(old_event >> IRQ_EVENT_GENERATION_SHIFT) == generation) {
+			new_event = old_event | (status & IRQ_EVENT_STATUS_MASK);
+		} else {
+			new_event = ((uint32_t)generation << IRQ_EVENT_GENERATION_SHIFT) |
+				    (status & IRQ_EVENT_STATUS_MASK);
+		}
+	} while (!atomic_cas(&ch->irq_event, (atomic_val_t)old_event, (atomic_val_t)new_event));
+}
+
+/*
+ * RX streaming runs the DMA in finite ping-pong chunks because this IP does
+ * not reliably raise IOC in hardware cyclic mode. Consequently the bounded
+ * descriptor recycle and TAILDESC write are part of interrupt acknowledgment,
+ * not deferred application work. hw_irq_threshold is constrained to <= 32.
+ *
+ * The caller holds state_lock and has verified that the stream is active.
+ */
+static bool dma_xlnx_sg_rearm_rx_stream_isr(const struct device *dev, struct dma_xlnx_sg_chan *ch)
+{
+	uint32_t hw_thresh = ch->hw_irq_threshold;
+	uint32_t idx = ch->producer_idx;
+
+	if (hw_thresh == 0U || hw_thresh > 32U || hw_thresh > ch->num_bds) {
+		return false;
+	}
+
+	for (uint32_t i = 0; i < hw_thresh; i++) {
+		cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
+		ch->bds[idx].control &= ~BD_STS_CMPLT;
+		ch->bds[idx].status &= ~BD_STS_CMPLT;
+		cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
+		idx = (idx + 1U) % ch->num_bds;
+	}
+	ch->producer_idx = idx;
+
+	ch->tail_idx = (ch->tail_idx + hw_thresh) % ch->num_bds;
+	barrier_dmem_fence_full();
+	chan_write(dev, CH_RX, REG_TAILDESC, (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
+
+	ch->irq_coalesce_count++;
+	if (ch->irq_coalesce_count >= ch->irq_coalesce_target) {
+		ch->irq_coalesce_count = 0U;
+		atomic_inc(&ch->rx_windows_ready);
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * IRQ front end
+ *
+ * No logging, formatting, console output, or client callback is allowed on
+ * this call graph. RX stream hardware continuation above is intentionally
+ * synchronous; everything else is atomically latched for thread context.
+ */
+static void dma_xlnx_sg_latch_irq(const struct device *dev, uint32_t channel)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
+	uint32_t dmasr;
+	uint32_t pending;
+	k_spinlock_key_t key;
+
+	key = k_spin_lock(&ch->state_lock);
+	dmasr = chan_read(dev, channel, REG_DMASR);
+	pending = dmasr & (DMASR_IRQ_BITS | DMASR_ALL_ERR);
+	if ((dmasr & DMASR_IRQ_BITS) != 0U) {
+		chan_write(dev, channel, REG_DMASR, dmasr & DMASR_IRQ_BITS);
+	}
+
+	if (ch->running) {
+		uint16_t generation = dma_xlnx_sg_session_generation(ch);
+		bool stream = channel == CH_RX && atomic_get(&ch->rx_stream_active) != 0;
+
+		if (stream && (pending & (DMASR_IOC_IRQ | DMASR_DLY_IRQ)) != 0U &&
+		    (pending & (DMASR_ERR_IRQ | DMASR_ALL_ERR)) == 0U) {
+			if (dma_xlnx_sg_rearm_rx_stream_isr(dev, ch)) {
+				(void)k_work_submit(&ch->rx_stream_work);
+			}
+		}
+
+		/*
+		 * Streaming completion is represented by rx_windows_ready.
+		 * Error details, TX completion, and finite RX completion use
+		 * the generation-tagged deferred event.
+		 */
+		if (stream) {
+			pending &= ~(DMASR_IOC_IRQ | DMASR_DLY_IRQ);
+		}
+		if (pending != 0U) {
+			dma_xlnx_sg_latch_event(ch, generation, pending);
+			(void)k_work_submit(&ch->irq_work);
 		}
 	}
+	k_spin_unlock(&ch->state_lock, key);
+}
+
+static void dma_xlnx_sg_tx_isr(const struct device *dev)
+{
+	dma_xlnx_sg_latch_irq(dev, CH_TX);
+}
+
+static void dma_xlnx_sg_rx_isr(const struct device *dev)
+{
+	dma_xlnx_sg_latch_irq(dev, CH_RX);
 }
 
 /* ==========================================================================
@@ -707,15 +876,29 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	}
 
 	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
-
-	/* Store callback */
-	ch->callback = dma_cfg->dma_callback;
-	ch->user_data = dma_cfg->user_data;
+	k_spinlock_key_t key;
 
 	/* Cyclic RX must use start_rx_stream() for proper ping-pong init */
 	if (channel == CH_RX && dma_cfg->cyclic != 0) {
 		return -ENOTSUP;
 	}
+
+	/*
+	 * Invalidate deferred completion before changing any callback or ring
+	 * state. An ISR already holding state_lock completes against the old
+	 * generation; a later ISR sees running=false and only acknowledges.
+	 */
+	key = k_spin_lock(&ch->state_lock);
+	dma_xlnx_sg_quiesce_channel_locked(ch);
+	k_spin_unlock(&ch->state_lock, key);
+	dma_xlnx_sg_cancel_work(&ch->irq_work, &ch->irq_work_sync);
+	if (channel == CH_RX) {
+		dma_xlnx_sg_cancel_work(&ch->rx_stream_work, &ch->rx_stream_work_sync);
+	}
+
+	/* Store callback only after the old generation has become unreachable. */
+	ch->callback = dma_cfg->dma_callback;
+	ch->user_data = dma_cfg->user_data;
 	ch->cyclic = (dma_cfg->cyclic != 0);
 
 	/* If RX channel is not halted (e.g. prior stream didn't stop cleanly),
@@ -820,8 +1003,8 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	ch->producer_idx = 0;
 	ch->consumer_idx = 0;
 	atomic_set(&ch->rx_windows_ready, 0);
-	ch->error = false;
 	ch->last_rx_bytes = 0;
+	ch->last_rx_generation = dma_xlnx_sg_session_generation(ch);
 	memset(&ch->rx_app, 0, sizeof(ch->rx_app));
 
 	/* Build the BD ring */
@@ -848,9 +1031,10 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
 	uint32_t dmasr = chan_read(dev, channel, REG_DMASR);
+	k_spinlock_key_t key;
 
 	/* If halted due to error, reset and rebuild */
-	if ((dmasr & DMASR_HALTED) && ch->error) {
+	if ((dmasr & DMASR_HALTED) && (dmasr & DMASR_ALL_ERR)) {
 		LOG_WRN("ch %u halted (DMASR=0x%08x), performing reset", channel, dmasr);
 
 		int ret = do_soft_reset(dev, channel);
@@ -866,7 +1050,14 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
 		}
 	}
 
+	if ((dmasr & DMASR_IRQ_BITS) != 0U) {
+		chan_write(dev, channel, REG_DMASR, dmasr & DMASR_IRQ_BITS);
+	}
+
+	key = k_spin_lock(&ch->state_lock);
+	dma_xlnx_sg_begin_session_locked(ch);
 	kick_channel(dev, channel);
+	k_spin_unlock(&ch->state_lock, key);
 
 	LOG_DBG("ch %u started", channel);
 	return 0;
@@ -877,8 +1068,28 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
  * -------------------------------------------------------------------------- */
 static int dma_xlnx_sg_stop(const struct device *dev, uint32_t channel)
 {
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch;
+	k_spinlock_key_t key;
+
 	if (channel >= NUM_CHANNELS) {
 		return -EINVAL;
+	}
+
+	ch = &data->ch[channel];
+
+	/*
+	 * Serialize with the streaming ISR before touching RS/TAILDESC. If the
+	 * ISR won the lock it finishes one bounded rearm first; otherwise it
+	 * observes running=false and cannot restart the stopped channel.
+	 */
+	key = k_spin_lock(&ch->state_lock);
+	dma_xlnx_sg_quiesce_channel_locked(ch);
+	k_spin_unlock(&ch->state_lock, key);
+	dma_xlnx_sg_cancel_work(&ch->irq_work, &ch->irq_work_sync);
+	if (channel == CH_RX) {
+		dma_xlnx_sg_cancel_work(&ch->rx_stream_work, &ch->rx_stream_work_sync);
+		atomic_set(&ch->rx_windows_ready, 0);
 	}
 
 	/* Set TAILDESC = CURDESC so the engine stops after the current BD
@@ -912,6 +1123,7 @@ static int dma_xlnx_sg_stop(const struct device *dev, uint32_t channel)
 		LOG_DBG("ch %u: halt timeout (expected for mid-burst stream stop)", channel);
 	}
 
+	chan_write(dev, channel, REG_DMASR, DMASR_IRQ_BITS);
 	LOG_DBG("ch %u stopped", channel);
 	return 0;
 }
@@ -978,6 +1190,7 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 {
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
+	k_spinlock_key_t key;
 
 	if (bd_bytes == 0 || (size_t)bd_bytes * (size_t)ch->num_bds > buf_size(dev, CH_RX)) {
 		LOG_ERR("bd_bytes %u * %u BDs exceeds RX buf size %zu", bd_bytes, ch->num_bds,
@@ -991,16 +1204,18 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 	}
 
 	/*
-	 * Stop the channel if running.  Halted channels (first call)
-	 * skip the reset to avoid disrupting the DMA engine state.
-	 * Running channels get a soft-reset to flush the prefetch
-	 * pipeline and clear stale CMPLT bits.
-	 */
-	/* Always soft-reset before reconfiguring.  This clears stale BD
+	 * Stop publishing the old session before changing descriptor state.
+	 * Always soft-reset before reconfiguring. This clears stale BD
 	 * state from any prior finite transfer and flushes the prefetch
 	 * pipeline.  After reset, the channel is halted and ready for a
 	 * fresh BD ring.
 	 */
+	key = k_spin_lock(&ch->state_lock);
+	dma_xlnx_sg_quiesce_channel_locked(ch);
+	k_spin_unlock(&ch->state_lock, key);
+	dma_xlnx_sg_cancel_work(&ch->irq_work, &ch->irq_work_sync);
+	dma_xlnx_sg_cancel_work(&ch->rx_stream_work, &ch->rx_stream_work_sync);
+
 	int reset_ret = do_soft_reset(dev, CH_RX);
 
 	if (reset_ret) {
@@ -1010,7 +1225,6 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 	/* Update ring parameters — clear finite transfer state */
 	ch->bd_buf_bytes = bd_bytes;
 	ch->active_bds = 0;
-	ch->error = false;
 	ch->irq_threshold = threshold;
 
 	/*
@@ -1033,7 +1247,8 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 	ch->consumer_idx = 0;
 	ch->producer_idx = 0;
 	atomic_set(&ch->rx_windows_ready, 0);
-	ch->error = false;
+	ch->last_rx_bytes = 0U;
+	ch->last_rx_generation = dma_xlnx_sg_session_generation(ch);
 
 	/* Rebuild and restart */
 	int build_ret = build_bd_ring(dev, CH_RX);
@@ -1041,7 +1256,16 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 		return build_ret;
 	}
 
+	/*
+	 * Publish active/running while holding the same lock as the ISR, then
+	 * start hardware. An IRQ on another CPU waits until the ring is fully
+	 * programmed and cannot observe a half-started session.
+	 */
+	key = k_spin_lock(&ch->state_lock);
+	dma_xlnx_sg_begin_session_locked(ch);
+	atomic_set(&ch->rx_stream_active, 1);
 	kick_channel(dev, CH_RX);
+	k_spin_unlock(&ch->state_lock, key);
 
 	LOG_DBG("RX ring reconfigured: %u BDs x %u bytes, threshold=%u", ch->num_bds, bd_bytes,
 		threshold);
@@ -1093,6 +1317,7 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 
 	ch->consumer_idx = idx;
 	atomic_dec(&ch->rx_windows_ready);
+	ch->last_rx_generation = dma_xlnx_sg_session_generation(ch);
 
 	*buf = window_buf;
 	*size = window_bytes;
@@ -1104,14 +1329,13 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 	struct dma_xlnx_sg_chan *ch = CONTAINER_OF(work, struct dma_xlnx_sg_chan, rx_stream_work);
 	const struct device *dev = ch->dev;
 
-	if (dev == NULL || !ch->rx_stream_active) {
+	if (dev == NULL || atomic_get(&ch->rx_stream_active) == 0) {
 		return;
 	}
 
 	/*
-	 * Ping-pong: ISR already advanced TAILDESC and DMA is processing
-	 * the next half. We just consume all ready windows and deliver
-	 * them to the callback. No DMA reconfiguration needed.
+	 * Ping-pong: the ISR already advanced TAILDESC and DMA is processing
+	 * the next chunk. We only consume ready windows and deliver callbacks.
 	 */
 	while (atomic_get(&ch->rx_windows_ready) > 0) {
 		uint8_t *buf = NULL;
@@ -1128,7 +1352,7 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 			ch->rx_stream_callback(dev, ch->rx_stream_user_data, buf, size);
 		}
 
-		if (!ch->rx_stream_active) {
+		if (atomic_get(&ch->rx_stream_active) == 0) {
 			return;
 		}
 	}
@@ -1155,15 +1379,14 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 		return -EINVAL;
 	}
 
-	if (ch->rx_stream_active) {
+	if (atomic_get(&ch->rx_stream_active) != 0) {
 		return -EBUSY;
 	}
 
 	dma_xlnx_sg_prepare_rx_stream(dev, cfg);
-	ch->rx_stream_active = true;
 	ret = dma_xlnx_sg_reconfigure_rx(dev, cfg->bd_bytes, cfg->irq_threshold);
 	if (ret != 0) {
-		ch->rx_stream_active = false;
+		atomic_set(&ch->rx_stream_active, 0);
 		ch->rx_stream_callback = NULL;
 		ch->rx_stream_user_data = NULL;
 		return ret;
@@ -1177,17 +1400,16 @@ void dma_xlnx_sg_stop_rx_stream(const struct device *dev)
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
 
-	if (!ch->rx_stream_active && ch->rx_stream_callback == NULL) {
+	if (atomic_get(&ch->rx_stream_active) == 0 && ch->rx_stream_callback == NULL) {
 		return;
 	}
 
-	ch->rx_stream_active = false;
+	(void)dma_xlnx_sg_stop(dev, CH_RX);
 	ch->rx_stream_callback = NULL;
 	ch->rx_stream_user_data = NULL;
 	atomic_set(&ch->rx_windows_ready, 0);
 
-	(void)dma_xlnx_sg_stop(dev, CH_RX);
-	(void)k_work_cancel_sync(&ch->rx_stream_work, &ch->rx_stream_work_sync);
+	dma_xlnx_sg_cancel_work(&ch->rx_stream_work, &ch->rx_stream_work_sync);
 }
 
 #ifdef CONFIG_DMA_XLNX_AXI_DMA_SG_APP_FIELDS
@@ -1199,7 +1421,8 @@ int dma_xlnx_sg_get_rx_app(const struct device *dev, struct dma_xlnx_sg_app_fiel
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
 
-	if (ch->last_rx_bytes == 0) {
+	if (ch->last_rx_bytes == 0 ||
+	    ch->last_rx_generation != dma_xlnx_sg_session_generation(ch)) {
 		return -EAGAIN;
 	}
 
@@ -1237,8 +1460,13 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_ap
 uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
 
-	return data->ch[CH_RX].last_rx_bytes;
+	if (ch->last_rx_generation != dma_xlnx_sg_session_generation(ch)) {
+		return 0U;
+	}
+
+	return ch->last_rx_bytes;
 }
 
 /* --------------------------------------------------------------------------
@@ -1268,8 +1496,13 @@ static int dma_xlnx_sg_init(const struct device *dev)
 
 	for (uint32_t channel = 0; channel < NUM_CHANNELS; channel++) {
 		data->ch[channel].dev = dev;
+		atomic_set(&data->ch[channel].irq_event, 0);
+		atomic_set(&data->ch[channel].session_generation, 0);
+		atomic_set(&data->ch[channel].rx_stream_active, 0);
+		data->ch[channel].running = false;
 	}
-	data->ch[CH_RX].rx_stream_active = false;
+	k_work_init(&data->ch[CH_TX].irq_work, dma_xlnx_sg_tx_irq_work_handler);
+	k_work_init(&data->ch[CH_RX].irq_work, dma_xlnx_sg_rx_irq_work_handler);
 	data->ch[CH_RX].rx_stream_callback = NULL;
 	data->ch[CH_RX].rx_stream_user_data = NULL;
 	k_work_init(&data->ch[CH_RX].rx_stream_work, dma_xlnx_sg_rx_stream_work_handler);
