@@ -252,6 +252,15 @@ SECTION_SUBSEC_FUNC(TEXT, _HandlerModeExit, z_arm_cortex_ar_exit_exc)
 	sub r1, r1, #1
 	strb r1, [r2, #_cpu_offset_to_exc_depth]
 
+#if defined(CONFIG_FPU_SHARING)
+	/*
+	 * The complete VFP image precedes the basic frame for every
+	 * CONFIG_USE_SWITCH exception, including a new thread's synthetic
+	 * first-return frame.
+	 */
+	z_arm_cortex_ar_fpu_restore_stack
+#endif
+
 	/*
 	 * Restore r0-r3, r12, lr, lr_und and spsr_und from the exception stack
 	 * and return to the current thread.
@@ -279,7 +288,22 @@ SECTION_SUBSEC_FUNC(TEXT, __exc, z_arm_undef_instruction)
 	pop {r0}
 
 	z_arm_cortex_ar_enter_exc
+	z_arm_cortex_ar_align_exc_stack r0, r3
+#if defined(CONFIG_FPU_SHARING)
+	/*
+	 * A disabled VFP unit is the lazy-disable case.  The helper updates the
+	 * saved FPEXC image so retrying the instruction happens with VFP enabled.
+	 * A second fault with FPEXC.EN already set is a real undefined
+	 * instruction and follows the fatal path.
+	 */
+	bl z_arm_fault_undef_instruction_fp
+	cmp r0, #0
+	beq 1f
+	ldr r0, [sp]
+#endif
 	bl z_arm_fault_undef_instruction
+1:
+	z_arm_cortex_ar_restore_exc_stack r2, r3
 	b z_arm_cortex_ar_exit_exc
 
 /**
@@ -295,7 +319,9 @@ SECTION_SUBSEC_FUNC(TEXT, __exc, z_arm_prefetch_abort)
 	 */
 	sub lr, #4
 	z_arm_cortex_ar_enter_exc
+	z_arm_cortex_ar_align_exc_stack r0, r3
 	bl z_arm_fault_prefetch
+	z_arm_cortex_ar_restore_exc_stack r2, r3
 	b z_arm_cortex_ar_exit_exc
 
 /**
@@ -309,7 +335,9 @@ SECTION_SUBSEC_FUNC(TEXT, __exc, z_arm_data_abort)
 	sub lr, #8
 
 	z_arm_cortex_ar_enter_exc
+	z_arm_cortex_ar_align_exc_stack r0, r3
 	bl z_arm_fault_data
+	z_arm_cortex_ar_restore_exc_stack r2, r3
 	b z_arm_cortex_ar_exit_exc
 
 #endif

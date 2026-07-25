@@ -69,9 +69,9 @@ config CPU_AARCH32_CORTEX_A
 	select ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	select USE_SWITCH_SUPPORTED
 	# GDBSTUB has not yet been tested on Cortex M or R SoCs
-	select ARCH_HAS_GDBSTUB
+	select ARCH_HAS_GDBSTUB if !USE_SWITCH
 	# GDB on ARM needs the extra registers
-	select EXTRA_EXCEPTION_INFO if GDBSTUB
+	select EXTRA_EXCEPTION_INFO if GDBSTUB && !USE_SWITCH
 	help
 	  This option signifies the use of a CPU of the Cortex-A family.
 

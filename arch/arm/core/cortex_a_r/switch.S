@@ -35,6 +35,25 @@ GTEXT(z_arm_do_syscall)
  */
 SECTION_FUNC(TEXT, z_arm_context_switch)
 
+#if defined(CONFIG_FPU_SHARING)
+	/*
+	 * Save the complete outgoing VFP context before publishing
+	 * switch_handle.  This makes the thread image self-contained before an
+	 * SMP peer is allowed to acquire and migrate it.
+	 */
+	vmrs ip, fpexc
+	orr r3, ip, #FPEXC_EN
+	vmsr fpexc, r3
+
+	add r2, r1, #_thread_offset_to_preempt_float
+	vstmia r2!, {d0-d15}
+#ifdef CONFIG_VFP_FEATURE_REGS_S64_D32
+	vstmia r2!, {d16-d31}
+#endif
+	vmrs r3, fpscr
+	stm r2, {r3, ip}
+#endif /* CONFIG_FPU_SHARING */
+
 	ldr r2, =_thread_offset_to_callee_saved
 	add r2, r1, r2
 
@@ -81,10 +100,30 @@ SECTION_FUNC(TEXT, z_arm_context_switch)
 #endif
 
 #ifdef CONFIG_INSTRUMENT_THREAD_SWITCHING
-	push {lr}
+	push {r0, lr}
 	bl z_thread_mark_switched_in
-	pop {lr}
+	pop {r0, lr}
 #endif
+
+#if defined(CONFIG_FPU_SHARING)
+	/*
+	 * All switch helpers have run and may have used caller-saved VFP
+	 * registers under a hard-float ABI.  Restore the incoming context as
+	 * the final operation before returning to it.
+	 */
+	add r2, r0, #_thread_offset_to_preempt_float
+	ldr ip, [r2, #___fpu_t_SIZEOF - 4]
+	orr r3, ip, #FPEXC_EN
+	vmsr fpexc, r3
+
+	vldmia r2!, {d0-d15}
+#ifdef CONFIG_VFP_FEATURE_REGS_S64_D32
+	vldmia r2!, {d16-d31}
+#endif
+	ldm r2, {r3, ip}
+	vmsr fpscr, r3
+	vmsr fpexc, ip
+#endif /* CONFIG_FPU_SHARING */
 
 	bx lr
 
@@ -161,10 +200,7 @@ offload:
      * Match the hardware IRQ wrapper's per-level record: preserve the exact
      * exception-frame SP and align the active stack before calling C.
      */
-    mov r0, sp
-    and r3, sp, #4
-    sub sp, sp, r3
-    push {r0, r3}
+    z_arm_cortex_ar_align_exc_stack r0, r3
 
     blx z_irq_do_offload
     cpsid i
@@ -176,16 +212,19 @@ _oops:
     /*
      * Pass the exception frame to z_do_kernel_oops.
      */
-    mov r0, sp
+    z_arm_cortex_ar_align_exc_stack r0, r3
     /* Zero callee_regs and exc_return (only used on Cortex-M) */
     mov r1, #0
     mov r2, #0
     bl z_do_kernel_oops
+    z_arm_cortex_ar_restore_exc_stack r2, r3
+    b z_arm_cortex_ar_exit_exc
 
 inv:
+    z_arm_cortex_ar_align_exc_stack r1, r3
     mov r0, #0 /* K_ERR_CPU_EXCEPTION */
-    mov r1, sp
     bl z_arm_fatal_error
 
     /* Return here only in case of recoverable error */
+    z_arm_cortex_ar_restore_exc_stack r2, r3
     b z_arm_cortex_ar_exit_exc

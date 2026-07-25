@@ -12,6 +12,15 @@
 /* Per CPU architecture specifics */
 struct _cpu_arch {
 	int8_t exc_depth;
+#if defined(CONFIG_IRQ_OFFLOAD_NESTED)
+	/*
+	 * irq_offload may be entered recursively from an IRQ and concurrently
+	 * on different CPUs.  Keep the active callback in the owning CPU's
+	 * exception state instead of using one global slot.
+	 */
+	void (*irq_offload_routine)(const void *parameter);
+	const void *irq_offload_param;
+#endif
 };
 
 #else

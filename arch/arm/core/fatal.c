@@ -39,6 +39,17 @@ static void esf_dump(const struct arch_esf *esf)
 	EXCEPTION_DUMP("No EXC_RETURN available; assuming extended FP stack frame");
 #endif
 	if (extended_frame) {
+#if defined(CONFIG_USE_SWITCH) && \
+	(defined(CONFIG_CPU_AARCH32_CORTEX_A) || defined(CONFIG_CPU_AARCH32_CORTEX_R))
+		for (int i = 0; i < ARRAY_SIZE(esf->fpu.d); i += 4) {
+			EXCEPTION_DUMP("d[%2d]:  0x%16llx  d[%2d]:  0x%16llx"
+				       "  d[%2d]:  0x%16llx  d[%2d]:  0x%16llx",
+				       i, (uint64_t)esf->fpu.d[i],
+				       i + 1, (uint64_t)esf->fpu.d[i + 1],
+				       i + 2, (uint64_t)esf->fpu.d[i + 2],
+				       i + 3, (uint64_t)esf->fpu.d[i + 3]);
+		}
+#else
 		for (int i = 0; i < ARRAY_SIZE(esf->fpu.s); i += 4) {
 			EXCEPTION_DUMP("s[%2d]:  0x%08x  s[%2d]:  0x%08x"
 				       "  s[%2d]:  0x%08x  s[%2d]:  0x%08x",
@@ -57,6 +68,7 @@ static void esf_dump(const struct arch_esf *esf)
 				       i + 3, (uint64_t)esf->fpu.d[i + 3]);
 		}
 #endif
+#endif /* CONFIG_USE_SWITCH && Cortex-A/R */
 		EXCEPTION_DUMP("fpscr:  0x%08x", esf->fpu.fpscr);
 	}
 #endif

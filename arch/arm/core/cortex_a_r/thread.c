@@ -33,6 +33,19 @@
 #define EXC_RETURN_FTYPE           (0x00000010UL)
 #endif
 
+#if defined(CONFIG_USE_SWITCH) && defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
+BUILD_ASSERT(sizeof(struct _preempt_float) == sizeof(struct __fpu_sf),
+	     "thread and exception VFP context layouts must have equal size");
+BUILD_ASSERT(offsetof(struct _preempt_float, fpscr) ==
+	     offsetof(struct __fpu_sf, fpscr),
+	     "thread and exception FPSCR offsets must match");
+BUILD_ASSERT(offsetof(struct _preempt_float, fpexc) ==
+	     offsetof(struct __fpu_sf, fpexc),
+	     "thread and exception FPEXC offsets must match");
+BUILD_ASSERT(__alignof__(struct __fpu_sf) == sizeof(uint32_t),
+	     "exception VFP context must permit a word-aligned exact SP");
+#endif
+
 /* Default last octet of EXC_RETURN, for threads that have not run yet.
  * The full EXC_RETURN value will be e.g. 0xFFFFFFBC.
  */
@@ -158,9 +171,17 @@ void arch_new_thread(struct k_thread *thread, k_thread_stack_t *stack,
 #endif /* CONFIG_COMPILER_ISA_THUMB2 */
 
 #if defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
-	iframe = (struct __basic_sf *)
-		((uintptr_t)iframe - sizeof(struct __fpu_sf));
-	memset(iframe, 0, sizeof(struct __fpu_sf));
+	struct __fpu_sf *fpu_frame =
+		(struct __fpu_sf *)((uintptr_t)iframe - sizeof(struct __fpu_sf));
+
+	memset(fpu_frame, 0, sizeof(*fpu_frame));
+	iframe = (struct __basic_sf *)fpu_frame;
+#if defined(CONFIG_USE_SWITCH)
+	fpu_frame->fpexc = FPEXC_EN;
+	memset(&thread->arch.preempt_float, 0,
+	       sizeof(thread->arch.preempt_float));
+	thread->arch.preempt_float.fpexc = FPEXC_EN;
+#endif
 #endif
 
 	thread->callee_saved.psp = (uint32_t)iframe;

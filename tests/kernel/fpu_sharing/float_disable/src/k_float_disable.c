@@ -7,6 +7,13 @@
 #include <zephyr/ztest.h>
 #include <zephyr/sys/barrier.h>
 
+#if defined(CONFIG_USE_SWITCH) && \
+	(defined(CONFIG_CPU_AARCH32_CORTEX_A) || defined(CONFIG_CPU_AARCH32_CORTEX_R))
+#include <cmsis_core.h>
+
+extern void test_arm_cortex_ar_fpu_trap_unaligned(void);
+#endif
+
 #define STACKSIZE 1024
 
 /* Priority level of the threads used in this test.
@@ -162,6 +169,29 @@ ZTEST(k_float_disable, test_k_float_disable_syscall)
 	/* Check skipped for x86 without support for Lazy FP Sharing */
 #endif
 }
+
+#if defined(CONFIG_USE_SWITCH) && \
+	(defined(CONFIG_CPU_AARCH32_CORTEX_A) || defined(CONFIG_CPU_AARCH32_CORTEX_R))
+ZTEST(k_float_disable, test_k_float_disable_lazy_reenable)
+{
+	zassert_equal(k_float_disable(k_current_get()), 0,
+		      "failed to disable current thread FP context");
+	zassert_false((k_current_get()->base.user_options & K_FP_REGS) != 0,
+		      "K_FP_REGS remained set after disable");
+
+	/*
+	 * The first VFP instruction traps while FPEXC.EN is clear.  The
+	 * CONFIG_USE_SWITCH undefined-instruction path must update the saved
+	 * exception context and retry this exact instruction.
+	 */
+	test_arm_cortex_ar_fpu_trap_unaligned();
+
+	zassert_true((__get_FPEXC() & FPEXC_EN) != 0U,
+		     "VFP was not re-enabled after the lazy fault");
+	zassert_true((k_current_get()->base.user_options & K_FP_REGS) != 0,
+		     "lazy fault did not restore K_FP_REGS");
+}
+#endif
 
 #if defined(CONFIG_ARM) && defined(CONFIG_DYNAMIC_INTERRUPTS)
 

@@ -19,6 +19,20 @@ tests:
       - kernel
     timeout: 600
     min_ram: 16
+  kernel.fpu_sharing.generic.arm_cortex_ar_use_switch:
+    extra_args: PI_NUM_ITERATIONS=70000
+    platform_allow:
+      - qemu_cortex_a9
+    integration_platforms:
+      - qemu_cortex_a9
+    extra_configs:
+      - CONFIG_USE_SWITCH=y
+    slow: true
+    tags:
+      - fpu
+      - kernel
+    timeout: 600
+    min_ram: 16
   kernel.fpu_sharing.generic.arm64:
     extra_args: PI_NUM_ITERATIONS=70000
     arch_allow: arm64

@@ -15,6 +15,7 @@
 #ifdef _ASMLANGUAGE
 GTEXT(z_arm_exc_exit);
 #else
+#include <zephyr/toolchain.h>
 #include <zephyr/types.h>
 
 #ifdef __cplusplus
@@ -31,13 +32,38 @@ extern "C" {
  * Registers d16-d31 (q8-q15), do not have to be preserved.
  */
 struct __fpu_sf {
+#ifdef CONFIG_USE_SWITCH
+	/*
+	 * An asynchronous exception can interrupt any VFP instruction, and a
+	 * hard-float ISR may use any caller- or callee-saved register.  Save the
+	 * complete physical register file at every exception nesting level.
+	 */
+#ifdef CONFIG_VFP_FEATURE_REGS_S64_D32
+	uint64_t d[32]; /* d0-d31 */
+#else
+	uint64_t d[16]; /* d0-d15 */
+#endif
+#else
 	uint32_t s[16]; /* s0~s15 (d0-d7) */
 #ifdef CONFIG_VFP_FEATURE_REGS_S64_D32
 	uint64_t d[16]; /* d16~d31 */
 #endif
+#endif /* CONFIG_USE_SWITCH */
 	uint32_t fpscr;
-	uint32_t undefined;
+	union {
+		uint32_t fpexc;
+		uint32_t undefined;
+	};
+#ifdef CONFIG_USE_SWITCH
+/*
+ * An asynchronous exception may capture a word-aligned SP.  Keep the exact
+ * frame address while telling C code that 64-bit members can be only
+ * word-aligned; assembly VSTM/VLDM accesses already require only that.
+ */
+} __packed __aligned(4);
+#else
 };
+#endif
 #endif
 
 /* Additional register state that is not stacked by hardware on exception

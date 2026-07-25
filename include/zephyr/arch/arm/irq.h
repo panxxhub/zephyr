@@ -156,7 +156,12 @@ extern void z_arm_interrupt_init(void);
 #define ARCH_IRQ_DIRECT_CONNECT(irq_p, priority_p, isr_p, flags_p) \
 { \
 	BUILD_ASSERT(IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS) || !(flags_p & IRQ_ZERO_LATENCY), \
-			"ZLI interrupt registered but feature is disabled"); \
+				"ZLI interrupt registered but feature is disabled"); \
+	BUILD_ASSERT(!(IS_ENABLED(CONFIG_USE_SWITCH) && \
+			       (IS_ENABLED(CONFIG_CPU_AARCH32_CORTEX_A) || \
+				IS_ENABLED(CONFIG_CPU_AARCH32_CORTEX_R)) && \
+			       IS_ENABLED(CONFIG_FPU_SHARING)), \
+		     "direct IRQs bypass the Cortex-A/R USE_SWITCH FP context protocol"); \
 	_CHECK_PRIO(priority_p, flags_p) \
 	Z_ISR_DECLARE_DIRECT(irq_p, ISR_FLAG_DIRECT, isr_p); \
 	z_arm_irq_priority_set(irq_p, priority_p, flags_p); \

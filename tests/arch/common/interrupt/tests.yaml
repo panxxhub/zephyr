@@ -6,6 +6,13 @@ tests:
   arch.interrupt:
     platform_exclude: qemu_cortex_m0
     filter: not CONFIG_TRUSTED_EXECUTION_NONSECURE
+  arch.interrupt.arm_cortex_ar_fpu:
+    platform_allow:
+      - qemu_cortex_a9
+    extra_configs:
+      - CONFIG_USE_SWITCH=y
+      - CONFIG_FPU=y
+      - CONFIG_FPU_SHARING=y
   arch.interrupt.qemu_cortex_m0:
     platform_allow: qemu_cortex_m0
     filter: not CONFIG_TRUSTED_EXECUTION_NONSECURE

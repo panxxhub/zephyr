@@ -173,6 +173,7 @@ static uint32_t dump_fault(uint32_t status, uint32_t addr)
 
 #if defined(CONFIG_FPU_SHARING)
 
+#if !defined(CONFIG_USE_SWITCH)
 static ALWAYS_INLINE void z_arm_fpu_caller_save(struct __fpu_sf *fpu)
 {
 	__asm__ volatile (
@@ -189,6 +190,7 @@ static ALWAYS_INLINE void z_arm_fpu_caller_save(struct __fpu_sf *fpu)
 		);
 #endif
 }
+#endif /* !CONFIG_USE_SWITCH */
 
 /**
  * @brief FPU undefined instruction fault handler
@@ -197,6 +199,25 @@ static ALWAYS_INLINE void z_arm_fpu_caller_save(struct __fpu_sf *fpu)
  *           implying a true undefined instruction
  *         Returns false if the FPU was disabled
  */
+#if defined(CONFIG_USE_SWITCH)
+bool z_arm_fault_undef_instruction_fp(struct arch_esf *esf)
+{
+	/*
+	 * z_arm_cortex_ar_enter_exc() enabled VFP only after preserving the
+	 * faulting context's original FPEXC in the exception frame.  Use that
+	 * saved value, rather than exception nesting counters, to distinguish a
+	 * lazy re-enable from a real undefined instruction.
+	 */
+	if ((esf->fpu.fpexc & FPEXC_EN) != 0U) {
+		return true;
+	}
+
+	esf->fpu.fpexc |= FPEXC_EN;
+	_current->base.user_options |= K_FP_REGS;
+
+	return false;
+}
+#else
 bool z_arm_fault_undef_instruction_fp(void)
 {
 	/*
@@ -259,6 +280,7 @@ bool z_arm_fault_undef_instruction_fp(void)
 
 	return false;
 }
+#endif /* CONFIG_USE_SWITCH */
 #endif
 
 /**
@@ -268,7 +290,7 @@ bool z_arm_fault_undef_instruction_fp(void)
  */
 bool z_arm_fault_undef_instruction(struct arch_esf *esf)
 {
-#if defined(CONFIG_FPU_SHARING)
+#if defined(CONFIG_FPU_SHARING) && !defined(CONFIG_USE_SWITCH)
 	/*
 	 * This is a true undefined instruction and we will be crashing
 	 * so save away the VFP registers.

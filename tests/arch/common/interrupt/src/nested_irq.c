@@ -21,6 +21,48 @@
 #define ISR0_TOKEN	0xDEADBEEF
 #define ISR1_TOKEN	0xCAFEBABE
 
+#if defined(CONFIG_USE_SWITCH) && defined(CONFIG_FPU_SHARING) && \
+	(defined(CONFIG_CPU_AARCH32_CORTEX_A) || defined(CONFIG_CPU_AARCH32_CORTEX_R)) && \
+	defined(CONFIG_GIC) && (CONFIG_GIC_VER <= 2)
+#define TEST_CORTEX_AR_FPU_NESTING
+#ifdef CONFIG_VFP_FEATURE_REGS_S64_D32
+#define FP_DREG_COUNT 32
+#else
+#define FP_DREG_COUNT 16
+#endif
+#define FPSCR_RMODE_MASK	GENMASK(23, 22)
+#define FPSCR_THREAD		BIT(22)
+#define FPSCR_ISR0		BIT(23)
+#define FPSCR_ISR1		GENMASK(23, 22)
+
+extern void test_arm_cortex_ar_fpu_load(const uint64_t *input, uint32_t fpscr);
+extern void test_arm_cortex_ar_fpu_load_trigger_store(
+	const uint64_t *input, uint32_t fpscr,
+	uintptr_t trigger_reg, uint32_t trigger_value,
+	const volatile uint32_t *done, uint32_t expected,
+	uint64_t *output, uint32_t *fpscr_output);
+
+static uint64_t fp_thread_input[FP_DREG_COUNT] __aligned(8);
+static uint64_t fp_thread_output[FP_DREG_COUNT] __aligned(8);
+static uint64_t fp_isr0_input[FP_DREG_COUNT] __aligned(8);
+static uint64_t fp_isr0_output[FP_DREG_COUNT] __aligned(8);
+static uint64_t fp_isr1_input[FP_DREG_COUNT] __aligned(8);
+static uint32_t fp_thread_fpscr;
+static uint32_t fp_isr0_fpscr;
+
+static void init_fp_pattern(uint64_t *pattern, uint32_t tag)
+{
+	for (size_t i = 0; i < FP_DREG_COUNT; ++i) {
+		pattern[i] = ((uint64_t)tag << 32) | i;
+	}
+}
+
+static uint32_t gic_sgi_value(uint32_t irq)
+{
+	return GICD_SGIR_TGTFILT_REQONLY | GICD_SGIR_SGIINTID(irq);
+}
+#endif /* TEST_CORTEX_AR_FPU_NESTING */
+
 /*
  * This test uses two IRQ lines selected within the range of available IRQs on
  * the target SoC.  These IRQs are platform and interrupt controller-specific,
@@ -111,6 +153,14 @@ void isr1(const void *param)
 	isr1_result = ISR1_TOKEN;
 
 	k_str_out_count("ISR1: Leave\n");
+
+#ifdef TEST_CORTEX_AR_FPU_NESTING
+	/*
+	 * Leave a distinct complete FP image live at return.  The nested
+	 * exception exit must restore ISR0's image, not this one.
+	 */
+	test_arm_cortex_ar_fpu_load(fp_isr1_input, FPSCR_ISR1);
+#endif
 }
 
 void isr0(const void *param)
@@ -123,7 +173,14 @@ void isr0(const void *param)
 	isr0_result = ISR0_TOKEN;
 
 	/* Trigger nested IRQ 1 */
+#ifdef TEST_CORTEX_AR_FPU_NESTING
+	test_arm_cortex_ar_fpu_load_trigger_store(
+		fp_isr0_input, FPSCR_ISR0, GICD_SGIR,
+		gic_sgi_value(irq_line_1), &isr1_result, ISR1_TOKEN,
+		fp_isr0_output, &fp_isr0_fpscr);
+#else
 	trigger_irq(irq_line_1);
+#endif
 
 	/* Wait for interrupt */
 	k_busy_wait(DURATION * USEC_PER_MSEC);
@@ -154,6 +211,16 @@ void isr0(const void *param)
  */
 ZTEST(interrupt_feature, test_nested_isr)
 {
+#ifdef TEST_CORTEX_AR_FPU_NESTING
+	init_fp_pattern(fp_thread_input, 0x11111111);
+	init_fp_pattern(fp_isr0_input, 0x22222222);
+	init_fp_pattern(fp_isr1_input, 0x33333333);
+	memset(fp_thread_output, 0, sizeof(fp_thread_output));
+	memset(fp_isr0_output, 0, sizeof(fp_isr0_output));
+	fp_thread_fpscr = 0;
+	fp_isr0_fpscr = 0;
+#endif
+
 	/* Resolve test IRQ line numbers */
 #if defined(IRQ0_LINE) && defined(IRQ1_LINE)
 	irq_line_0 = IRQ0_LINE;
@@ -178,13 +245,33 @@ ZTEST(interrupt_feature, test_nested_isr)
 	irq_enable(irq_line_1);
 
 	/* Trigger test IRQ 0 */
+#ifdef TEST_CORTEX_AR_FPU_NESTING
+	test_arm_cortex_ar_fpu_load_trigger_store(
+		fp_thread_input, FPSCR_THREAD, GICD_SGIR,
+		gic_sgi_value(irq_line_0), &isr0_result, ISR0_TOKEN,
+		fp_thread_output, &fp_thread_fpscr);
+#else
 	trigger_irq(irq_line_0);
+#endif
 
 	/* Wait for interrupt */
 	k_busy_wait(DURATION * USEC_PER_MSEC);
 
 	/* Validate ISR result token */
 	zassert_equal(isr0_result, ISR0_TOKEN, "isr0 did not execute");
+
+#ifdef TEST_CORTEX_AR_FPU_NESTING
+	zassert_mem_equal(fp_isr0_output, fp_isr0_input,
+			  sizeof(fp_isr0_input),
+			  "nested IRQ corrupted ISR0 FP registers");
+	zassert_equal(fp_isr0_fpscr & FPSCR_RMODE_MASK, FPSCR_ISR0,
+		      "nested IRQ corrupted ISR0 FPSCR");
+	zassert_mem_equal(fp_thread_output, fp_thread_input,
+			  sizeof(fp_thread_input),
+			  "IRQ nesting corrupted thread FP registers");
+	zassert_equal(fp_thread_fpscr & FPSCR_RMODE_MASK, FPSCR_THREAD,
+		      "IRQ nesting corrupted thread FPSCR");
+#endif
 }
 #else
 ZTEST(interrupt_feature, test_nested_isr)

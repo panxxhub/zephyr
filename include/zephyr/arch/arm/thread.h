@@ -49,6 +49,22 @@ typedef struct _callee_saved _callee_saved_t;
 
 #if defined(CONFIG_FPU) && defined(CONFIG_FPU_SHARING)
 struct _preempt_float {
+#if defined(CONFIG_USE_SWITCH) && \
+	(defined(CONFIG_CPU_AARCH32_CORTEX_A) || defined(CONFIG_CPU_AARCH32_CORTEX_R))
+	/*
+	 * CONFIG_USE_SWITCH can switch directly from cooperative thread
+	 * context, without an exception frame.  Keep a complete VFP image in
+	 * the thread so that the same context representation is also safe for
+	 * SMP migration after switch_handle is published.
+	 */
+#ifdef CONFIG_VFP_FEATURE_REGS_S64_D32
+	uint64_t d[32];
+#else
+	uint64_t d[16];
+#endif
+	uint32_t fpscr;
+	uint32_t fpexc;
+#else
 #ifndef _ARM_M_SWITCH
 	float  s16;
 	float  s17;
@@ -67,6 +83,7 @@ struct _preempt_float {
 	float  s30;
 	float  s31;
 #endif /* !_ARM_M_SWITCH */
+#endif /* CONFIG_USE_SWITCH && Cortex-A/R */
 };
 #endif
 

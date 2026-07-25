@@ -294,10 +294,7 @@ SECTION_FUNC(TEXT, _isr_wrapper)
 	 * public C interface is called.  This record is present at every
 	 * nesting level and is removed in z_arm_cortex_ar_irq_done.
 	 */
-	mov r0, sp
-	and r3, sp, #4
-	sub sp, sp, r3
-	push {r0, r3}
+	z_arm_cortex_ar_align_exc_stack r0, r3
 
 #ifdef CONFIG_TRACING_ISR
 	bl sys_trace_isr_enter
@@ -392,18 +389,20 @@ z_arm_cortex_ar_irq_done:
 	ldr r0, [r2, #___cpu_t_nested_OFFSET]
 	sub r0, r0, #1
 	str r0, [r2, #___cpu_t_nested_OFFSET]
-	/* Do not context switch if exiting a nested interrupt */
-	cmp r0, #0
-
-	beq 1f
 
 #ifdef CONFIG_STACK_SENTINEL
+	/* Preserve the nesting count and CPU pointer across the C call. */
+	push {r0, r2}
 	bl z_check_stack_sentinel
+	pop {r0, r2}
 #endif /* CONFIG_STACK_SENTINEL */
 
+	/* Do not context switch if exiting a nested interrupt */
+	cmp r0, #0
+	beq 1f
+
 	/* Restore this nesting level's exact exception-frame SP. */
-	pop {r0, r1}
-	mov sp, r0
+	z_arm_cortex_ar_restore_exc_stack r0, r1
 	b z_arm_cortex_ar_exit_exc
 
 1:
@@ -422,8 +421,7 @@ z_arm_cortex_ar_irq_done:
 	 * Remove the per-level alignment record, then restore the banked IRQ
 	 * stack and the interrupted thread's exact exception-frame SP.
 	 */
-	pop {r2, r3}
-	mov sp, r2
+	z_arm_cortex_ar_restore_exc_stack r2, r3
 	cps #MODE_IRQ
 	pop {r2, r3}
 	cps #MODE_SYS
@@ -434,10 +432,18 @@ z_arm_cortex_ar_irq_done:
 	 * Keep an aligned restore record across a context switch so both the
 	 * assembly switch path and a later resumed exit recover the exact SP.
 	 */
-	mov r2, sp
-	and r3, sp, #4
-	sub sp, sp, r3
-	push {r2, r3}
+	z_arm_cortex_ar_align_exc_stack r2, r3
+
+#if defined(CONFIG_FPU_SHARING)
+	/*
+	 * Scheduler and ISR helpers were free to use VFP.  Re-establish the
+	 * interrupted thread's complete state from its exact exception frame
+	 * before z_arm_context_switch() snapshots the outgoing thread.  r0/r1
+	 * retain the explicit new/old thread handles.
+	 */
+	ldr r2, [sp]
+	z_arm_cortex_ar_fpu_restore_ptr r2, r3, r2, ip
+#endif
 
 	cmp r0, #0
 	beq __EXIT_INT
@@ -451,8 +457,7 @@ z_arm_cortex_ar_irq_done:
 
 __EXIT_INT:
 
-	pop {r2, r3}
-	mov sp, r2
+	z_arm_cortex_ar_restore_exc_stack r2, r3
 	b z_arm_cortex_ar_exit_exc
 
 #endif
