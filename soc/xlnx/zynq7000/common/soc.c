@@ -79,6 +79,7 @@ const struct arm_mmu_config mmu_config = {
 	.mmu_regions = mmu_regions,
 };
 
+#ifdef CONFIG_SMP
 static void zynq_scu_enable(void)
 {
 	uint32_t scu_ctrl;
@@ -108,6 +109,7 @@ static void zynq_enable_smp_mode(void)
 		barrier_isync_fence_full();
 	}
 }
+#endif /* CONFIG_SMP */
 
 /*
  * Copy .ocm_data from its ROM load address (in DDR) to OCM.
