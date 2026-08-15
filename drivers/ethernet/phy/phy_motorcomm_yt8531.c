@@ -6,12 +6,17 @@
  * Copyright 2022 NXP
  *
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Dedicated Motorcomm YT8531 (RGMII, UTP-only) driver, split out of
+ * phy_motorcomm_yt8521.c so each compat owns its own translation unit
+ * and instance symbols, and so YT8531-specific configuration (SyncE
+ * clock output, LED, delay tuning) has a home.
  */
 
-#define DT_DRV_COMPAT motorcomm_yt8521
+#define DT_DRV_COMPAT motorcomm_yt8531
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
+LOG_MODULE_REGISTER(phy_motorcomm_yt8531, CONFIG_PHY_LOG_LEVEL);
 
 #include <errno.h>
 #include <zephyr/device.h>
@@ -25,7 +30,7 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 
 #include "phy_mii.h"
 
-#define PHY_ID_YT8521 (0x0000011A)
+#define PHY_ID_YT8531 (0x0000E91A)
 
 /* Allow a slow PHY clock/power domain to settle after reset. */
 #define YTPHY_PHY_ID_MAX_ATTEMPTS   20U
@@ -70,9 +75,9 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt85xx, CONFIG_PHY_LOG_LEVEL);
 #define YTPHY_SYNCE_CFG_REG     0xA012
 #define YT8521_SCR_SYNCE_ENABLE BIT(5)
 
-static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_state *state);
+static int mc_yt8531_get_link_state(const struct device *dev, struct phy_link_state *state);
 
-struct mc_ytphy_config {
+struct mc_yt8531_config {
 	uint8_t phy_addr;
 	const struct device *mdio;
 	uint8_t rx_delay_sel;
@@ -80,7 +85,7 @@ struct mc_ytphy_config {
 	enum phy_link_speed default_speeds;
 };
 
-struct mc_ytphy_data {
+struct mc_yt8531_data {
 	const struct device *dev;
 	phy_callback_t cb;
 	void *cb_data;
@@ -94,9 +99,9 @@ struct mc_ytphy_data {
 /* How often to poll auto-negotiation status while waiting for it to complete */
 #define MII_AUTONEG_POLL_INTERVAL_MS 100
 
-static int mc_ytphy_read(const struct device *dev, uint16_t reg, uint32_t *data)
+static int mc_yt8531_read(const struct device *dev, uint16_t reg, uint32_t *data)
 {
-	const struct mc_ytphy_config *config = dev->config;
+	const struct mc_yt8531_config *config = dev->config;
 
 	/* Make sure excessive bits 16-31 are reset */
 	*data = 0U;
@@ -105,20 +110,20 @@ static int mc_ytphy_read(const struct device *dev, uint16_t reg, uint32_t *data)
 	return mdio_read(config->mdio, config->phy_addr, reg, (uint16_t *)data);
 }
 
-static int mc_ytphy_write(const struct device *dev, uint16_t reg, uint32_t data)
+static int mc_yt8531_write(const struct device *dev, uint16_t reg, uint32_t data)
 {
-	const struct mc_ytphy_config *config = dev->config;
+	const struct mc_yt8531_config *config = dev->config;
 
 	return mdio_write(config->mdio, config->phy_addr, reg, (uint16_t)data);
 }
 
-static int mc_ytphy_modify(const struct device *dev, uint16_t reg, uint16_t mask, uint16_t set)
+static int mc_yt8531_modify(const struct device *dev, uint16_t reg, uint16_t mask, uint16_t set)
 {
 	uint32_t data = 0;
 	uint32_t new = 0;
 	int ret;
 
-	ret = mc_ytphy_read(dev, reg, &data);
+	ret = mc_yt8531_read(dev, reg, &data);
 	if (ret) {
 		return ret;
 	}
@@ -128,52 +133,52 @@ static int mc_ytphy_modify(const struct device *dev, uint16_t reg, uint16_t mask
 		return 0;
 	}
 
-	return mc_ytphy_write(dev, reg, new);
+	return mc_yt8531_write(dev, reg, new);
 }
 
-static int mc_ytphy_read_ext(const struct device *dev, uint16_t reg, uint32_t *data)
+static int mc_yt8531_read_ext(const struct device *dev, uint16_t reg, uint32_t *data)
 {
 	int ret;
 
-	ret = mc_ytphy_write(dev, YTPHY_PAGE_SELECT, reg);
+	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
 	if (ret) {
 		return ret;
 	}
 
-	return mc_ytphy_read(dev, YTPHY_PAGE_DATA, data);
+	return mc_yt8531_read(dev, YTPHY_PAGE_DATA, data);
 }
 
-static int mc_ytphy_write_ext(const struct device *dev, uint16_t reg, uint32_t data)
+static int mc_yt8531_write_ext(const struct device *dev, uint16_t reg, uint32_t data)
 {
 	int ret;
 
-	ret = mc_ytphy_write(dev, YTPHY_PAGE_SELECT, reg);
+	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
 	if (ret) {
 		return ret;
 	}
 
-	return mc_ytphy_write(dev, YTPHY_PAGE_DATA, data);
+	return mc_yt8531_write(dev, YTPHY_PAGE_DATA, data);
 }
 
-static int mc_ytphy_modify_ext(const struct device *dev, uint16_t reg, uint16_t mask, uint16_t set)
+static int mc_yt8531_modify_ext(const struct device *dev, uint16_t reg, uint16_t mask, uint16_t set)
 {
 	int ret;
 
-	ret = mc_ytphy_write(dev, YTPHY_PAGE_SELECT, reg);
+	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
 	if (ret) {
 		return ret;
 	}
 
-	return mc_ytphy_modify(dev, YTPHY_PAGE_DATA, mask, set);
+	return mc_yt8531_modify(dev, YTPHY_PAGE_DATA, mask, set);
 }
 
-static int mc_ytphy_soft_reset(const struct device *dev)
+static int mc_yt8531_soft_reset(const struct device *dev)
 {
 	int max_cnt = 500; /* max time of reset ~500ms */
 	uint32_t data;
 	int ret;
 
-	ret = mc_ytphy_modify(dev, MII_BMCR, 0, MII_BMCR_RESET);
+	ret = mc_yt8531_modify(dev, MII_BMCR, 0, MII_BMCR_RESET);
 	if (ret) {
 		return ret;
 	}
@@ -181,7 +186,7 @@ static int mc_ytphy_soft_reset(const struct device *dev)
 	while (max_cnt--) {
 		k_msleep(1);
 
-		ret = mc_ytphy_read(dev, MII_BMCR, &data);
+		ret = mc_yt8531_read(dev, MII_BMCR, &data);
 		if (ret) {
 			break;
 		}
@@ -195,13 +200,13 @@ static int mc_ytphy_soft_reset(const struct device *dev)
 	return ret;
 }
 
-static int mc_ytphy_cfg_clock_delay(const struct device *dev)
+static int mc_yt8531_cfg_clock_delay(const struct device *dev)
 {
-	const struct mc_ytphy_config *const cfg = dev->config;
+	const struct mc_yt8531_config *const cfg = dev->config;
 	uint16_t mask, val = 0;
 	int ret;
 
-	ret = mc_ytphy_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_EN, 0);
+	ret = mc_yt8531_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_EN, 0);
 	if (ret) {
 		return ret;
 	}
@@ -211,21 +216,21 @@ static int mc_ytphy_cfg_clock_delay(const struct device *dev)
 	val |= FIELD_PREP(YT8521_RC1R_RX_DELAY_MASK, cfg->rx_delay_sel);
 	val |= FIELD_PREP(YT8521_RC1R_TX_DELAY_MASK, cfg->tx_delay_sel);
 
-	return mc_ytphy_modify_ext(dev, YT8521_RGMII_CONFIG1_REG, mask, val);
+	return mc_yt8531_modify_ext(dev, YT8521_RGMII_CONFIG1_REG, mask, val);
 }
 
-static int mc_ytphy_resume(const struct device *dev)
+static int mc_yt8531_resume(const struct device *dev)
 {
 	uint32_t wol_config;
 	int ret;
 
 	/* disable auto sleep */
-	ret = mc_ytphy_modify_ext(dev, YT8521_EXTREG_SLEEP_CONTROL1_REG, YT8521_ESC1R_SLEEP_SW, 0);
+	ret = mc_yt8531_modify_ext(dev, YT8521_EXTREG_SLEEP_CONTROL1_REG, YT8521_ESC1R_SLEEP_SW, 0);
 	if (ret) {
 		return ret;
 	}
 
-	ret = mc_ytphy_read_ext(dev, YTPHY_WOL_CONFIG_REG, &wol_config);
+	ret = mc_yt8531_read_ext(dev, YTPHY_WOL_CONFIG_REG, &wol_config);
 	if (ret) {
 		return ret;
 	}
@@ -235,24 +240,24 @@ static int mc_ytphy_resume(const struct device *dev)
 		return 0;
 	}
 
-	return mc_ytphy_modify(dev, MII_BMCR, MII_BMCR_POWER_DOWN, 0);
+	return mc_yt8531_modify(dev, MII_BMCR, MII_BMCR_POWER_DOWN, 0);
 }
 
 static void invoke_link_cb(const struct device *dev)
 {
-	struct mc_ytphy_data *const data = dev->data;
+	struct mc_yt8531_data *const data = dev->data;
 	struct phy_link_state state;
 
 	if (data->cb == NULL) {
 		return;
 	}
 
-	mc_ytphy_get_link_state(dev, &state);
+	mc_yt8531_get_link_state(dev, &state);
 
 	data->cb(data->dev, &state, data->cb_data);
 }
 
-static inline enum phy_link_speed mc_ytphy_get_link_speed_stat_reg(const struct device *dev,
+static inline enum phy_link_speed mc_yt8531_get_link_speed_stat_reg(const struct device *dev,
 								   uint16_t stat_reg)
 {
 	enum phy_link_speed speed;
@@ -284,11 +289,11 @@ static inline enum phy_link_speed mc_ytphy_get_link_speed_stat_reg(const struct 
 	return speed;
 }
 
-static int mc_ytphy_read_live_link_state(const struct device *dev, struct phy_link_state *state)
+static int mc_yt8531_read_live_link_state(const struct device *dev, struct phy_link_state *state)
 {
 	uint32_t stat_reg;
 
-	if (mc_ytphy_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
+	if (mc_yt8531_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
 		return -EIO;
 	}
 
@@ -300,20 +305,20 @@ static int mc_ytphy_read_live_link_state(const struct device *dev, struct phy_li
 	}
 
 	state->is_up = true;
-	state->speed = mc_ytphy_get_link_speed_stat_reg(dev, stat_reg);
+	state->speed = mc_yt8531_get_link_speed_stat_reg(dev, stat_reg);
 
 	return 0;
 }
 
 static int update_link_state(const struct device *dev)
 {
-	const struct mc_ytphy_config *const cfg = dev->config;
-	struct mc_ytphy_data *const data = dev->data;
+	const struct mc_yt8531_config *const cfg = dev->config;
+	struct mc_yt8531_data *const data = dev->data;
 	uint32_t bmcr_reg;
 	struct phy_link_state old_state = data->state;
 	struct phy_link_state live_state;
 
-	if (mc_ytphy_read_live_link_state(dev, &live_state) < 0) {
+	if (mc_yt8531_read_live_link_state(dev, &live_state) < 0) {
 		return -EIO;
 	}
 
@@ -327,7 +332,7 @@ static int update_link_state(const struct device *dev)
 		return -EAGAIN;
 	}
 
-	if (mc_ytphy_read(dev, MII_BMCR, &bmcr_reg) < 0) {
+	if (mc_yt8531_read(dev, MII_BMCR, &bmcr_reg) < 0) {
 		return -EIO;
 	}
 
@@ -374,8 +379,8 @@ static int update_link_state(const struct device *dev)
 
 static int check_autonegotiation_completion(const struct device *dev)
 {
-	const struct mc_ytphy_config *const cfg = dev->config;
-	struct mc_ytphy_data *const data = dev->data;
+	const struct mc_yt8531_config *const cfg = dev->config;
+	struct mc_yt8531_data *const data = dev->data;
 
 	uint32_t stat_reg = 0;
 	uint32_t bmsr_reg = 0;
@@ -383,12 +388,12 @@ static int check_autonegotiation_completion(const struct device *dev)
 	/* On some PHY chips, the BMSR bits are latched, so the first read may
 	 * show incorrect status. A second read ensures correct values.
 	 */
-	if (mc_ytphy_read(dev, MII_BMSR, &bmsr_reg) < 0) {
+	if (mc_yt8531_read(dev, MII_BMSR, &bmsr_reg) < 0) {
 		return -EIO;
 	}
 
 	/* Second read, clears the latched bits and gives the correct status */
-	if (mc_ytphy_read(dev, MII_BMSR, &bmsr_reg) < 0) {
+	if (mc_yt8531_read(dev, MII_BMSR, &bmsr_reg) < 0) {
 		return -EIO;
 	}
 
@@ -402,11 +407,11 @@ static int check_autonegotiation_completion(const struct device *dev)
 
 	LOG_DBG("PHY (%d) auto-negotiate sequence completed", cfg->phy_addr);
 
-	if (mc_ytphy_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
+	if (mc_yt8531_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
 		return -EIO;
 	}
 
-	data->state.speed = mc_ytphy_get_link_speed_stat_reg(dev, stat_reg);
+	data->state.speed = mc_yt8531_get_link_speed_stat_reg(dev, stat_reg);
 
 	data->state.is_up = (bmsr_reg & MII_BMSR_LINK_STATUS) != 0U;
 
@@ -422,7 +427,7 @@ static int check_autonegotiation_completion(const struct device *dev)
 static void monitor_work_handler(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-	struct mc_ytphy_data *const data = CONTAINER_OF(dwork, struct mc_ytphy_data, monitor_work);
+	struct mc_yt8531_data *const data = CONTAINER_OF(dwork, struct mc_yt8531_data, monitor_work);
 	const struct device *dev = data->dev;
 	int rc;
 
@@ -449,11 +454,11 @@ static void monitor_work_handler(struct k_work *work)
 						       : K_MSEC(CONFIG_PHY_MONITOR_PERIOD));
 }
 
-static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_speeds,
+static int mc_yt8531_cfg_link(const struct device *dev, enum phy_link_speed adv_speeds,
 			     enum phy_cfg_link_flag flags)
 {
-	struct mc_ytphy_data *const data = dev->data;
-	const struct mc_ytphy_config *const cfg = dev->config;
+	struct mc_yt8531_data *const data = dev->data;
+	const struct mc_yt8531_config *const cfg = dev->config;
 	int ret = 0;
 
 	k_sem_take(&data->sem, K_FOREVER);
@@ -485,14 +490,14 @@ static int mc_ytphy_cfg_link(const struct device *dev, enum phy_link_speed adv_s
 	return ret;
 }
 
-static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_state *state)
+static int mc_yt8531_get_link_state(const struct device *dev, struct phy_link_state *state)
 {
-	struct mc_ytphy_data *const data = dev->data;
+	struct mc_yt8531_data *const data = dev->data;
 	int ret;
 
 	k_sem_take(&data->sem, K_FOREVER);
 
-	ret = mc_ytphy_read_live_link_state(dev, state);
+	ret = mc_yt8531_read_live_link_state(dev, state);
 	if (ret == 0) {
 		data->state = *state;
 	}
@@ -502,9 +507,9 @@ static int mc_ytphy_get_link_state(const struct device *dev, struct phy_link_sta
 	return ret;
 }
 
-static int mc_ytphy_link_cb_set(const struct device *dev, phy_callback_t cb, void *user_data)
+static int mc_yt8531_link_cb_set(const struct device *dev, phy_callback_t cb, void *user_data)
 {
-	struct mc_ytphy_data *const data = dev->data;
+	struct mc_yt8531_data *const data = dev->data;
 
 	data->cb = cb;
 	data->cb_data = user_data;
@@ -518,16 +523,16 @@ static int mc_ytphy_link_cb_set(const struct device *dev, phy_callback_t cb, voi
 	return 0;
 }
 
-static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
+static int mc_yt8531_get_id(const struct device *dev, uint32_t *phy_id)
 {
-	const struct mc_ytphy_config *const config = dev->config;
+	const struct mc_yt8531_config *const config = dev->config;
 	uint32_t val = 0;
 	uint32_t attempt;
 	int ret = 0;
 
 	for (attempt = 1U; attempt <= YTPHY_PHY_ID_MAX_ATTEMPTS; attempt++) {
-		ret = mc_ytphy_read(dev, MII_PHYID2R, &val);
-		if (ret == 0 && (val == PHY_ID_YT8521)) {
+		ret = mc_yt8531_read(dev, MII_PHYID2R, &val);
+		if (ret == 0 && (val == PHY_ID_YT8531)) {
 			break;
 		}
 
@@ -561,10 +566,10 @@ static int mc_ytphy_get_id(const struct device *dev, uint32_t *phy_id)
 	return 0;
 }
 
-static int mc_ytphy_init(const struct device *dev)
+static int mc_yt8531_init(const struct device *dev)
 {
-	struct mc_ytphy_data *const data = dev->data;
-	const struct mc_ytphy_config *const cfg = dev->config;
+	struct mc_yt8531_data *const data = dev->data;
+	const struct mc_yt8531_config *const cfg = dev->config;
 	int ret;
 
 	k_sem_init(&data->sem, 1, 1);
@@ -578,53 +583,56 @@ static int mc_ytphy_init(const struct device *dev)
 		return -ENODEV;
 	}
 
-	if (mc_ytphy_get_id(dev, NULL)) {
+	if (mc_yt8531_get_id(dev, NULL)) {
 		return -EIO;
 	}
 
-	/* set default reg space */
-	ret = mc_ytphy_write_ext(dev, YT8521_REG_SPACE_SELECT_REG, YT8521_RSSR_UTP_SPACE);
+	/* Carried over from the shared YT8521 driver: the YT8531 is UTP-only,
+	 * but the register-space select write is retained bit-for-bit until
+	 * bench bring-up confirms it is a no-op on this part.
+	 */
+	ret = mc_yt8531_write_ext(dev, YT8521_REG_SPACE_SELECT_REG, YT8521_RSSR_UTP_SPACE);
 	if (ret) {
 		LOG_ERR("PHY (%d) failed to select UTP register space", cfg->phy_addr);
 		return ret;
 	}
 
-	ret = mc_ytphy_modify_ext(dev, YTPHY_SYNCE_CFG_REG, YT8521_SCR_SYNCE_ENABLE, 0);
+	ret = mc_yt8531_modify_ext(dev, YTPHY_SYNCE_CFG_REG, YT8521_SCR_SYNCE_ENABLE, 0);
 	if (ret) {
 		LOG_ERR("PHY (%d) failed to disable SyncE", cfg->phy_addr);
 		return ret;
 	}
 
 	/* Reset PHY */
-	ret = mc_ytphy_soft_reset(dev);
+	ret = mc_yt8531_soft_reset(dev);
 	if (ret) {
 		return -EIO;
 	}
 
 	/* Enable clock delay */
-	ret = mc_ytphy_cfg_clock_delay(dev);
+	ret = mc_yt8531_cfg_clock_delay(dev);
 	if (ret) {
 		LOG_ERR("PHY (%d) failed to configure RGMII delays", cfg->phy_addr);
 		return ret;
 	}
 
-	ret = mc_ytphy_resume(dev);
+	ret = mc_yt8531_resume(dev);
 	if (ret) {
 		LOG_ERR("PHY (%d) failed to resume from power save", cfg->phy_addr);
 		return ret;
 	}
 
-	LOG_INF("Motorcomm YT8521 PHY %d initialized", cfg->phy_addr);
+	LOG_INF("Motorcomm YT8531 PHY %d initialized", cfg->phy_addr);
 	return 0;
 }
 
-static int mc_ytphy_initialize_dynamic_link(const struct device *dev)
+static int mc_yt8531_initialize_dynamic_link(const struct device *dev)
 {
-	const struct mc_ytphy_config *const config = dev->config;
-	struct mc_ytphy_data *const data = dev->data;
+	const struct mc_yt8531_config *const config = dev->config;
+	struct mc_yt8531_data *const data = dev->data;
 	int ret = 0;
 
-	ret = mc_ytphy_init(dev);
+	ret = mc_yt8531_init(dev);
 	if (ret < 0) {
 		return ret;
 	}
@@ -634,29 +642,29 @@ static int mc_ytphy_initialize_dynamic_link(const struct device *dev)
 	k_work_init_delayable(&data->monitor_work, monitor_work_handler);
 
 	/* Advertise default speeds */
-	ret = mc_ytphy_cfg_link(dev, config->default_speeds, 0);
+	ret = mc_yt8531_cfg_link(dev, config->default_speeds, 0);
 	if ((ret < 0) && (ret != -EALREADY)) {
 		LOG_ERR("PHY (%d) failed to configure advertised speeds (mask=0x%x, err=%d)",
 			config->phy_addr, config->default_speeds, ret);
 		return ret;
 	}
 
-	/* This will schedule the monitor work, if not already scheduled by mc_ytphy_cfg_link(). */
+	/* This will schedule the monitor work, if not already scheduled by mc_yt8531_cfg_link(). */
 	k_work_schedule(&data->monitor_work, K_NO_WAIT);
 
 	return 0;
 }
 
-static DEVICE_API(ethphy, mc_ytphy_driver_api) = {
-	.get_link = mc_ytphy_get_link_state,
-	.link_cb_set = mc_ytphy_link_cb_set,
-	.cfg_link = mc_ytphy_cfg_link,
-	.read = mc_ytphy_read,
-	.write = mc_ytphy_write,
+static DEVICE_API(ethphy, mc_yt8531_driver_api) = {
+	.get_link = mc_yt8531_get_link_state,
+	.link_cb_set = mc_yt8531_link_cb_set,
+	.cfg_link = mc_yt8531_cfg_link,
+	.read = mc_yt8531_read,
+	.write = mc_yt8531_write,
 };
 
-#define MC_YTPHY_CONFIG(n)                                                                         \
-	static const struct mc_ytphy_config mc_ytphy_config_##n = {                                \
+#define MC_YT8531_CONFIG(n)                                                                         \
+	static const struct mc_yt8531_config mc_yt8531_config_##n = {                                \
 		.phy_addr = DT_INST_REG_ADDR(n),                                                   \
 		.mdio = DEVICE_DT_GET(DT_INST_BUS(n)),                                             \
 		.rx_delay_sel = DT_INST_PROP_OR(n, motorcomm_rx_delay_sel, 0),                     \
@@ -664,19 +672,19 @@ static DEVICE_API(ethphy, mc_ytphy_driver_api) = {
 		.default_speeds = PHY_INST_GENERATE_DEFAULT_SPEEDS(n),                             \
 	};
 
-#define MC_YTPHY_DATA(n)                                                                           \
-	static struct mc_ytphy_data mc_ytphy_data_##n = {                                          \
+#define MC_YT8531_DATA(n)                                                                           \
+	static struct mc_yt8531_data mc_yt8531_data_##n = {                                          \
 		.dev = DEVICE_DT_INST_GET(n),                                                      \
 		.cb = NULL,                                                                        \
-		.sem = Z_SEM_INITIALIZER(mc_ytphy_data_##n.sem, 1, 1),                             \
+		.sem = Z_SEM_INITIALIZER(mc_yt8531_data_##n.sem, 1, 1),                             \
 	};
 
-#define MC_YTPHY_INIT &mc_ytphy_initialize_dynamic_link
+#define MC_YT8531_INIT &mc_yt8531_initialize_dynamic_link
 
-#define MC_YTPHY_DEVICE(n)                                                                         \
-	MC_YTPHY_CONFIG(n)                                                                         \
-	MC_YTPHY_DATA(n)                                                                           \
-	DEVICE_DT_INST_DEFINE(n, MC_YTPHY_INIT, NULL, &mc_ytphy_data_##n, &mc_ytphy_config_##n,    \
-			      POST_KERNEL, CONFIG_PHY_INIT_PRIORITY, &mc_ytphy_driver_api);
+#define MC_YT8531_DEVICE(n)                                                                         \
+	MC_YT8531_CONFIG(n)                                                                         \
+	MC_YT8531_DATA(n)                                                                           \
+	DEVICE_DT_INST_DEFINE(n, MC_YT8531_INIT, NULL, &mc_yt8531_data_##n, &mc_yt8531_config_##n,    \
+			      POST_KERNEL, CONFIG_PHY_INIT_PRIORITY, &mc_yt8531_driver_api);
 
-DT_INST_FOREACH_STATUS_OKAY(MC_YTPHY_DEVICE)
+DT_INST_FOREACH_STATUS_OKAY(MC_YT8531_DEVICE)
