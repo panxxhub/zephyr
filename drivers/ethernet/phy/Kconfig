@@ -180,12 +180,19 @@ config PHY_MOTORCOMM_YT8511
 	  Enable Motorcomm YT8511 Ethernet PHY Driver
 
 config PHY_MOTORCOMM_YT8521
-	bool "Motorcomm YT8521/YT8531 Ethernet PHY Driver"
+	bool "Motorcomm YT8521 Ethernet PHY Driver"
 	default y
-	depends on DT_HAS_MOTORCOMM_YT8521_ENABLED || DT_HAS_MOTORCOMM_YT8531_ENABLED
+	depends on DT_HAS_MOTORCOMM_YT8521_ENABLED
 	select MDIO
 	help
-	  Enable Motorcomm YT8521/YT8531 Ethernet PHY Driver.
-	  This driver supports both YT8521 and YT8531 PHY chips.
+	  Enable Motorcomm YT8521 Ethernet PHY Driver.
+
+config PHY_MOTORCOMM_YT8531
+	bool "Motorcomm YT8531 Ethernet PHY Driver"
+	default y
+	depends on DT_HAS_MOTORCOMM_YT8531_ENABLED
+	select MDIO
+	help
+	  Enable the dedicated Motorcomm YT8531 (RGMII) Ethernet PHY Driver.
 
 endif # "Ethernet PHY Drivers"
