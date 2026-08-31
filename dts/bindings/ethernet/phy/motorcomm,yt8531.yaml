@@ -6,3 +6,13 @@ description: Motorcomm YT8531 Ethernet PHY
 compatible: "motorcomm,yt8531"
 
 include: motorcomm,yt8521.yaml
+
+properties:
+  motorcomm,rxc-dly-en:
+    type: boolean
+    description: |
+      Keep the PHY's coarse ~2 ns RX_CLK delay (EXT 0xA001 bit 8, RXC_DLY_EN)
+      enabled. Required when the MAC has no RX clock delay of its own, e.g. the
+      Zynq-7000 PS GEM (RGMII-ID expected from the PHY). When absent the driver
+      clears the bit so a MAC with internal RX delay (e.g. an FPGA ESC with
+      IDELAY) sees an edge-aligned RX_CLK.
