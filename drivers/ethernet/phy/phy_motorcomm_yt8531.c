@@ -31,6 +31,11 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt8531, CONFIG_PHY_LOG_LEVEL);
 #include "phy_mii.h"
 
 #define PHY_ID_YT8531 (0x0000E91A)
+/* IEEE PHYID2 bits [3:0] are the silicon revision: YT8531SH-CA reads 0xE91A
+ * (rev A) while YT8531C-CA reads 0xE91B (rev B, B004 HIL 2026-08-31). Match
+ * the model, not the revision.
+ */
+#define PHY_ID_YT8531_REV_MASK (0x0000FFF0)
 
 /* Allow a slow PHY clock/power domain to settle after reset. */
 #define YTPHY_PHY_ID_MAX_ATTEMPTS   20U
@@ -82,6 +87,7 @@ struct mc_yt8531_config {
 	const struct device *mdio;
 	uint8_t rx_delay_sel;
 	uint8_t tx_delay_sel;
+	bool rxc_dly_en;
 	enum phy_link_speed default_speeds;
 };
 
@@ -206,7 +212,13 @@ static int mc_yt8531_cfg_clock_delay(const struct device *dev)
 	uint16_t mask, val = 0;
 	int ret;
 
-	ret = mc_yt8531_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_EN, 0);
+	/* The board strap (RXDLY pin) sets RXC_DLY_EN by default; honour the DT
+	 * choice instead of unconditionally clearing it — a MAC without its own
+	 * RX clock delay (Zynq PS GEM) needs the PHY's ~2 ns (B004 HIL 2026-08-31:
+	 * clearing it gave RX symbol/alignment errors on every frame).
+	 */
+	ret = mc_yt8531_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_EN,
+				   cfg->rxc_dly_en ? YT8521_CCR_RXC_DLY_EN : 0);
 	if (ret) {
 		return ret;
 	}
@@ -532,7 +544,7 @@ static int mc_yt8531_get_id(const struct device *dev, uint32_t *phy_id)
 
 	for (attempt = 1U; attempt <= YTPHY_PHY_ID_MAX_ATTEMPTS; attempt++) {
 		ret = mc_yt8531_read(dev, MII_PHYID2R, &val);
-		if (ret == 0 && (val == PHY_ID_YT8531)) {
+		if (ret == 0 && ((val & PHY_ID_YT8531_REV_MASK) == (PHY_ID_YT8531 & PHY_ID_YT8531_REV_MASK))) {
 			break;
 		}
 
@@ -565,6 +577,7 @@ static int mc_yt8531_get_id(const struct device *dev, uint32_t *phy_id)
 
 	return 0;
 }
+
 
 static int mc_yt8531_init(const struct device *dev)
 {
@@ -669,6 +682,7 @@ static DEVICE_API(ethphy, mc_yt8531_driver_api) = {
 		.mdio = DEVICE_DT_GET(DT_INST_BUS(n)),                                             \
 		.rx_delay_sel = DT_INST_PROP_OR(n, motorcomm_rx_delay_sel, 0),                     \
 		.tx_delay_sel = DT_INST_PROP_OR(n, motorcomm_tx_delay_sel, 0),                     \
+		.rxc_dly_en = DT_INST_PROP(n, motorcomm_rxc_dly_en),                               \
 		.default_speeds = PHY_INST_GENERATE_DEFAULT_SPEEDS(n),                             \
 	};
 
