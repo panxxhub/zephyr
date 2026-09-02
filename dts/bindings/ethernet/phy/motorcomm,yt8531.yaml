@@ -11,8 +11,8 @@ properties:
   motorcomm,rxc-dly-en:
     type: boolean
     description: |
-      Keep the PHY's coarse ~2 ns RX_CLK delay (EXT 0xA001 bit 8, RXC_DLY_EN)
-      enabled. Required when the MAC has no RX clock delay of its own, e.g. the
-      Zynq-7000 PS GEM (RGMII-ID expected from the PHY). When absent the driver
-      clears the bit so a MAC with internal RX delay (e.g. an FPGA ESC with
-      IDELAY) sees an edge-aligned RX_CLK.
+      Enable the PHY's coarse ~1.9 ns RXC clock delay (EXT 0xA001 bit 8 is an
+      active-low disable; the driver clears it when this flag is present and
+      sets it otherwise). Enable when the MAC captures RGMII RX with no clock
+      delay of its own (e.g. the FPGA ESC ports); leave absent when the RX
+      clock path already carries ~2 ns (e.g. Zynq PS GEM).
