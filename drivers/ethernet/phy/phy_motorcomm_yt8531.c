@@ -63,7 +63,12 @@ LOG_MODULE_REGISTER(phy_motorcomm_yt8531, CONFIG_PHY_LOG_LEVEL);
 #define YT8521_REG_SPACE_SELECT_REG 0xA000
 
 #define YT8521_CHIP_CONFIG_REG 0xA001
-#define YT8521_CCR_RXC_DLY_EN  BIT(8)
+/* 0xA001 bit 8 is ACTIVE-LOW: 0 = coarse ~1.9 ns RXC delay enabled (chip
+ * default), 1 = delay bypassed. Mainline motorcomm.c documents it as
+ * "1b0 enable 1.9ns rxc clock delay *default*"; B004 A/B on the ESC ports
+ * (2026-09-02) confirmed the polarity on silicon.
+ */
+#define YT8521_CCR_RXC_DLY_DIS BIT(8)
 
 #define YT8521_EXTREG_SLEEP_CONTROL1_REG 0x27
 #define YT8521_ESC1R_SLEEP_SW            BIT(15)
@@ -212,13 +217,14 @@ static int mc_yt8531_cfg_clock_delay(const struct device *dev)
 	uint16_t mask, val = 0;
 	int ret;
 
-	/* The board strap (RXDLY pin) sets RXC_DLY_EN by default; honour the DT
-	 * choice instead of unconditionally clearing it — a MAC without its own
-	 * RX clock delay (Zynq PS GEM) needs the PHY's ~2 ns (B004 HIL 2026-08-31:
-	 * clearing it gave RX symbol/alignment errors on every frame).
+	/* rxc-dly-en in DT means "the coarse ~1.9 ns RXC delay is wanted":
+	 * clear the active-low disable bit. Without the flag the delay is
+	 * bypassed — the Zynq PS GEM path already carries ~2 ns of its own
+	 * (B004 HIL 2026-08-31: adding the PHY delay there broke every frame,
+	 * which the old inverted macro name mis-recorded as the opposite).
 	 */
-	ret = mc_yt8531_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_EN,
-				   cfg->rxc_dly_en ? YT8521_CCR_RXC_DLY_EN : 0);
+	ret = mc_yt8531_modify_ext(dev, YT8521_CHIP_CONFIG_REG, YT8521_CCR_RXC_DLY_DIS,
+				   cfg->rxc_dly_en ? 0 : YT8521_CCR_RXC_DLY_DIS);
 	if (ret) {
 		return ret;
 	}
