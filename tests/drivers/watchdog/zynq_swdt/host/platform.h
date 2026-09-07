@@ -1,4 +1,7 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * Copyright (c) 2026 pan
+ * SPDX-License-Identifier: Apache-2.0
+ */
 #ifndef TEST_PLATFORM_H
 #define TEST_PLATFORM_H
 #include <stdint.h>

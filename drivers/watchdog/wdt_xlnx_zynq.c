@@ -1,4 +1,7 @@
-/* SPDX-License-Identifier: Apache-2.0 */
+/*
+ * Copyright (c) 2026 pan
+ * SPDX-License-Identifier: Apache-2.0
+ */
 #define DT_DRV_COMPAT xlnx_zynq_swdt
 
 #include <zephyr/device.h>
