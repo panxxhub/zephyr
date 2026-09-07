@@ -520,6 +520,7 @@ static int spi_nor_access(const struct device *const dev,
 static int spi_nor_wait_until_ready(const struct device *dev, k_timeout_t poll_delay)
 {
 	const struct spi_nor_config *cfg = dev->config;
+	const int64_t started = k_uptime_get();
 	int ret;
 	uint8_t reg;
 
@@ -566,6 +567,10 @@ static int spi_nor_wait_until_ready(const struct device *dev, k_timeout_t poll_d
 			if (ret || !(reg & SPI_NOR_WIP_BIT)) {
 				break;
 			}
+		}
+		if (k_uptime_get() - started >= CONFIG_SPI_NOR_READY_TIMEOUT_MS) {
+			ret = -ETIMEDOUT;
+			break;
 		}
 #ifdef CONFIG_SPI_NOR_SLEEP_WHILE_WAITING_UNTIL_READY
 		/* Don't monopolise the CPU while waiting for ready */
