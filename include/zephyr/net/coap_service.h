@@ -48,7 +48,7 @@ extern "C" {
  * Called under the service lock; must not block on a notifier or flash work.
  */
 typedef int (*coap_service_filter_t)(struct coap_packet *request,
-                                   struct coap_option *options, uint8_t option_count);
+				     struct coap_option *options, uint8_t option_count);
 
 struct coap_service_data {
 	coap_service_filter_t filter;
@@ -98,9 +98,16 @@ struct coap_service {
 
 /** @endcond */
 
-/** Install an ingress filter. Synchronizes with in-flight handlers and notifiers.
+/**
+ * @brief Install an ingress filter.
+ *
+ * Synchronizes with in-flight handlers and notifiers.
  * A filtered service also advances data->heartbeat from its polling thread at
  * least once per second while its socket is active (including idle periods).
+ *
+ * @param service Service whose ingress is filtered.
+ * @param filter Filter callback, or NULL to remove it.
+ * @return Zero on success.
  */
 int coap_service_set_filter(const struct coap_service *service, coap_service_filter_t filter);
 

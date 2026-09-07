@@ -1837,25 +1837,35 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 uint32_t eth_xlnx_gem_heartbeat(const struct device *dev)
 {
 	struct eth_xlnx_gem_dev_data *data = dev->data;
+
 	return (uint32_t)atomic_get(&data->liveness);
 }
 
-/* A service-thread probe also progresses when no external traffic is expected.
- * Pending RX or TX must drain; an IRQ counter alone cannot prove that. */
+/*
+ * A service-thread probe also progresses when no external traffic is expected.
+ * Pending RX or TX must drain; an IRQ counter alone cannot prove that.
+ */
 static void eth_xlnx_gem_liveness_work(struct k_work *item)
 {
-	struct eth_xlnx_gem_dev_data *data = CONTAINER_OF(k_work_delayable_from_work(item),
-						       struct eth_xlnx_gem_dev_data, liveness_work);
+	struct eth_xlnx_gem_dev_data *data = CONTAINER_OF(
+		k_work_delayable_from_work(item), struct eth_xlnx_gem_dev_data, liveness_work);
 	const struct device *dev = net_if_get_device(data->iface);
 	const struct eth_xlnx_gem_dev_cfg *cfg = dev->config;
-	if (!data->started) return;
 	uint32_t rx = atomic_get(&data->rx_progress), tx = atomic_get(&data->tx_progress);
-	uint32_t addr = sys_read32((uintptr_t)&data->rx_bd_ring.first_bd[data->rx_bd_ring.next_to_process].addr);
+	uint32_t addr = sys_read32(
+		(uintptr_t)&data->rx_bd_ring.first_bd[data->rx_bd_ring.next_to_process].addr);
 	uint32_t ctrl = sys_read32(cfg->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
 	uint32_t enabled = ETH_XLNX_GEM_NWCTRL_RXEN_BIT | ETH_XLNX_GEM_NWCTRL_TXEN_BIT;
 	bool rx_alive = !(addr & ETH_XLNX_GEM_RX_BD_USED_BIT) || rx != data->last_rx_progress;
-	bool tx_alive = data->tx_bd_ring.free_bds == cfg->tx_bd_count || tx != data->last_tx_progress;
-	if ((ctrl & enabled) == enabled && rx_alive && tx_alive) atomic_inc(&data->liveness);
+	bool tx_alive =
+		data->tx_bd_ring.free_bds == cfg->tx_bd_count || tx != data->last_tx_progress;
+
+	if (!data->started) {
+		return;
+	}
+	if ((ctrl & enabled) == enabled && rx_alive && tx_alive) {
+		atomic_inc(&data->liveness);
+	}
 	data->last_rx_progress = rx;
 	data->last_tx_progress = tx;
 	k_work_reschedule(&data->liveness_work, K_SECONDS(1));
