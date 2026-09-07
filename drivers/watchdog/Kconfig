@@ -139,4 +139,6 @@ source "drivers/watchdog/Kconfig.xmc4xxx"
 
 source "drivers/watchdog/Kconfig.rts5817"
 
+source "drivers/watchdog/Kconfig.xlnx_zynq"
+
 endif # WATCHDOG
