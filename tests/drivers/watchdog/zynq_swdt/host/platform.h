@@ -37,15 +37,15 @@ struct wdt_timeout_cfg {
 	struct {
 		uint32_t min, max;
 	} window;
-	void (*callback)(const struct device *, int);
+	void (*callback)(const struct device *dev, int channel);
 	uint8_t flags;
 };
 #define WDT_FLAG_RESET_SOC 2
 struct wdt_api {
-	int (*install_timeout)(const struct device *, const struct wdt_timeout_cfg *);
-	int (*setup)(const struct device *, uint8_t);
-	int (*feed)(const struct device *, int);
-	int (*disable)(const struct device *);
+	int (*install_timeout)(const struct device *dev, const struct wdt_timeout_cfg *cfg);
+	int (*setup)(const struct device *dev, uint8_t options);
+	int (*feed)(const struct device *dev, int channel);
+	int (*disable)(const struct device *dev);
 };
 #define DEVICE_API(type, name) const struct wdt_api name
 #define DEVICE_MMIO_ROM        uintptr_t address
@@ -55,7 +55,7 @@ struct wdt_api {
 	(DEVICE_MMIO_GET(dev) = ((const struct zynq_wdt_config *)(dev)->config)->address)
 #define DT_INST_FOREACH_STATUS_OKAY(fn)
 #define K_MEM_CACHE_NONE 0
-static unsigned writes;
+static unsigned int writes;
 static uint32_t values[16];
 static uintptr_t addresses[16];
 static void sys_write32(uint32_t value, uintptr_t address)

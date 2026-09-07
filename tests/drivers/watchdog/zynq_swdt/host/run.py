@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Compile the production driver against an MMIO recorder; no board access."""
 
-from pathlib import Path
 import subprocess
 import tempfile
+from pathlib import Path
 
 root = Path(__file__).resolve().parent
 with tempfile.TemporaryDirectory() as directory:

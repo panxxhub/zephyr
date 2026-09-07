@@ -12,6 +12,7 @@ int main(void)
 	struct zynq_wdt_data data = {0};
 	struct device dev = {.config = &config, .data = &data};
 	struct wdt_timeout_cfg timeout = {.window = {0, 30000}, .flags = WDT_FLAG_RESET_SOC};
+
 	assert(!zynq_wdt_init(&dev));
 	assert(!writes);
 	assert(zynq_wdt_api.feed(&dev, 0) == -EINVAL);
@@ -49,16 +50,18 @@ int main(void)
 	assert(zynq_wdt_api.disable(&dev) == -EPERM);
 	assert(writes == 4);
 	/* Verify rounding and all prescalers against the hardware count equation. */
-	const unsigned divs[] = {8, 64, 512, 4096};
-	const unsigned times[] = {1, 2, 100, 1000, 30000, 600000};
-	for (unsigned i = 0; i < ARRAY_SIZE(times); i++) {
+	const unsigned int divs[] = {8, 64, 512, 4096};
+	const unsigned int times[] = {1, 2, 100, 1000, 30000, 600000};
+
+	for (unsigned int i = 0; i < ARRAY_SIZE(times); i++) {
 		memset(&data, 0, sizeof(data));
 		timeout.window.max = times[i];
 		assert(!zynq_wdt_api.install_timeout(&dev, &timeout));
-		unsigned ps = data.ccr & 3, crv = (data.ccr >> 2) & 0xfff;
+		unsigned int ps = data.ccr & 3, crv = (data.ccr >> 2) & 0xfff;
 		uint64_t actual = (uint64_t)(crv + 1) * 4096 * divs[ps];
 		uint64_t requested =
 			DIV_ROUND_UP((uint64_t)config.clock_frequency * times[i], 1000);
+
 		assert(actual >= requested && actual - requested < (uint64_t)4096 * divs[ps]);
 	}
 	puts("Zynq SWDT adoption, MMIO sequencing, API reverse cases and timing passed");
