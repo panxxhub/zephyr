@@ -67,6 +67,15 @@ config SPI_NOR_SLEEP_WHILE_WAITING_UNTIL_READY
 	  result in significant flash savings if this driver is the only user
 	  of "k_sleep". This can be the case when building as a bootloader.
 
+config SPI_NOR_READY_TIMEOUT_MS
+	int "Deadline for a NOR ready wait in milliseconds"
+	default 300000
+	range 1 2147483647
+	help
+	  Maximum elapsed time for program, erase, or status-register writes.
+	  A device that remains busy returns -ETIMEDOUT. Set this above the
+	  longest operation supported by the part, including chip erase.
+
 config SPI_NOR_SLEEP_ERASE_MS
 	int "Delay between polls while waiting for an erase operation in ms"
 	default 50
