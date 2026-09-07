@@ -3,9 +3,9 @@
 # Copyright (c) 2026 Xiang Pan
 """Exercise the production GEM service probe with fake rings and MMIO."""
 
-from pathlib import Path
 import subprocess
 import tempfile
+from pathlib import Path
 
 root = Path(__file__).resolve().parents[4]
 source = (root / "drivers/ethernet/eth_xlnx_gem.c").read_text()
