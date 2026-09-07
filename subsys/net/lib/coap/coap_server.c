@@ -122,6 +122,14 @@ static int coap_service_remove_observer(const struct coap_service *service,
 	return 0;
 }
 
+int coap_service_set_filter(const struct coap_service *service, coap_service_filter_t filter)
+{
+	k_mutex_lock(&lock, K_FOREVER);
+	service->data->filter = filter;
+	k_mutex_unlock(&lock);
+	return 0;
+}
+
 static int coap_server_process(int sock_fd)
 {
 	static uint8_t buf[CONFIG_COAP_SERVER_MESSAGE_SIZE];
@@ -238,6 +246,24 @@ static int coap_server_process(int sock_fd)
 		LOG_WRN("Unexpected type %d without pending packet", type);
 		ret = -EINVAL;
 		goto unlock;
+	}
+
+	if (service->data->filter) {
+		ret = service->data->filter(&request, options, opt_num);
+		if (ret > 0) {
+			uint8_t reply[COAP_TOKEN_MAX_LEN + 4U];
+			struct coap_packet ack;
+
+			ret = coap_ack_init(&ack, &request, reply, sizeof(reply), (uint8_t)ret);
+			if (ret == 0) {
+				ret = coap_service_send(service, &ack, net_sad(&client_addr),
+						client_addr_len, NULL);
+			}
+			goto unlock;
+		}
+		if (ret < 0) {
+			goto unlock;
+		}
 	}
 
 	if (IS_ENABLED(CONFIG_COAP_SERVER_WELL_KNOWN_CORE) &&
@@ -847,7 +873,21 @@ static void coap_server_thread(void *p1, void *p2, void *p3)
 
 		__ASSERT_NO_MSG(sock_nfds > 0);
 
-		ret = zsock_poll(sock_fds, sock_nfds, coap_server_poll_timeout());
+		int timeout = coap_server_poll_timeout();
+
+		COAP_SERVICE_FOREACH(svc) {
+			if (svc->data->sock_fd >= 0 && svc->data->filter) {
+				timeout = timeout < 0 ? 1000 : MIN(timeout, 1000);
+			}
+		}
+		ret = zsock_poll(sock_fds, sock_nfds, timeout);
+		if (ret >= 0) {
+			COAP_SERVICE_FOREACH(svc) {
+				if (svc->data->sock_fd >= 0 && svc->data->filter) {
+					atomic_inc(&svc->data->heartbeat);
+				}
+			}
+		}
 		if (ret < 0) {
 			LOG_ERR("Poll error (%d)", -errno);
 			k_msleep(10);

@@ -14,6 +14,7 @@
 #define ZEPHYR_INCLUDE_NET_COAP_SERVICE_H_
 
 #include <zephyr/net/coap.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/iterable_sections.h>
 #include <zephyr/net/tls_credentials.h>
 
@@ -43,7 +44,15 @@ extern "C" {
 
 /** @cond INTERNAL_HIDDEN */
 
+/** Return zero to dispatch, or a CoAP response code to refuse at ingress.
+ * Called under the service lock; must not block on a notifier or flash work.
+ */
+typedef int (*coap_service_filter_t)(struct coap_packet *request,
+                                   struct coap_option *options, uint8_t option_count);
+
 struct coap_service_data {
+	coap_service_filter_t filter;
+	atomic_t heartbeat;
 	int sock_fd;
 	struct coap_observer observers[CONFIG_COAP_SERVICE_OBSERVERS];
 	struct coap_pending pending[CONFIG_COAP_SERVICE_PENDING_MESSAGES];
@@ -88,6 +97,12 @@ struct coap_service {
 	}
 
 /** @endcond */
+
+/** Install an ingress filter. Synchronizes with in-flight handlers and notifiers.
+ * A filtered service also advances data->heartbeat from its polling thread at
+ * least once per second while its socket is active (including idle periods).
+ */
+int coap_service_set_filter(const struct coap_service *service, coap_service_filter_t filter);
 
 /**
  * @brief Define a static CoAP resource owned by the service named @p _service .
