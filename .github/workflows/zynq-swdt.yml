@@ -1,0 +1,18 @@
+name: Zynq SWDT
+on:
+  push:
+    branches: [feature/zynq-swdt]
+  pull_request:
+    paths:
+      - 'drivers/watchdog/**'
+      - 'tests/drivers/watchdog/zynq_swdt/**'
+      - 'dts/bindings/watchdog/xlnx,zynq-swdt.yaml'
+      - '.github/workflows/zynq-swdt.yml'
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - run: python3 tests/drivers/watchdog/zynq_swdt/host/run.py

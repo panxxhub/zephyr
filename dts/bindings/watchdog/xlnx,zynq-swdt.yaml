@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Zynq-7000 PS system watchdog. The clock-frequency is the CPU_1x clock
+  supplied by the PS clock configuration. Reset output resets the PS;
+  no interrupt handler or interrupt-based feeding is used.
+
+compatible: "xlnx,zynq-swdt"
+
+include: base.yaml
+
+properties:
+  reg:
+    required: true
+  clock-frequency:
+    type: int
+    required: true
+    description: Watchdog input clock in Hz (CPU_1x).

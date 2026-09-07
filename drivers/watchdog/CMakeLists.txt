@@ -72,3 +72,5 @@ zephyr_library_sources_ifdef(CONFIG_WWDG_STM32 wdt_wwdg_stm32.c)
 zephyr_library_sources_ifdef(CONFIG_WWDT_NUMAKER wdt_wwdt_numaker.c)
 zephyr_library_sources_ifdef(CONFIG_XILINX_WINDOW_WATCHDOG wdt_xilinx_wwdt.c)
 # zephyr-keep-sorted-stop
+
+zephyr_library_sources_ifdef(CONFIG_WDT_XLNX_ZYNQ wdt_xlnx_zynq.c)

@@ -14,8 +14,7 @@ import github
 DNM_LABELS = ["DNM", "DNM (manifest)", "TSC", "Architecture Review", "dev-review"]
 
 
-def print_rate_limit(gh, org):
-    response = gh.get_organization(org)
+def print_rate_limit(response):
     for header, value in response.raw_headers.items():
         if header.startswith("x-ratelimit"):
             print(f"{header}: {value}")
@@ -65,9 +64,8 @@ def main(argv):
     auth = github.Auth.Token(os.environ.get('GITHUB_TOKEN', None))
     gh = github.Github(auth=auth)
 
-    print_rate_limit(gh, args.org)
-
     repo = gh.get_repo(f"{args.org}/{args.repo}")
+    print_rate_limit(repo)
     pr = repo.get_pull(args.pull_request)
 
     workflow_delay(repo, pr)

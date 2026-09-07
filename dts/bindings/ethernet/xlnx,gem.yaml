@@ -18,7 +18,6 @@ properties:
 
   syscon:
     type: phandle
-    required: false
     description: |
       phandle to the System Level Control Registers (SLCR).
 

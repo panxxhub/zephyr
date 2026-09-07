@@ -1,0 +1,10 @@
+# Copyright (c) 2026 Xiang Pan
+# SPDX-License-Identifier: Apache-2.0
+config WDT_XLNX_ZYNQ
+	bool "Xilinx Zynq-7000 PS system watchdog"
+	default y
+	depends on DT_HAS_XLNX_ZYNQ_SWDT_ENABLED
+	help
+	  PS SWDT with system reset, one timeout channel, and no interrupts.
+	  Adopts an FSBL-armed watchdog without disabling it. Stopping the
+	  watchdog and pause-on-debug/sleep options are unsupported.
