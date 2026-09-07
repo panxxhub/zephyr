@@ -25,8 +25,7 @@ permissions:
 jobs:
   doc-coverage-diff:
     name: "Doxygen Coverage Delta Check"
-    runs-on:
-      group: zephyr-runner-v2-linux-x64-4xlarge
+    runs-on: ubuntu-24.04
     container:
       image: ghcr.io/zephyrproject-rtos/ci-repo-cache:v0.29.1.20260327
       options: '--entrypoint /bin/bash'
