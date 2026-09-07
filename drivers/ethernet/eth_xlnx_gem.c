@@ -17,6 +17,7 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/ethernet/eth_xlnx_gem.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/__assert.h>
@@ -73,6 +74,7 @@ static void eth_xlnx_gem_phy_link_changed(const struct device *phy_dev,
 					  void *user_data);
 static void eth_xlnx_gem_configure_buffers(const struct device *dev);
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
+static void eth_xlnx_gem_liveness_work(struct k_work *item);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
 static void eth_xlnx_gem_tx_done_work(struct k_work *item);
 static void eth_xlnx_gem_handle_tx_done(const struct device *dev);
@@ -239,6 +241,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 	/* Initialize work items for RX pending and TX done handlers */
 	k_work_init(&dev_data->tx_done_work, eth_xlnx_gem_tx_done_work);
 	k_work_init(&dev_data->rx_pend_work, eth_xlnx_gem_rx_pending_work);
+	k_work_init_delayable(&dev_data->liveness_work, eth_xlnx_gem_liveness_work);
 
 	/* Initialize TX-related semaphores */
 	k_sem_init(&dev_data->tx_done_sem, 0, 1);
@@ -575,6 +578,7 @@ static int eth_xlnx_gem_start_device(const struct device *dev)
 	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK,
 		    dev_conf->base_addr + ETH_XLNX_GEM_IER_OFFSET);
 
+	k_work_reschedule(&dev_data->liveness_work, K_SECONDS(1));
 	LOG_DBG("%s started", dev->name);
 	return 0;
 }
@@ -599,6 +603,7 @@ static int eth_xlnx_gem_stop_device(const struct device *dev)
 		return 0;
 	}
 	dev_data->started = false;
+	k_work_cancel_delayable(&dev_data->liveness_work);
 
 	/* RX and TX disable */
 	reg_val  = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
@@ -1684,6 +1689,7 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 
 			curr_bd_idx = (curr_bd_idx + 1) % dev_conf->rx_bd_count;
 		} while (curr_bd_idx != ((last_bd_idx + 1) % dev_conf->rx_bd_count));
+		atomic_inc(&dev_data->rx_progress);
 
 		/* Propagate the received packet to the network stack */
 		if (pkt != NULL) {
@@ -1811,6 +1817,7 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 		(dev_data->tx_bd_ring.next_to_process + bds_processed) %
 		dev_conf->tx_bd_count;
 	dev_data->tx_bd_ring.free_bds += bds_processed;
+	atomic_inc(&dev_data->tx_progress);
 
 	if (dev_conf->defer_txd_to_queue) {
 		k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
@@ -1825,4 +1832,31 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 
 	/* Indicate completion to a blocking eth_xlnx_gem_send() call */
 	k_sem_give(&dev_data->tx_done_sem);
+}
+
+uint32_t eth_xlnx_gem_heartbeat(const struct device *dev)
+{
+	struct eth_xlnx_gem_dev_data *data = dev->data;
+	return (uint32_t)atomic_get(&data->liveness);
+}
+
+/* A service-thread probe also progresses when no external traffic is expected.
+ * Pending RX or TX must drain; an IRQ counter alone cannot prove that. */
+static void eth_xlnx_gem_liveness_work(struct k_work *item)
+{
+	struct eth_xlnx_gem_dev_data *data = CONTAINER_OF(k_work_delayable_from_work(item),
+						       struct eth_xlnx_gem_dev_data, liveness_work);
+	const struct device *dev = net_if_get_device(data->iface);
+	const struct eth_xlnx_gem_dev_cfg *cfg = dev->config;
+	if (!data->started) return;
+	uint32_t rx = atomic_get(&data->rx_progress), tx = atomic_get(&data->tx_progress);
+	uint32_t addr = sys_read32((uintptr_t)&data->rx_bd_ring.first_bd[data->rx_bd_ring.next_to_process].addr);
+	uint32_t ctrl = sys_read32(cfg->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	uint32_t enabled = ETH_XLNX_GEM_NWCTRL_RXEN_BIT | ETH_XLNX_GEM_NWCTRL_TXEN_BIT;
+	bool rx_alive = !(addr & ETH_XLNX_GEM_RX_BD_USED_BIT) || rx != data->last_rx_progress;
+	bool tx_alive = data->tx_bd_ring.free_bds == cfg->tx_bd_count || tx != data->last_tx_progress;
+	if ((ctrl & enabled) == enabled && rx_alive && tx_alive) atomic_inc(&data->liveness);
+	data->last_rx_progress = rx;
+	data->last_tx_progress = tx;
+	k_work_reschedule(&data->liveness_work, K_SECONDS(1));
 }

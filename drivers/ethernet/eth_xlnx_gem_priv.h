@@ -787,6 +787,9 @@ struct eth_xlnx_gem_mcast_filter {
  * data relating to the attached PHY or the auxiliary thread.
  */
 struct eth_xlnx_gem_dev_data {
+	struct k_work_delayable liveness_work;
+	atomic_t liveness, rx_progress, tx_progress;
+	uint32_t last_rx_progress, last_tx_progress;
 	struct net_if			*iface;
 	uint8_t				mac_addr[6];
 	enum eth_xlnx_link_speed	eff_link_speed;
