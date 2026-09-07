@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Moton Intelligent Equipment
+name: SPI NOR ready deadline
+on:
+  pull_request:
+    paths:
+      - drivers/flash/spi_nor.c
+      - drivers/flash/Kconfig.nor
+      - tests/drivers/flash/spi_nor_deadline/**
+      - .github/workflows/spi-nor-deadline.yml
+  push:
+    branches: [feature/spi-nor-wip-deadline]
+jobs:
+  deadline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - run: python3 tests/drivers/flash/spi_nor_deadline/test_deadline.py
