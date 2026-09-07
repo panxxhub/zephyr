@@ -2,6 +2,11 @@
  * Copyright (c) 2026 Xiang Pan
  * SPDX-License-Identifier: Apache-2.0
  */
+/**
+ * @file
+ * @brief Xilinx GEM service-liveness interface.
+ */
+
 #ifndef ZEPHYR_DRIVERS_ETHERNET_ETH_XLNX_GEM_H_
 #define ZEPHYR_DRIVERS_ETHERNET_ETH_XLNX_GEM_H_
 
