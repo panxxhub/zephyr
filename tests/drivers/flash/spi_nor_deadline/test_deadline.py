@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2026 Moton Intelligent Equipment
 """Run the actual driver polling function with a deterministic SPI/clock fake."""
+
 import pathlib
 import subprocess
 import tempfile
@@ -9,7 +10,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 source = (ROOT / "drivers/flash/spi_nor.c").read_text()
 start = source.index("static int spi_nor_wait_until_ready(")
-function = source[start:source.index("\n#if defined(CONFIG_SPI_NOR_SFDP_RUNTIME)", start)]
+function = source[start : source.index("\n#if defined(CONFIG_SPI_NOR_SFDP_RUNTIME)", start)]
 harness = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -87,7 +88,18 @@ with tempfile.TemporaryDirectory() as tmp:
     c.write_text(harness + function + cases)
     for sleeping in (False, True):
         exe = pathlib.Path(tmp) / ("sleep" if sleeping else "spin")
-        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                        *(["-DCONFIG_SPI_NOR_SLEEP_WHILE_WAITING_UNTIL_READY"] if sleeping else []),
-                        str(c), "-o", str(exe)], check=True)
+        subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                *(["-DCONFIG_SPI_NOR_SLEEP_WHILE_WAITING_UNTIL_READY"] if sleeping else []),
+                str(c),
+                "-o",
+                str(exe),
+            ],
+            check=True,
+        )
         subprocess.run([str(exe)], check=True)
