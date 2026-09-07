@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) 2026 pan
 # SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Moton Intelligent Equipment
 """Run the actual driver polling function with a deterministic SPI/clock fake."""
 
 import pathlib
