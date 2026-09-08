@@ -40,6 +40,9 @@ concurrency:
 
 jobs:
   doxygen-checks:
+    # This job requires the upstream private runner group. The fork retains
+    # the hosted documentation build and compliance documentation checks.
+    if: github.repository == 'zephyrproject-rtos/zephyr'
     name: "Doxygen Checks"
     runs-on:
       group: zephyr-runner-v2-linux-x64-4xlarge

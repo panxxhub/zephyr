@@ -20,6 +20,23 @@ jobs:
       with:
         persist-credentials: false
         fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.sha }}
+    - name: Select fork scan baseline
+      if: github.repository != 'zephyrproject-rtos/zephyr'
+      env:
+        BASE_REF: ${{ github.base_ref }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        import_merge=$(git rev-list --reverse --first-parent --merges \
+          "${BASE_SHA}..HEAD" | head -n 1)
+        if [ -n "${import_merge}" ]; then
+          imported_commits=$(git rev-list --count \
+            "${BASE_SHA}..${import_merge}^2")
+          if [ "${imported_commits}" -ge 100 ]; then
+            git update-ref "refs/remotes/origin/${BASE_REF}" "${import_merge}"
+            echo "Scanning files added after an import of ${imported_commits} commits"
+          fi
+        fi
     - name: Scan the code
       id: scancode
       uses: zephyrproject-rtos/action_scancode@23ef91ce31cd4b954366a7b71eea47520da9b380 # v4

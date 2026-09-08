@@ -391,12 +391,44 @@ jobs:
           path: |
             twister_report_summary.json
 
+  twister-fork:
+    name: Fork Cortex-A/R integration
+    if: github.repository != 'zephyrproject-rtos/zephyr' && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout current head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          path: zephyr
+      - name: Set up Zephyr project
+        uses: zephyrproject-rtos/action-zephyr-setup@5ec39f5cba83346d83a836dfed1524270c660e28
+        with:
+          app-path: zephyr
+          toolchains: arm-zephyr-eabi
+          enable-ccache: false
+      - name: Run fixed downstream regressions
+        working-directory: zephyr
+        run: .github/ci/run-fork-tests.sh
+      - name: Upload fork Twister results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Fork Cortex-A-R Twister Results
+          path: |
+            zephyr/twister-out/**/twister.json
+            zephyr/twister-out/**/twister.xml
+            zephyr/twister-out/**/build.log
+
   twister-status-check:
     if: always()
     name: "Check Twister Status"
     needs:
       - twister-build-prep
       - twister-build
+      - twister-fork
     uses: ./.github/workflows/ready-to-merge.yml
     with:
       needs_context: ${{ toJson(needs) }}

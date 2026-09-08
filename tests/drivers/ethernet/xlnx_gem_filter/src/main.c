@@ -86,7 +86,7 @@ static int configure_filter(const struct net_eth_addr *mac,
 	};
 
 	memcpy(&config.filter.mac_address, mac, sizeof(*mac));
-	return gem_api->set_config(gem_dev, ETHERNET_CONFIG_TYPE_FILTER, &config);
+	return gem_api->set_config(gem_dev, gem_iface, ETHERNET_CONFIG_TYPE_FILTER, &config);
 }
 
 static int configure_promiscuous(bool enable)
@@ -95,7 +95,7 @@ static int configure_promiscuous(bool enable)
 		.promisc_mode = enable,
 	};
 
-	return gem_api->set_config(gem_dev, ETHERNET_CONFIG_TYPE_PROMISC_MODE, &config);
+	return gem_api->set_config(gem_dev, gem_iface, ETHERNET_CONFIG_TYPE_PROMISC_MODE, &config);
 }
 
 /*
@@ -145,7 +145,7 @@ static void xlnx_gem_filter_after(void *fixture)
 
 ZTEST(xlnx_gem_filter, test_capability)
 {
-	enum ethernet_hw_caps caps = gem_api->get_capabilities(gem_dev);
+	enum ethernet_hw_caps caps = gem_api->get_capabilities(gem_dev, gem_iface);
 
 	zassert_true((caps & ETHERNET_HW_FILTERING) != 0U);
 }

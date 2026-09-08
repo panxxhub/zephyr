@@ -35,7 +35,7 @@ runs:
         GROUP_FILTER: ${{ inputs.group-filter }}
       run: |
         git config --global http.version HTTP/1.1
-        if [ "${{ github.event_name }}" = "pull_request" ]; then
+        if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ github.repository }}" = "zephyrproject-rtos/zephyr" ]; then
           git config --global user.email "bot@zephyrproject.org"
           git config --global user.name "Zephyr Builder"
           rm -fr ".git/rebase-apply"

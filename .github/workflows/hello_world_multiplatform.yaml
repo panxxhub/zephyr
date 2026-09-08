@@ -38,9 +38,10 @@ jobs:
           persist-credentials: false
           path: zephyr
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Rebase
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.repository == 'zephyrproject-rtos/zephyr'
         env:
           BASE_REF: ${{ github.base_ref }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}

@@ -34,12 +34,6 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
-#if CONFIG_QEMU_TARGET ||\
-	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_rx_checksum_offload) ||\
-	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_tx_checksum_offload)
-#warning "xlnx_gem: at least one instance has checksum offloading to hardware disabled"
-#endif
-
 static int  eth_xlnx_gem_dev_init(const struct device *dev);
 static void eth_xlnx_gem_iface_init(struct net_if *iface);
 static void eth_xlnx_gem_isr(const struct device *dev);
@@ -94,7 +88,6 @@ static const struct ethernet_api eth_xlnx_gem_apis = {
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 	.get_stats	  = eth_xlnx_gem_get_stats,
 #endif
-	k_spin_unlock(&dev_data->nwcfg_lock, key);
 };
 
 /*
@@ -132,6 +125,12 @@ DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_BUFFER_SIZE_CHECK)
  */
 static int eth_xlnx_gem_dev_init(const struct device *dev)
 {
+#if CONFIG_QEMU_TARGET ||\
+	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_rx_checksum_offload) ||\
+	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_tx_checksum_offload)
+	LOG_DBG("At least one GEM instance has hardware checksum offloading disabled");
+#endif
+
 	const struct eth_xlnx_gem_dev_cfg *dev_conf __maybe_unused = DEV_CFG(dev);
 
 	/* Precondition checks using assertions */
@@ -196,7 +195,6 @@ static int eth_xlnx_gem_dev_init(const struct device *dev)
 	eth_xlnx_gem_configure_buffers(dev);	/* Chapter 16.3.5 */
 
 	return 0;
-	k_spin_unlock(&dev_data->nwcfg_lock, key);
 }
 
 /**
@@ -1046,6 +1044,8 @@ static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev)
 static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
 					      struct phy_link_state *state)
 {
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	k_spinlock_key_t key = k_spin_lock(&dev_data->nwcfg_lock);
 	uint32_t reg_val;
 
 	/*
@@ -1075,6 +1075,7 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
 
 	/* Write the assembled register contents to gem.net_cfg */
 	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
+	k_spin_unlock(&dev_data->nwcfg_lock, key);
 }
 
 /**

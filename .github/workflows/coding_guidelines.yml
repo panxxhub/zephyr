@@ -22,6 +22,30 @@ jobs:
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
 
+    - name: Select compliance range
+      id: compliance-range
+      env:
+        BASE_REF: ${{ github.base_ref }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        comparison_base="origin/${BASE_REF}"
+        if [ "${{ github.repository }}" != "zephyrproject-rtos/zephyr" ]; then
+          comparison_base="${BASE_SHA}"
+          import_merge=$(git rev-list --reverse --first-parent --merges \
+            "${BASE_SHA}..HEAD" | head -n 1)
+          if [ -n "${import_merge}" ]; then
+            imported_commits=$(git rev-list --count \
+              "${BASE_SHA}..${import_merge}^2")
+            if [ "${imported_commits}" -ge 100 ]; then
+              comparison_base="${import_merge}"
+              echo "Detected an import of ${imported_commits} commits"
+            fi
+          fi
+        fi
+
+        echo "range=${comparison_base}.." >> "${GITHUB_OUTPUT}"
+        echo "Checking ${comparison_base}.."
+
     - name: Set up Python
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
@@ -50,13 +74,15 @@ jobs:
         git remote -v
         rm -fr ".git/rebase-apply"
         rm -fr ".git/rebase-merge"
-        git rebase origin/${BASE_REF}
+        if [ "${{ github.repository }}" = "zephyrproject-rtos/zephyr" ]; then
+          git rebase origin/${BASE_REF}
+        fi
         git clean -f -d
         source zephyr-env.sh
         # debug
         ls -la
         git log  --pretty=oneline | head -n 10
-        ./scripts/ci/guideline_check.py --annotate --output output.txt -c origin/${BASE_REF}..
+        ./scripts/ci/guideline_check.py --annotate --output output.txt -c "${{ steps.compliance-range.outputs.range }}"
 
     - name: check-warns
       run: |

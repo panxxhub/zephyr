@@ -130,6 +130,12 @@
 			};
 		};
 
+		swdt0: watchdog@f8005000 {
+			compatible = "xlnx,zynq-swdt";
+			reg = <0xf8005000 0x1000>;
+			status = "disabled";
+		};
+
 		private_timer: timer@f8f00600 {
 			compatible = "arm,cortex-a9-twd-timer";
 			reg = <0xf8f00600 0x20>;
