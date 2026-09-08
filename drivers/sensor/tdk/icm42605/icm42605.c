@@ -393,7 +393,7 @@ static int icm42605_init(const struct device *dev)
 	const struct icm42605_config *cfg = dev->config;
 
 	if (!spi_is_ready_dt(&cfg->spi)) {
-		LOG_ERR("SPI bus is not ready");
+		LOG_ERR_DEVICE_NOT_READY(cfg->spi.bus);
 		return -ENODEV;
 	}
 
@@ -428,7 +428,7 @@ static DEVICE_API(sensor, icm42605_driver_api) = {
 #define ICM42605_DEFINE_CONFIG(index)					\
 	static const struct icm42605_config icm42605_cfg_##index = {	\
 		.spi = SPI_DT_SPEC_INST_GET(index,			\
-					    SPI_OP_MODE_MASTER |	\
+					    SPI_OP_MODE_CONTROLLER |	\
 					    SPI_MODE_CPOL |		\
 					    SPI_MODE_CPHA |		\
 					    SPI_WORD_SET(8) |		\

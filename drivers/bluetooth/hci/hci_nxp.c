@@ -34,10 +34,6 @@
 
 #define DT_DRV_COMPAT nxp_hci_ble
 
-struct bt_nxp_data {
-	bt_hci_recv_t recv;
-};
-
 struct hci_data {
 	uint8_t packetType;
 	uint8_t *data;
@@ -369,10 +365,10 @@ static bool is_hci_event_discardable(const uint8_t *evt_data)
 		case BT_HCI_EVT_LE_EXT_ADVERTISING_REPORT: {
 			const struct bt_hci_evt_le_ext_advertising_report *ext_adv =
 				(void *)&evt_data[3];
+			uint16_t adv_evt_type = sys_le16_to_cpu(ext_adv->adv_info[0].evt_type);
 
 			return (ext_adv->num_reports == 1) &&
-			       ((ext_adv->adv_info[0].evt_type & BT_HCI_LE_ADV_EVT_TYPE_LEGACY) !=
-				0);
+			       ((adv_evt_type & BT_HCI_LE_ADV_EVT_TYPE_LEGACY) != 0);
 		}
 #endif
 		default:
@@ -473,7 +469,6 @@ static struct net_buf *bt_acl_recv(uint8_t *data, size_t len)
 static void process_rx(uint8_t packetType, uint8_t *data, uint16_t len)
 {
 	const struct device *dev = DEVICE_DT_GET(DT_DRV_INST(0));
-	struct bt_nxp_data *hci = dev->data;
 	struct net_buf *buf;
 
 	switch (packetType) {
@@ -492,13 +487,18 @@ static void process_rx(uint8_t packetType, uint8_t *data, uint16_t len)
 
 	if (buf) {
 		/* Provide the buffer to the host */
-		hci->recv(dev, buf);
+		bt_hci_recv(dev, buf);
 	}
 }
 
 #if defined(CONFIG_HCI_NXP_RX_THREAD)
 
-K_MSGQ_DEFINE(rx_msgq, sizeof(struct hci_data), CONFIG_HCI_NXP_RX_MSG_QUEUE_SIZE, 4);
+K_MSGQ_DEFINE_STATIC_TYPE(rx_msgq, struct hci_data, CONFIG_HCI_NXP_RX_MSG_QUEUE_SIZE);
+
+/* Semaphore used by bt_nxp_rx_drain() to wait until bt_rx_thread has
+ * acknowledged the drain sentinel.
+ */
+static K_SEM_DEFINE(rx_drain_sem, 0, 1);
 
 static void bt_rx_thread(void *p1, void *p2, void *p3)
 {
@@ -513,6 +513,15 @@ static void bt_rx_thread(void *p1, void *p2, void *p3)
 			LOG_ERR("Failed to get RX data from message queue");
 			continue;
 		}
+		/* A sentinel frame (data == NULL) is posted by bt_nxp_rx_drain()
+		 * to mark the boundary between pre-close and post-open frames.
+		 * Acknowledge it and skip process_rx() so that close() knows all
+		 * earlier frames have been fully processed.
+		 */
+		if (hci_rx_frame.data == NULL) {
+			k_sem_give(&rx_drain_sem);
+			continue;
+		}
 		process_rx(hci_rx_frame.packetType, hci_rx_frame.data, hci_rx_frame.len);
 		k_free(hci_rx_frame.data);
 	}
@@ -520,6 +529,34 @@ static void bt_rx_thread(void *p1, void *p2, void *p3)
 
 K_THREAD_DEFINE(nxp_hci_rx_thread, CONFIG_BT_DRV_RX_STACK_SIZE, bt_rx_thread, NULL, NULL, NULL,
 		K_PRIO_COOP(CONFIG_BT_DRIVER_RX_HIGH_PRIO), 0, 0);
+
+/* Drain all frames that bt_rx_thread may be holding or that are buffered
+ * in rx_msgq, then wait until the thread acknowledges the drain barrier.
+ *
+ * When bt_rx_thread is blocked in k_msgq_get(K_FOREVER), k_msgq_put()
+ * copies the frame directly into the thread's stack buffer without
+ * incrementing msgq->used_msgs (kernel/msg_q.c).  A K_NO_WAIT drain
+ * loop therefore misses any frame the thread already holds.  To close
+ * this gap: drain the queue buffer first, then post a sentinel frame
+ * (data == NULL) with K_FOREVER.  Because the queue is FIFO, when
+ * bt_rx_thread dequeues the sentinel it has already processed every
+ * frame that arrived before close.  Waiting on rx_drain_sem guarantees
+ * that no pre-close packet can escape into the next session.
+ */
+static void bt_nxp_rx_drain(void)
+{
+	struct hci_data hci_rx_frame;
+	struct hci_data sentinel = {0}; /* data == NULL marks the drain barrier */
+
+	/* Free any frames sitting in the queue buffer. */
+	while (k_msgq_get(&rx_msgq, &hci_rx_frame, K_NO_WAIT) == 0) {
+		k_free(hci_rx_frame.data);
+	}
+
+	/* Post the sentinel and wait for bt_rx_thread to acknowledge it. */
+	(void)k_msgq_put(&rx_msgq, &sentinel, K_FOREVER);
+	k_sem_take(&rx_drain_sem, K_FOREVER);
+}
 
 static void hci_rx_cb(uint8_t packetType, uint8_t *data, uint16_t len)
 {
@@ -562,7 +599,6 @@ static void bt_nxp_send_vs_cmd_complete(const struct device *dev, uint16_t opcod
 {
 	struct net_buf *buf;
 	uint8_t *pckt;
-	struct bt_nxp_data *hci = dev->data;
 
 	buf = bt_buf_get_evt(BT_HCI_EVT_CMD_COMPLETE, false, K_NO_WAIT);
 	if (buf == NULL) {
@@ -585,7 +621,7 @@ static void bt_nxp_send_vs_cmd_complete(const struct device *dev, uint16_t opcod
 	sys_put_le16(opcode, &pckt[3U]);
 	pckt[5U] = status;
 
-	hci->recv(dev, buf);
+	bt_hci_recv(dev, buf);
 }
 
 static int bt_nxp_process_tx_power_cmd(const uint8_t *params, uint8_t params_len)
@@ -707,9 +743,8 @@ static int bt_nxp_send(const struct device *dev, struct net_buf *buf)
 	return 0;
 }
 
-static int bt_nxp_open(const struct device *dev, bt_hci_recv_t recv)
+static int bt_nxp_open(const struct device *dev)
 {
-	struct bt_nxp_data *hci = dev->data;
 	int ret = 0;
 
 	do {
@@ -730,8 +765,6 @@ static int bt_nxp_open(const struct device *dev, bt_hci_recv_t recv)
 			LOG_ERR("HCI open failed");
 			break;
 		}
-
-		hci->recv = recv;
 	} while (false);
 
 	return ret;
@@ -792,12 +825,18 @@ int bt_nxp_setup(const struct device *dev, const struct bt_hci_setup_params *par
 
 static int bt_nxp_close(const struct device *dev)
 {
-	struct bt_nxp_data *hci = dev->data;
-	int ret = 0;
+	int err;
 
-	hci->recv = NULL;
+	err = PLATFORM_SetHciRxCallback(NULL);
+	if (err != 0) {
+		return err;
+	}
 
-	return ret;
+#if defined(CONFIG_HCI_NXP_RX_THREAD)
+	bt_nxp_rx_drain();
+#endif /* CONFIG_HCI_NXP_RX_THREAD */
+
+	return 0;
 }
 
 static DEVICE_API(bt_hci, drv) = {
@@ -827,9 +866,11 @@ static int bt_nxp_init(const struct device *dev)
 }
 
 #define HCI_DEVICE_INIT(inst)                                                                      \
-	static struct bt_nxp_data hci_data_##inst = {};                                            \
-	DEVICE_DT_INST_DEFINE(inst, bt_nxp_init, NULL, &hci_data_##inst, NULL, POST_KERNEL,        \
-			      CONFIG_BT_HCI_INIT_PRIORITY, &drv)
+	static struct bt_hci_driver_data hci_data_##inst = {};                                     \
+	static const struct bt_hci_driver_config hci_config_##inst =                               \
+		BT_DT_HCI_DRIVER_CONFIG_INST_GET(inst);                                            \
+	DEVICE_DT_INST_DEFINE(inst, bt_nxp_init, NULL, &hci_data_##inst, &hci_config_##inst,       \
+			      POST_KERNEL, CONFIG_BT_HCI_INIT_PRIORITY, &drv)
 
 /* Only one instance supported right now */
 HCI_DEVICE_INIT(0)

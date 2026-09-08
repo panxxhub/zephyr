@@ -22,9 +22,9 @@
 #include <zephyr/bluetooth/classic/sdp.h>
 #include <zephyr/bluetooth/l2cap.h>
 
-#include "host/hci_core.h"
-#include "host/conn_internal.h"
-#include "host/l2cap_internal.h"
+#include <host/hci_core.h>
+#include <host/conn_internal.h>
+#include <host/l2cap_internal.h>
 #include "avctp_internal.h"
 #include "avrcp_internal.h"
 
@@ -509,12 +509,15 @@ static void avrcp_connected(struct bt_avctp *session)
 	}
 }
 
+static void cleanup_fragmentation_context(struct bt_avrcp_ct *ct);
+
 /* The AVCTP L2CAP channel released */
 static void avrcp_disconnected(struct bt_avctp *session)
 {
 	struct bt_avrcp *avrcp = AVRCP_AVCTP(session);
 	struct bt_avrcp_ct *ct = get_avrcp_ct(avrcp);
 	struct bt_avrcp_tg *tg = get_avrcp_tg(avrcp);
+	sys_snode_t *node;
 
 	if ((avrcp_ct_cb != NULL) && (avrcp_ct_cb->disconnected != NULL)) {
 		avrcp_ct_cb->disconnected(ct);
@@ -524,13 +527,31 @@ static void avrcp_disconnected(struct bt_avctp *session)
 		avrcp_tg_cb->disconnected(tg);
 	}
 
+	/* Cancel the vendor dependent response TX machine and drop any
+	 * queued or partially sent responses. The TX state, including the
+	 * TX_ONGOING flag, lives in the buffer user data, so releasing the
+	 * buffers also resets the TX state. Without this, a disconnection
+	 * in the middle of a fragmented response leaks the buffer and
+	 * leaves the TX machine stalled on the stale list head when the
+	 * object is reused for a new connection.
+	 */
+	k_work_cancel_delayable(&tg->vd_rsp_tx_work);
+
+	avrcp_tg_lock(tg);
+	node = sys_slist_get(&tg->vd_rsp_tx_pending);
+	while (node != NULL) {
+		net_buf_unref(CONTAINER_OF(node, struct net_buf, node));
+		node = sys_slist_get(&tg->vd_rsp_tx_pending);
+	}
+	avrcp_tg_unlock(tg);
+
+	/* Drop any partially reassembled vendor dependent response */
+	cleanup_fragmentation_context(ct);
+
 	memset(&ct->ct_notify, 0, sizeof(ct->ct_notify));
 	memset(&tg->tg_notify, 0, sizeof(tg->tg_notify));
 
-	if (avrcp->acl_conn != NULL) {
-		bt_conn_unref(avrcp->acl_conn);
-		avrcp->acl_conn = NULL;
-	}
+	bt_conn_drop(&avrcp->acl_conn);
 }
 
 static struct net_buf *avrcp_create_unit_pdu(struct bt_avrcp *avrcp, uint8_t ctype_or_rsp)
@@ -734,8 +755,7 @@ static int init_fragmentation_context(struct bt_avrcp_ct *ct, uint8_t tid, uint8
 	/* Clean up any existing reassembly buffer */
 	if (ct->reassembly_buf != NULL) {
 		LOG_WRN("Interleaving fragments not allowed (tid=%u, rsp=%u)", tid, rsp);
-		net_buf_unref(ct->reassembly_buf);
-		ct->reassembly_buf = NULL;
+		net_buf_drop(&ct->reassembly_buf);
 	}
 
 	/* Allocate reassembly buffer */
@@ -790,8 +810,7 @@ static void cleanup_fragmentation_context(struct bt_avrcp_ct *ct)
 	}
 
 	if (ct->reassembly_buf != NULL) {
-		net_buf_unref(ct->reassembly_buf);
-		ct->reassembly_buf = NULL;
+		net_buf_drop(&ct->reassembly_buf);
 	}
 }
 
@@ -2975,14 +2994,6 @@ void bt_avrcp_init(void)
 		return;
 	}
 
-#if defined(CONFIG_BT_AVRCP_TG_COVER_ART)
-	err = bt_avrcp_tg_cover_art_init(&bt_avrcp_tg_cover_art_psm);
-	if (err < 0) {
-		LOG_ERR("AVRCP Cover Art initialization failed (err %d)", err);
-		return;
-	}
-#endif /* CONFIG_BT_AVRCP_TG_COVER_ART */
-
 	LOG_DBG("AVRCP Initialized successfully.");
 
 	initialized = true;
@@ -3868,6 +3879,14 @@ int bt_avrcp_tg_register_cb(const struct bt_avrcp_tg_cb *cb)
 	}
 
 	avrcp_tg_cb = cb;
+
+#if defined(CONFIG_BT_AVRCP_TG_COVER_ART)
+	err = bt_avrcp_tg_cover_art_init(&bt_avrcp_tg_cover_art_psm);
+	if (err < 0) {
+		LOG_ERR("AVRCP Cover Art initialization failed (err %d)", err);
+		goto failed;
+	}
+#endif /* CONFIG_BT_AVRCP_TG_COVER_ART */
 
 #if defined(CONFIG_BT_AVRCP_TARGET)
 	/* Register SDP record when TG callback is registered */

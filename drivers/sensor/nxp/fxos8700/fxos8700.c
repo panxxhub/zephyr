@@ -516,7 +516,7 @@ static int fxos8700_init(const struct device *dev)
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(i2c)
 	if (config->inst_on_bus == FXOS8700_BUS_I2C) {
 		if (!device_is_ready(config->bus_cfg.i2c.bus)) {
-			LOG_ERR("I2C bus device not ready");
+			LOG_ERR_DEVICE_NOT_READY(config->bus_cfg.i2c.bus);
 			return -ENODEV;
 		}
 	}
@@ -525,7 +525,7 @@ static int fxos8700_init(const struct device *dev)
 #if DT_ANY_INST_ON_BUS_STATUS_OKAY(spi)
 	if (config->inst_on_bus == FXOS8700_BUS_SPI) {
 		if (!device_is_ready(config->bus_cfg.spi.bus)) {
-			LOG_ERR("SPI bus device not ready");
+			LOG_ERR_DEVICE_NOT_READY(config->bus_cfg.spi.bus);
 			return -ENODEV;
 		}
 	}
@@ -537,7 +537,7 @@ static int fxos8700_init(const struct device *dev)
 		 */
 
 		if (!gpio_is_ready_dt(&config->reset_gpio)) {
-			LOG_ERR("GPIO device not ready");
+			LOG_ERR_DEVICE_NOT_READY(config->reset_gpio.port);
 			return -ENODEV;
 		}
 
@@ -744,14 +744,14 @@ static DEVICE_API(sensor, fxos8700_driver_api) = {
 
 #define FXOS8700_CONFIG_SPI(n)						\
 		.bus_cfg = { .spi = SPI_DT_SPEC_INST_GET(n,		\
-			SPI_OP_MODE_MASTER | SPI_WORD_SET(8)) },	\
+			SPI_OP_MODE_CONTROLLER | SPI_WORD_SET(8)) },	\
 		.ops = &fxos8700_spi_ops,				\
 		.power_mode =  DT_INST_PROP(n, power_mode),		\
 		.range = DT_INST_PROP(n, range),			\
 		.inst_on_bus = FXOS8700_BUS_SPI,			\
 
 #define FXOS8700_SPI_OPERATION (SPI_WORD_SET(8) |			\
-				SPI_OP_MODE_MASTER)			\
+				SPI_OP_MODE_CONTROLLER)			\
 
 #define FXOS8700_INIT(n)						\
 	static const struct fxos8700_config fxos8700_config_##n = {	\

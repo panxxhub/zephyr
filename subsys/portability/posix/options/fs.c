@@ -23,7 +23,7 @@ BUILD_ASSERT(PATH_MAX >= MAX_FILE_NAME, "PATH_MAX is less than MAX_FILE_NAME");
 static struct fs_dirent fdirent;
 static struct dirent pdirent;
 
-K_MEM_SLAB_DEFINE_STATIC(dir_desc_slab, sizeof(struct fs_dir_t), CONFIG_POSIX_OPEN_MAX, 4);
+K_MEM_SLAB_DEFINE_STATIC_TYPE(dir_desc_slab, struct fs_dir_t, CONFIG_POSIX_OPEN_MAX);
 
 /**
  * @brief Open a directory stream.
@@ -151,12 +151,6 @@ int stat(const char *path, struct stat *buf)
 		return -1;
 	}
 
-	rc = fs_statvfs(path, &stat_vfs);
-	if (rc < 0) {
-		errno = -rc;
-		return -1;
-	}
-
 	rc = fs_stat(path, &stat_file);
 	if (rc < 0) {
 		errno = -rc;
@@ -176,6 +170,18 @@ int stat(const char *path, struct stat *buf)
 		errno = EIO;
 		return -1;
 	}
+
+	/*
+	 * fs_statvfs() is only needed for the block-size hint below, and on some
+	 * filesystems it scans the whole volume for free space. Defer it until
+	 * after fs_stat() so a failed lookup skips the scan entirely.
+	 */
+	rc = fs_statvfs(path, &stat_vfs);
+	if (rc < 0) {
+		errno = -rc;
+		return -1;
+	}
+
 	buf->st_size = stat_file.size;
 	buf->st_blksize = stat_vfs.f_bsize;
 	/*

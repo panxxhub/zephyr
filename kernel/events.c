@@ -5,7 +5,8 @@
  */
 
 /**
- * @file event objects library
+ * @file
+ * @brief event objects library
  *
  * Event objects are used to signal one or more threads that a custom set of
  * events has occurred. Threads wait on event objects until another thread or
@@ -22,7 +23,6 @@
  */
 
 #include <zephyr/kernel.h>
-#include <zephyr/kernel_structs.h>
 
 #include <zephyr/toolchain.h>
 #include <zephyr/sys/dlist.h>
@@ -33,6 +33,7 @@
 /* private kernel APIs */
 #include <wait_q.h>
 #include <ksched.h>
+#include <scheduler.h>
 
 #define K_EVENT_WAIT_ANY      0x00   /* Wait for any events */
 #define K_EVENT_WAIT_ALL      0x01   /* Wait for all events */
@@ -112,7 +113,7 @@ static void event_post_walk_op(int status, void *data)
 	/*
 	 * Note: z_sched_wake_thread_locked() is safe
 	 * to call here because this walk_op callback
-	 * is invoked with _sched_spinlock held.
+	 * is invoked with the scheduler spinlock held.
 	 */
 	ARG_UNUSED(status);
 	struct event_walk_data *walk_data = data;
@@ -121,7 +122,7 @@ static void event_post_walk_op(int status, void *data)
 	thread = walk_data->head;
 
 	while (thread != NULL) {
-		next = thread->next_event_link;
+		next = thread->next_wake_link;
 
 		arch_thread_return_value_set(thread, 0);
 		z_sched_wake_thread_locked(thread);
@@ -156,18 +157,18 @@ static int event_walk_op(struct k_thread *thread, void *data)
 		if (thread->event_options & K_EVENT_OPTION_CLEAR) {
 			event_data->clear_events |= match;
 		}
-		z_abort_thread_timeout(thread);
+		(void)z_try_abort_thread_timeout(thread);
 
 #ifndef CONFIG_WAITQ_SCALABLE
 		/*
 		 * Note: z_sched_wake_thread_locked() is safe
 		 * to call here because this walk_op callback
-		 * is invoked with _sched_spinlock held.
+		 * is invoked with the scheduler spinlock held.
 		 */
 		arch_thread_return_value_set(thread, 0);
 		z_sched_wake_thread_locked(thread);
 #else /* !CONFIG_WAITQ_SCALABLE */
-		thread->next_event_link = event_data->head;
+		thread->next_wake_link = event_data->head;
 		event_data->head = thread;
 #endif /* !CONFIG_WAITQ_SCALABLE */
 	}
@@ -193,14 +194,13 @@ static uint32_t k_event_post_internal(struct k_event *event, uint32_t events,
 
 	/*
 	 * Posting an event has the potential to wake multiple pended threads.
-	 * It is desirable to unpend all affected threads simultaneously. When
+	 * It is desirable to wake all affected threads simultaneously. When
 	 * z_sched_waitq_walk() allows removal of nodes from the wait queue,
-	 * we unpend and ready each thread as part of the callback. Otherwise,
-	 * proceed in three steps:
+	 * we wake (unpend and ready) each thread as part of the callback.
+	 * Otherwise, proceed in two steps:
 	 *
-	 * 1. Walk the waitq and create a linked list of threads to unpend.
-	 * 2. Unpend each of the threads in the linked list
-	 * 3. Ready each of the threads in the linked list
+	 * 1. Walk the waitq and create a linked list of threads to wake.
+	 * 2. Walk the resulting linked list and wake each of the threads.
 	 */
 
 #ifdef CONFIG_WAITQ_SCALABLE
@@ -427,22 +427,5 @@ uint32_t z_vrfy_k_event_wait_all_safe(struct k_event *event, uint32_t events,
 #endif /* CONFIG_USERSPACE */
 
 #ifdef CONFIG_OBJ_CORE_EVENT
-static int init_event_obj_core_list(void)
-{
-	/* Initialize condvar object type */
-
-	z_obj_type_init(&obj_type_event, K_OBJ_TYPE_EVENT_ID,
-			offsetof(struct k_event, obj_core));
-
-	/* Initialize and link statically defined condvars */
-
-	STRUCT_SECTION_FOREACH(k_event, event) {
-		k_obj_core_init_and_link(K_OBJ_CORE(event), &obj_type_event);
-	}
-
-	return 0;
-}
-
-SYS_INIT(init_event_obj_core_list, PRE_KERNEL_1,
-	 CONFIG_KERNEL_INIT_PRIORITY_OBJECTS);
+K_OBJ_TYPE_DEFINE(obj_type_event, k_event, K_OBJ_TYPE_EVENT_ID, NULL);
 #endif /* CONFIG_OBJ_CORE_EVENT */

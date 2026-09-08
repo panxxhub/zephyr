@@ -79,7 +79,7 @@
 
 		storage_partition: partition@0 {
 			label = "storage";
-			reg = <0x0 DT_SIZE_K(500)>;
+			reg = <0x0 DT_SIZE_K(512)>;
 		};
 	};
 };
@@ -113,6 +113,7 @@
 
 &gpio2 {
 	status = "okay";
+	/delete-property/ hspadctrl-supported;
 };
 
 &gpiote20 {
@@ -135,5 +136,13 @@
 };
 
 &clock {
+	status = "okay";
+};
+
+&xo {
+	status = "okay";
+};
+
+&lfclk {
 	status = "okay";
 };

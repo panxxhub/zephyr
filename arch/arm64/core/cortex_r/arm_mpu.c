@@ -21,13 +21,6 @@
 
 LOG_MODULE_REGISTER(mpu, CONFIG_MPU_LOG_LEVEL);
 
-#define NODE_HAS_PROP_AND_OR(node_id, prop) \
-	DT_NODE_HAS_PROP(node_id, prop) ||
-
-BUILD_ASSERT((DT_FOREACH_STATUS_OKAY_NODE_VARGS(
-	      NODE_HAS_PROP_AND_OR, zephyr_memory_region_mpu) false) == false,
-	      "`zephyr,memory-region-mpu` was deprecated in favor of `zephyr,memory-attr`");
-
 #define MPU_DYNAMIC_REGION_AREAS_NUM	3
 
 #if defined(CONFIG_USERSPACE) || defined(CONFIG_ARM64_STACK_PROTECTION)
@@ -723,7 +716,7 @@ static int configure_dynamic_mpu_regions(struct k_thread *thread)
 	/*
 	 * There is no need to check if region_num is overflow the uint8_t,
 	 * because the insert_region make sure there is enough room to store a region,
-	 * otherwise the insert_region will return a negtive error number
+	 * otherwise the insert_region will return a negative error number
 	 */
 	thread->arch.region_num = (uint8_t)region_num;
 
@@ -743,7 +736,7 @@ int arch_mem_domain_max_partitions_get(void)
 	int remaining_regions = get_num_regions() - static_regions_num + 1;
 
 	/*
-	 * Check remianing regions, should more than ARM64_MPU_MAX_DYNAMIC_REGIONS
+	 * Check remaining regions, should more than ARM64_MPU_MAX_DYNAMIC_REGIONS
 	 * which equals CONFIG_MAX_DOMAIN_PARTITIONS + necessary regions (stack, guard)
 	 */
 	if (remaining_regions < ARM64_MPU_MAX_DYNAMIC_REGIONS) {

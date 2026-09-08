@@ -33,7 +33,14 @@ import sys
 # other serious issues.
 # These headers typically already have very specific tracing hooks for all relevant things
 # written by hand so are excluded.
-notracing = ["kernel.h", "zephyr/kernel.h", "errno_private.h", "zephyr/errno_private.h"]
+notracing = [
+    "kernel.h",
+    "zephyr/kernel.h",
+    "sleep.h",
+    "zephyr/sleep.h",
+    "errno_private.h",
+    "zephyr/errno_private.h",
+]
 
 types64 = ["int64_t", "uint64_t"]
 
@@ -238,7 +245,6 @@ def wrapper_defs(func_name, func_type, args, fn, userspace_only):
         wrap += f"extern {func_type} z_impl_{func_name}({decl_arglist});\n"
         wrap += "\n"
 
-    wrap += "__pinned_func\n"
     wrap += f"static inline {func_type} {func_name}({decl_arglist})\n"
     wrap += "{\n"
     if not userspace_only:

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-cmake_minimum_required(VERSION 3.17)
+cmake_minimum_required(VERSION 3.28.0)
 
 set(SORT_TYPE_NAME Lexical)
 
@@ -293,11 +293,11 @@ function(system_to_string)
   endforeach()
 
   if(IAR_LIBC)
-    set(${STRING_STRING} "${${STRING_STRING}}if (K_HEAP_MEM_POOL_SIZE>0)\n{\n")
-    set(${STRING_STRING} "${${STRING_STRING}}  define block HEAP with alignment=8 { symbol kheap__system_heap };\n")
-    set(${STRING_STRING} "${${STRING_STRING}}}\nelse\n{\n")
-    set(${STRING_STRING} "${${STRING_STRING}}  define block HEAP with alignment=8, expanding size { };\n")
-    set(${STRING_STRING} "${${STRING_STRING}}}\n")
+    if(K_HEAP_MEM_POOL_SIZE GREATER 0)
+      set(${STRING_STRING} "${${STRING_STRING}}define block HEAP with alignment=8 { symbol kheap__system_heap };\n")
+    else()
+      set(${STRING_STRING} "${${STRING_STRING}}define block HEAP with alignment=8, expanding size { };\n")
+    endif()
     set(${STRING_STRING} "${${STRING_STRING}}\"DLib heap\": place in RAM { block HEAP };\n")
 #    set(${STRING_STRING} "${${STRING_STRING}}define exported symbol HEAP$$Base=kheap__system_heap;\n")
 #    set(${STRING_STRING} "${${STRING_STRING}}define exported symbol HEAP$$Limit=END(kheap__system_heap);\n")
@@ -800,7 +800,6 @@ function(section_to_string)
     if(${length} GREATER 0)
       if(NOT "${idx}" STREQUAL "${last_index}")
         set(TEMP "${TEMP},")
-      elseif()
       endif()
     endif()
 
@@ -941,7 +940,7 @@ function(symbol_to_string)
             "${${STRING_STRING}}define image symbol ${symbol} = ${expr};\n"
             )
         else()
-          # Treatmen of "zephyr_linker_symbol(SYMBOL z_arm_platform_init EXPR "@SystemInit@")"
+          # Treatmen of "zephyr_linker_symbol(SYMBOL soc_reset_hook EXPR "@SystemInit@")"
           set_property(GLOBAL APPEND PROPERTY SYMBOL_STEERING_FILE
             "--redirect ${symbol}=${expr}\n"
             )

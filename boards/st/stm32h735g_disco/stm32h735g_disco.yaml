@@ -14,5 +14,8 @@ supported:
   - adc
   - counter
   - can
+  - crypto
+  - aes
+  - ptp_clock
   - usb_device
 vendor: st

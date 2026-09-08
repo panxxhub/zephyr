@@ -156,9 +156,9 @@ const __imx_boot_container_section container boot_header = {
 
 /* Handle CM7 core initialization based on execution mode */
 #if !defined(CONFIG_CM7_BOOT_FROM_FLASH)
-#define CM7_BOOT_ADDRESS   (CM7_FLASH_ADDR + CONFIG_CM7_FLEXSPI_OFFSET - ADJUSTED_LMA)
+#define CM7_BOOT_ADDRESS   (CM7_FLASH_ADDR - ADJUSTED_LMA)
 #else
-#define CM7_BOOT_ADDRESS   (CM7_FLASH_ADDR + CONFIG_CM7_FLEXSPI_OFFSET)
+#define CM7_BOOT_ADDRESS   CM7_FLASH_ADDR
 #endif /* defined(CONFIG_CM7_BOOT_FROM_FLASH) */
 #endif /* (defined(CONFIG_SECOND_CORE_MCUX) && defined(CONFIG_CPU_CORTEX_M33)) */
 
@@ -875,8 +875,8 @@ void soc_reset_hook(void)
 }
 #endif
 
-#if defined(CONFIG_SECOND_CORE_MCUX) && defined(CONFIG_CPU_CORTEX_M33)
-
+#if defined(CONFIG_SECOND_CORE_MCUX) && defined(CONFIG_SOC_IMXRT118X_SECOND_CORE_KICKOFF) && \
+	defined(CONFIG_CPU_CORTEX_M33)
 static int second_core_boot(void)
 {
 	/*
@@ -910,5 +910,5 @@ static int second_core_boot(void)
 	return 0;
 }
 
-SYS_INIT(second_core_boot, PRE_KERNEL_2, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT);
+SYS_INIT(second_core_boot, POST_KERNEL, CONFIG_APPLICATION_INIT_PRIORITY);
 #endif

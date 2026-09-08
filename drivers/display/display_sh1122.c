@@ -278,6 +278,11 @@ static int sh1122_write(const struct device *dev, const uint16_t x, const uint16
 		return -EINVAL;
 	}
 
+	if ((desc->width & 1) != 0U) {
+		LOG_ERR("Unsupported width");
+		return -EINVAL;
+	}
+
 	LOG_DBG("x %u, y %u, pitch %u, width %u, height %u, buf_len %u", x, y, desc->pitch,
 		desc->width, desc->height, buf_len);
 
@@ -486,7 +491,7 @@ static DEVICE_API(display, sh1122_driver_api) = {
 	static const struct sh1122_config config##node_id = {                                      \
 		.mipi_dev = DEVICE_DT_GET(DT_PARENT(node_id)),                                     \
 		.dbi_config = MIPI_DBI_CONFIG_DT(                                                  \
-			node_id, SH1122_WORD_SIZE(node_id) | SPI_OP_MODE_MASTER, 0),               \
+			node_id, SH1122_WORD_SIZE(node_id) | SPI_OP_MODE_CONTROLLER, 0),           \
 		.height = DT_PROP(node_id, height),                                                \
 		.width = DT_PROP(node_id, width),                                                  \
 		.oscillator_freq = DT_PROP(node_id, oscillator_freq),                              \

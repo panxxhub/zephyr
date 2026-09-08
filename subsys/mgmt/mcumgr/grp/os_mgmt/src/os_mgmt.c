@@ -9,7 +9,6 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/kernel.h>
 #include <zephyr/debug/object_tracing.h>
-#include <zephyr/kernel_structs.h>
 #include <zephyr/mgmt/mcumgr/mgmt/mgmt.h>
 #include <zephyr/mgmt/mcumgr/smp/smp.h>
 #include <zephyr/mgmt/mcumgr/mgmt/handlers.h>
@@ -387,12 +386,6 @@ static int os_mgmt_mpstat_read(struct smp_streamer *ctxt)
 	bool ok;
 
 	heap_elements = sys_heap_array_get(&heap);
-	ok = zcbor_tstr_put_lit(zse, "tasks") &&
-	     zcbor_map_start_encode(zse, heap_elements);
-
-	if (!ok) {
-		goto end;
-	}
 
 	while (i < heap_elements) {
 		struct sys_memory_stats heap_stats;
@@ -432,10 +425,6 @@ static int os_mgmt_mpstat_read(struct smp_streamer *ctxt)
 		}
 
 		++i;
-	}
-
-	if (ok == true) {
-		ok = zcbor_map_end_encode(zse, heap_elements);
 	}
 
 end:
@@ -576,8 +565,7 @@ os_mgmt_mcumgr_params(struct smp_streamer *ctxt)
 #define BOOTLOADER_MODE MCUBOOT_MODE_UPGRADE_ONLY
 #elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_OFFSET)
 #define BOOTLOADER_MODE MCUBOOT_MODE_SWAP_USING_OFFSET
-#elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_MOVE) || \
-defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_WITHOUT_SCRATCH)
+#elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_SWAP_USING_MOVE)
 #define BOOTLOADER_MODE MCUBOOT_MODE_SWAP_USING_MOVE
 #elif defined(CONFIG_MCUBOOT_BOOTLOADER_MODE_DIRECT_XIP)
 #define BOOTLOADER_MODE MCUBOOT_MODE_DIRECT_XIP
@@ -919,13 +907,7 @@ static int os_mgmt_info(struct smp_streamer *ctxt)
 
 	if (format_bitmask & OS_MGMT_INFO_FORMAT_HARDWARE_PLATFORM) {
 		rc = snprintf(&output[output_length], (sizeof(output) - output_length),
-#ifdef CONFIG_MCUMGR_GRP_OS_INFO_HARDWARE_INFO_SHORT_HARDWARE_PLATFORM
-			      (prior_output == true ? " %s%s%s" : "%s%s%s"), CONFIG_BOARD,
-			      (sizeof(CONFIG_BOARD_REVISION) > 1 ? "@" : ""),
-			      CONFIG_BOARD_REVISION);
-#else
 			      (prior_output == true ? " %s" : "%s"), CONFIG_BOARD_TARGET);
-#endif
 
 		if (rc < 0 || rc >= (sizeof(output) - output_length)) {
 			goto fail;

@@ -4,6 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+/**
+ * @file
+ * @brief Header file for the VIRTIO virtqueue API.
+ * @ingroup virtqueue_interface
+ */
+
 #ifndef ZEPHYR_VIRTIO_VIRTQUEUE_H_
 #define ZEPHYR_VIRTIO_VIRTQUEUE_H_
 #include <stdint.h>
@@ -177,7 +183,7 @@ struct virtq {
 	 * Stack containing indexes of free descriptors. Because virtio devices are
 	 * not required to use received descriptors in order (see 2.7.9) unless
 	 * VIRTIO_F_IN_ORDER was offered, we can't use array with descriptors as another
-	 * ring buffer, always taking next descriptor. This is an auxilary structure to
+	 * ring buffer, always taking next descriptor. This is an auxiliary structure to
 	 * easily determine next free descriptor
 	 */
 	struct k_stack free_desc_stack;

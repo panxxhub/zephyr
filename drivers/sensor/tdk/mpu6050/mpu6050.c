@@ -53,7 +53,7 @@ static inline void mpu6050_convert_temp(enum mpu6050_device_type device_type,
 
 	case DEVICE_TYPE_MPU6050:
 	default:
-		tmp_val = (tmp_val / 340) + 36000000;
+		tmp_val = (tmp_val / 340) + 36530000;
 	};
 
 	val->val1 = tmp_val / 1000000;
@@ -156,7 +156,7 @@ int mpu6050_init(const struct device *dev)
 	uint8_t id, i;
 
 	if (!device_is_ready(cfg->i2c.bus)) {
-		LOG_ERR("Bus device is not ready");
+		LOG_ERR_DEVICE_NOT_READY(cfg->i2c.bus);
 		return -ENODEV;
 	}
 

@@ -34,8 +34,8 @@ LOG_MODULE_REGISTER(soc, CONFIG_SOC_LOG_LEVEL);
 	       (uint32_t *)(SEGMENT_LMA_ADDRESS_##n), (SEGMENT_SIZE_##n))
 #endif
 #if CONFIG_USB_DC_NXP_EHCI
-#include "usb_phy.h"
-#include "usb.h"
+#include <usb_phy.h>
+#include <usb.h>
 #endif
 #include <zephyr/drivers/misc/flexram/nxp_flexram.h>
 
@@ -102,7 +102,7 @@ const __imx_boot_data_section BOOT_DATA_T boot_data = {
 	.start = CONFIG_FLASH_BASE_ADDRESS,
 	.size = (uint32_t)&_flash_used,
 #else
-	.start = CONFIG_SRAM_BASE_ADDRESS,
+	.start = DT_CHOSEN_SRAM_ADDR,
 	.size = (uint32_t)&_image_ram_size,
 #endif
 	.plugin = PLUGIN_FLAG,
@@ -137,8 +137,12 @@ __weak void clock_init(void)
 		DCDC_SetVDD1P0BuckModeTargetVoltage(DCDC, kDCDC_1P0BuckTarget1P15V);
 	}
 
-/* RT1160 does not have Forward Body Biasing on the CM7 core */
-#if defined(CONFIG_SOC_MIMXRT1176_CM4) || defined(CONFIG_SOC_MIMXRT1176_CM7)
+/*
+ * Enable Forward Body Biasing on SoCs supporting it (the RT1160 does
+ * not have FBB on the CM7 core)
+ */
+#if defined(CONFIG_SOC_MIMXRT1176_CM4) || defined(CONFIG_SOC_MIMXRT1176_CM7) || \
+	defined(CONFIG_SOC_IMXRT11XX_SINGLE_CORE)
 	/* Check if FBB need to be enabled in OverDrive(OD) mode */
 	if (((OCOTP->FUSEN[7].FUSE & 0x10U) >> 4U) != 1) {
 		PMU_EnableBodyBias(ANADIG_PMU, kPMU_FBB_CM7, true);
@@ -312,8 +316,25 @@ __weak void clock_init(void)
 	}
 
 	/* Module clock root configurations. */
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(micfil))
+	/*
+	 * MICFIL/PDM clocking on RT11xx:
+	 * - MIC root clock (kCLOCK_Root_Mic) feeds PDM_CLK_ROOT
+	 * - MIC root mux=Audio PLL OUT, div=16 gives 24.576MHz when Audio PLL=393.216MHz
+	 *
+	 * Note: This only selects/divides the root. The Audio PLL must be configured
+	 * to 393.216MHz elsewhere if you need an exact 24.576MHz root.
+	 */
+	rootCfg.mux = kCLOCK_MIC_ClockRoot_MuxAudioPllOut; /* mux=6 */
+	rootCfg.div = 16; /* div=16 */
+	CLOCK_SetRootClock(kCLOCK_Root_Mic, &rootCfg);
+
+#endif
+
 	/* Configure M7 using ARM_PLL_CLK */
-#if defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7)
+#if defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7) || \
+	defined(CONFIG_SOC_IMXRT11XX_SINGLE_CORE)
 	rootCfg.mux = kCLOCK_M7_ClockRoot_MuxArmPllOut;
 	rootCfg.div = 1;
 	CLOCK_SetRootClock(kCLOCK_Root_M7, &rootCfg);
@@ -331,7 +352,7 @@ __weak void clock_init(void)
 	CLOCK_SetRootClock(kCLOCK_Root_M4, &rootCfg);
 #endif
 
-#if CONFIG_SOC_MIMXRT1176_CM7
+#if defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_IMXRT11XX_SINGLE_CORE)
 	/* Keep root bus clock at default 240M */
 	rootCfg.mux = kCLOCK_BUS_ClockRoot_MuxSysPll3Out;
 	rootCfg.div = 2;
@@ -352,7 +373,8 @@ __weak void clock_init(void)
 	rootCfg.mux = kCLOCK_BUS_LPSR_ClockRoot_MuxSysPll3Out;
 	rootCfg.div = 4;
 	CLOCK_SetRootClock(kCLOCK_Root_Bus_Lpsr, &rootCfg);
-#elif defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7)
+#elif defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7) || \
+	defined(CONFIG_SOC_IMXRT11XX_SINGLE_CORE)
 	rootCfg.mux = kCLOCK_BUS_LPSR_ClockRoot_MuxSysPll3Out;
 	rootCfg.div = 2;
 	CLOCK_SetRootClock(kCLOCK_Root_Bus_Lpsr, &rootCfg);
@@ -376,7 +398,8 @@ __weak void clock_init(void)
 #endif
 
 	/* Configure M7_SYSTICK using OSC_RC_48M_DIV2 */
-#if defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7)
+#if defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7) || \
+	defined(CONFIG_SOC_IMXRT11XX_SINGLE_CORE)
 	rootCfg.mux = kCLOCK_M7_SYSTICK_ClockRoot_MuxOscRc48MDiv2;
 	rootCfg.div = 240;
 	CLOCK_SetRootClock(kCLOCK_Root_M7_Systick, &rootCfg);
@@ -478,11 +501,48 @@ __weak void clock_init(void)
 #endif
 
 #ifdef CONFIG_SPI_NXP_LPSPI
-	/* Configure input clock to be able to reach the datasheet specified band rate. */
-	rootCfg.mux = kCLOCK_LPSPI1_ClockRoot_MuxOscRc400M;
-	rootCfg.div = 1;
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi1), okay)
+	/* Configure input clock to be able to reach the datasheet specified baud rate. */
+	rootCfg.mux = kCLOCK_LPSPI1_ClockRoot_MuxSysPll3Pfd2;
+	rootCfg.div = 2;
 	CLOCK_SetRootClock(kCLOCK_Root_Lpspi1, &rootCfg);
-#endif
+#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi1), okay) */
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi2), okay)
+	/* Configure input clock to be able to reach the datasheet specified baud rate. */
+	rootCfg.mux = kCLOCK_LPSPI2_ClockRoot_MuxSysPll3Pfd2;
+	rootCfg.div = 2;
+	CLOCK_SetRootClock(kCLOCK_Root_Lpspi2, &rootCfg);
+#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi2), okay) */
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi3), okay)
+	/* Configure input clock to be able to reach the datasheet specified baud rate. */
+	rootCfg.mux = kCLOCK_LPSPI3_ClockRoot_MuxSysPll3Pfd2;
+	rootCfg.div = 2;
+	CLOCK_SetRootClock(kCLOCK_Root_Lpspi3, &rootCfg);
+#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi3), okay) */
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi4), okay)
+	/* Configure input clock to be able to reach the datasheet specified baud rate. */
+	rootCfg.mux = kCLOCK_LPSPI4_ClockRoot_MuxSysPll3Pfd2;
+	rootCfg.div = 2;
+	CLOCK_SetRootClock(kCLOCK_Root_Lpspi4, &rootCfg);
+#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi4), okay) */
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi5), okay)
+	/* Configure input clock to be able to reach the datasheet specified baud rate. */
+	rootCfg.mux = kCLOCK_LPSPI5_ClockRoot_MuxSysPll3Pfd2;
+	rootCfg.div = 2;
+	CLOCK_SetRootClock(kCLOCK_Root_Lpspi5, &rootCfg);
+#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi5), okay) */
+
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi6), okay)
+	/* Configure input clock to be able to reach the datasheet specified baud rate. */
+	rootCfg.mux = kCLOCK_LPSPI6_ClockRoot_MuxSysPll3Pfd2;
+	rootCfg.div = 2;
+	CLOCK_SetRootClock(kCLOCK_Root_Lpspi6, &rootCfg);
+#endif /* DT_NODE_HAS_STATUS(DT_NODELABEL(lpspi6), okay) */
+#endif /* CONFIG_SPI_NXP_LPSPI */
 
 #ifdef CONFIG_VIDEO_MCUX_MIPI_CSI2RX
 	/* MIPI CSI-2 Rx connects to CSI via Video Mux */
@@ -783,7 +843,8 @@ static int imxrt_init(void)
 	MU_SetFlags(MU_BASE, BOOT_FLAG);
 #endif
 
-#if defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7)
+#if defined(CONFIG_SOC_MIMXRT1176_CM7) || defined(CONFIG_SOC_MIMXRT1166_CM7) || \
+	defined(CONFIG_SOC_IMXRT11XX_SINGLE_CORE)
 	sys_cache_instr_enable();
 	sys_cache_data_enable();
 #endif
@@ -791,11 +852,7 @@ static int imxrt_init(void)
 	/* Initialize system clock */
 	clock_init();
 
-#if defined(CONFIG_IMX_USDHC) && defined(CONFIG_CPU_CORTEX_M7) &&                                  \
-	(DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(usdhc1)) ||                                          \
-	 DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(usdhc2)))
-	/* USDHC ERR050396 workaround */
-
+#if defined(CONFIG_CPU_CORTEX_M7)
 	/* ERR050396
 	 * Errata description:
 	 *  AXI to AHB conversion for CM7 AHBS port (port to access CM7 to TCM) is by a NIC301
@@ -805,9 +862,20 @@ static int imxrt_init(void)
 	 * Errata workaround:
 	 *  For uSDHC, don't set the bit#1 of IOMUXC_GPR28 (AXI transaction is cacheable), if write
 	 *  data to TCM aligned in 4 bytes; No such write access limitation for OCRAM or external
-	 *  RAM
+	 *  RAM.
+	 *  For ENET, clear CACHE_ENET if TCM is used as the write destination.
 	 */
+#if defined(CONFIG_IMX_USDHC) && \
+	(DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(usdhc1)) || \
+	 DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(usdhc2)))
+	/* USDHC ERR050396 workaround */
 	IOMUXC_GPR->GPR28 &= (~IOMUXC_GPR_GPR28_AWCACHE_USDHC_MASK);
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(enet)) && defined(IOMUXC_GPR_GPR28_CACHE_ENET_MASK)
+	/* ENET ERR050396 workaround */
+	IOMUXC_GPR->GPR28 &= (~IOMUXC_GPR_GPR28_CACHE_ENET_MASK);
+#endif
 #endif
 
 	return 0;

@@ -75,6 +75,18 @@ static const struct arm_mmu_flat_range mmu_zephyr_ranges[] = {
 	  .attrs = MT_NORMAL | MATTR_SHARED |
 		   MPERM_R | MPERM_W |
 		   MATTR_CACHE_OUTER_WB_WA | MATTR_CACHE_INNER_WB_WA},
+#if defined(CONFIG_AARCH32_ARMV8_A)
+	/* The ARMv8-A AArch32 implementation uses VBAR to hold the final vector
+	 * table address (_vector_start); map it here rather than requiring
+	 * each SoC to provide its own entry in mmu_regions.c.
+	 */
+	{ .name  = "vectors",
+	  .start = (uint32_t)_vector_start,
+	  .end   = (uint32_t)_vector_end,
+	  .attrs = MT_NORMAL | MATTR_SHARED |
+		   MPERM_R | MPERM_X |
+		   MATTR_CACHE_OUTER_WB_nWA | MATTR_CACHE_INNER_WB_nWA},
+#endif
 
 	/* Mark text segment cacheable, read only and executable */
 	{ .name  = "zephyr_code",
@@ -798,9 +810,15 @@ int z_arm_mmu_init(void)
 
 		while (rem_size > 0) {
 			if (rem_size >= MB(1) &&
-			    (va & 0xFFFFF) == 0 &&
 			    (pa & 0xFFFFF) == 0 &&
+			    (va & 0xFFFFF) == 0 &&
+			    pa == va &&
 			    (attrs & MATTR_MAY_MAP_L1_SECTION)) {
+				/*
+				 * Remaining area size > 1 MB & matching alignment
+				 * -> map a 1 MB section instead of individual 4 kB
+				 * pages with identical configuration.
+				 */
 				arm_mmu_l1_map_section(va, pa, perms_attrs);
 				rem_size -= MB(1);
 				va += MB(1);

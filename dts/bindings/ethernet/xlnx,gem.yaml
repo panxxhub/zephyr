@@ -16,11 +16,8 @@ properties:
   interrupts:
     required: true
 
-  syscon:
-    type: phandle
-    description: |
-      phandle to the System Level Control Registers (SLCR).
-
+  phy-handle:
+    required: true
 
   clock-frequency:
     type: int
@@ -33,49 +30,6 @@ properties:
       which it will be adjusted at run-time. Therefore, the value of this
       item must be set to the clock frequency of the PLL supplying the
       respective GEM's TX clock - by default, this is the IO PLL.
-
-  mdc-divider:
-    type: int
-    required: true
-    description: |
-      The MDC clock divider for the respective GEM. This is the divider
-      applied to the LPD_LSBUS clock in order to derive MDIO interface
-      clock driving communications with the attached PHY. Refer to the
-      ZynqMP register documentation (ug1087), network_config (GEM) Register
-      Description, bits [20:18] to determine the appropriate divider for
-      the current target's LPD LSBUS clock frequency.
-
-  phy-handle:
-    type: phandle
-    description: |
-      Phandle to the PHY device node managed by this controller instance.
-      When present, the MAC uses the standard Zephyr PHY driver API for
-      link management instead of the legacy built-in PHY layer.
-
-
-  link-speed:
-    type: int
-    required: true
-    description: |
-      Nominal link speed. If no PHY is managed by an instance of this driver,
-      the respective controller will be configured to match the link speed
-      specified here. If a PHY is managed by the driver, advertisement of
-      the link speed specified here will be requested. If the optional pro-
-      perty advertise-lower-link-speeds is set, advertisement of the link
-      speed specified here plus any valid link speed below this value will
-      be requested.
-    enum:
-      - 1
-      - 2
-      - 3
-
-  advertise-lower-link-speeds:
-    type: boolean
-    description: |
-      Indicates to a driver instance which manages an associated PHY on
-      the MDIO bus to include link speeds lower than the nominal value
-      set in the link-speed property in the advertisement when requesting
-      link speed auto-negotiation with a peer system.
 
   handle-rx-in-isr:
     type: boolean
@@ -300,11 +254,6 @@ properties:
     description: Optional feature flag - Discard non-VLAN frames. When set,
       only VLAN tagged frames will be passed to the address matching logic.
 
-  full-duplex:
-    type: boolean
-    description: |
-      Optional feature flag - Enables full duplex reception and transmission.
-
   discard-rx-frame-ahb-unavail:
     type: boolean
     description: |
@@ -323,19 +272,3 @@ properties:
       Optional feature flag - Enable AHB management descriptor data endian-
       ness swap to big endian. If this flag is not set, data will be little
       endian.
-
-  rgmii-tx-skew:
-    type: int
-    default: 0
-    deprecated: true
-    description: |
-      Deprecated. RGMII TX skew is now configured via the PHY driver's
-      motorcomm,tx-delay-sel property. Kept for backward compatibility.
-
-  rgmii-rx-skew:
-    type: int
-    default: 0
-    deprecated: true
-    description: |
-      Deprecated. RGMII RX skew is now configured via the PHY driver's
-      motorcomm,rx-delay-sel property. Kept for backward compatibility.

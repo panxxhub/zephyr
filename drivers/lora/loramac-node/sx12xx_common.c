@@ -376,7 +376,7 @@ int sx12xx_lora_recv_async(const struct device *dev, lora_recv_cb cb, void *user
 }
 
 int sx12xx_lora_config(const struct device *dev,
-		       struct lora_modem_config *config)
+		       const struct lora_modem_config *config)
 {
 	bool crc = !config->packet_crc_disable;
 	uint32_t bw_idx;
@@ -411,6 +411,10 @@ int sx12xx_lora_config(const struct device *dev,
 				  crc, false, 0, config->iq_inverted, true);
 	}
 
+	if (config->sync_word) {
+		/* Radio_s API doesn't expose SYNC word functionality */
+		LOG_WRN_ONCE("loramac-node doesn't support custom SYNC words");
+	}
 	Radio.SetPublicNetwork(config->public_network);
 
 	modem_release(&dev_data);
@@ -427,6 +431,19 @@ int sx12xx_lora_test_cw(const struct device *dev, uint32_t frequency,
 	}
 
 	Radio.SetTxContinuousWave(frequency, tx_power, duration);
+	return 0;
+}
+
+int sx12xx_lora_rssi(const struct device *dev, int16_t *rssi)
+{
+	/*
+	 * Deliberately no modem_acquire(): that claims the radio for one
+	 * exclusive operation, and reading the RSSI is a query on the receive
+	 * already in progress. The bus access itself is serialised one layer
+	 * down.
+	 */
+	*rssi = Radio.Rssi(MODEM_LORA);
+
 	return 0;
 }
 

@@ -78,18 +78,6 @@ enum gnss_system {
 	GNSS_SYSTEM_SBAS = BIT(6),
 	/** Indoor Messaging System (IMES) */
 	GNSS_SYSTEM_IMES = BIT(7),
-	/** Global Positioning System (GPS) L5 */
-	GNSS_SYSTEM_GPS_L5 = BIT(8),
-	/** Galileo L5 */
-	GNSS_SYSTEM_GALILEO_L5 = BIT(9),
-	/** Quasi-Zenith Satellite System (QZSS) L5 */
-	GNSS_SYSTEM_QZSS_L5 = BIT(10),
-	/** BeiDou Navigation Satellite System B1C */
-	GNSS_SYSTEM_BEIDOU_B1C = BIT(11),
-	/** BeiDou Navigation Satellite System B2a */
-	GNSS_SYSTEM_BEIDOU_B2A = BIT(12),
-	/** Quasi-Zenith Satellite System (QZSS) L1S Augmentation service */
-	GNSS_SYSTEM_QZSS_L1S = BIT(13),
 };
 
 /** Type storing bitmask of GNSS systems */
@@ -473,7 +461,7 @@ static inline int z_impl_gnss_get_latest_timepulse(const struct device *dev,
  * @brief Register a callback structure for GNSS data published
  *
  * @param _dev Device pointer
- * @param _callback The callback function
+ * @param _callback The callback function (see @ref gnss_data_callback_t)
  */
 #if CONFIG_GNSS
 #define GNSS_DATA_CALLBACK_DEFINE(_dev, _callback)                                              \
@@ -483,6 +471,12 @@ static inline int z_impl_gnss_get_latest_timepulse(const struct device *dev,
 		.callback = _callback,                                                          \
 	}
 
+/**
+ * @brief Register a callback structure for GNSS data published, by devicetree node.
+ *
+ * @param _node_id Devicetree node identifier of the GNSS device
+ * @param _callback The callback function (see @ref gnss_data_callback_t)
+ */
 #define GNSS_DT_DATA_CALLBACK_DEFINE(_node_id, _callback)                                          \
 	static const STRUCT_SECTION_ITERABLE(                                                      \
 		gnss_data_callback,                                                                \
@@ -499,7 +493,7 @@ static inline int z_impl_gnss_get_latest_timepulse(const struct device *dev,
  * @brief Register a callback structure for GNSS satellites published
  *
  * @param _dev Device pointer
- * @param _callback The callback function
+ * @param _callback The callback function (see @ref gnss_satellites_callback_t)
  */
 #if CONFIG_GNSS_SATELLITES
 #define GNSS_SATELLITES_CALLBACK_DEFINE(_dev, _callback)                                        \
@@ -509,6 +503,12 @@ static inline int z_impl_gnss_get_latest_timepulse(const struct device *dev,
 		.callback = _callback,                                                          \
 	}
 
+/**
+ * @brief Register a callback structure for GNSS satellites published, by devicetree node.
+ *
+ * @param _node_id Devicetree node identifier of the GNSS device
+ * @param _callback The callback function (see @ref gnss_satellites_callback_t)
+ */
 #define GNSS_DT_SATELLITES_CALLBACK_DEFINE(_node_id, _callback)                                    \
 	static const STRUCT_SECTION_ITERABLE(                                                      \
 		gnss_satellites_callback,                                                          \
