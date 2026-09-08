@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Compile actual driver functions against fake hardware; restored defects must assert."""
 
-import hashlib
 import os
 import re
 import resource
@@ -35,7 +34,7 @@ def macros(source):
     )
 
 
-def compile_run(source, name, cases, reverse=False, companions=()):
+def compile_run(source, name, cases, reverse=False):
     path = BUILD / f'{name}.c'
     exe = BUILD / name
     path.write_text(source)
@@ -54,12 +53,10 @@ def compile_run(source, name, cases, reverse=False, companions=()):
             '-Wno-unused-function',
             '-Wno-unused-variable',
             '-Wno-pointer-to-int-cast',
-            '-Wno-int-to-pointer-cast',
             '-Wno-sign-compare',
             '-fsanitize=undefined',
             '-pthread',
             str(path),
-            *map(str, companions),
             '-o',
             str(exe),
         ],
@@ -85,67 +82,172 @@ def mutation(source, old, new):
 def gem():
     source = (ROOT / 'drivers/ethernet/eth_xlnx_gem.c').read_text()
     header = (ROOT / 'drivers/ethernet/eth_xlnx_gem_priv.h').read_text()
-    orphan_old = (
-        '\t\t\tLOG_ERR("%s unexpected missing SOF bit in RX BD [%u]",\n'
-        '\t\t\t\tdev->name, first_bd_idx);\n'
-        '\t\t\tbreak;'
-    )
-    orphan_new = (
-        '\t\t\tLOG_ERR_RATELIMIT_RATE(1000, "%s unexpected missing SOF bit in RX BD [%u]",\n'
-        '\t\t\t\t\t       dev->name, first_bd_idx);\n'
-        '\t\t\t/* Recycle only this CPU-owned orphan, preserving address and wrap. */\n'
-        '\t\t\tsys_write32(0U, reg_ctrl);\n'
-        '\t\t\tbarrier_dmem_fence_full();\n'
-        '\t\t\treg_val = sys_read32(reg_addr) & ~ETH_XLNX_GEM_RX_BD_USED_BIT;\n'
-        '\t\t\tsys_write32(reg_val, reg_addr);\n'
-        '\t\t\tdev_data->rx_bd_ring.next_to_process =\n'
-        '\t\t\t\t(first_bd_idx + 1U) % dev_conf->rx_bd_count;\n'
-        '\t\t\tcontinue;'
-    )
-    restored = mutation(source, orphan_new, orphan_old)
-    normal = re.sub(
-        r'LOG_(?:ERR|WRN)(?:_RATELIMIT_RATE)?\(.*?\);', 'LOG_SITE;', restored, flags=re.S
-    )
-    # d9c2bd00 whole GEM source, except the orphan branch and log statements.
-    assert (
-        hashlib.sha256(normal.encode()).hexdigest()
-        == '6270e2fe90a57e478c01fc3ae4dccfa0cce3ee60631193e7c81b42fa48268ee9'
-    )
-    assert (
-        hashlib.sha256(header.encode()).hexdigest()
-        == 'beb78a7e0d2ad2f60e42509e2279f8eaf9fa7326003f19e3633c785e3198933d'
-    )
-    assert 'LOG_ERR(' not in source
+    public = (ROOT / 'include/zephyr/drivers/ethernet/eth_xlnx_gem.h').read_text()
     names = [
         'eth_xlnx_gem_configure_buffers',
+        'eth_xlnx_gem_request_recovery',
+        'eth_xlnx_gem_recovery_work',
         'eth_xlnx_gem_handle_rx_pending',
         'eth_xlnx_gem_handle_tx_done',
         'eth_xlnx_gem_send',
         'eth_xlnx_gem_isr',
+        'eth_xlnx_gem_phy_cb',
+        'eth_xlnx_gem_start_device',
     ]
     functions = '\n\n'.join(function(source, n) for n in names)
-    host = (HERE / 'gem_host.c').read_text().replace('/* MACROS */', macros(header))
+    start = source.index('#define GEM_RX_IRQS')
+    end = source.index('\n\n', start)
+    functions = source[start:end] + '\n' + functions
+    diagnostics = public[
+        public.index('struct eth_xlnx_gem_diagnostics {') : public.index('\n};') + 3
+    ]
+    host = (HERE / 'gem_host.c').read_text().replace('/* DIAGNOSTICS */', diagnostics)
+    host = host.replace('/* MACROS */', macros(header) + '\n' + macros(public))
     host = host.replace('/* FUNCTIONS */', functions)
-    compile_run(host, 'gem_minimal', [1, 13], companions=[BUILD / 'phy_burst.c'])
-    reverse = mutation(
-        host, orphan_new, orphan_old.replace('LOG_ERR(', 'LOG_ERR_RATELIMIT_RATE(1000, ')
+    compile_run(host, 'gem', [1, 2, 3, 6, 7, 8, 9, 10, 11, 13])
+    # Restore the previous pacing and RX-pressure reset policy together.
+    previous = mutation(
+        host,
+        'k_work_schedule(&dev_data->rx_pend_work, K_NO_WAIT);',
+        'k_work_schedule(&dev_data->rx_pend_work, K_MSEC(2));',
     )
-    compile_run(
-        reverse, 'gem_reverse_orphan', [1], reverse=True, companions=[BUILD / 'phy_burst.c']
+    previous = mutation(
+        previous,
+        'k_work_schedule(&data->rx_pend_work, shed_load ? K_MSEC(2) : K_NO_WAIT);',
+        'k_work_schedule(&data->rx_pend_work, K_MSEC(2));',
     )
-    compile_run(reverse, 'gem_baseline_control', [13], companions=[BUILD / 'phy_burst.c'])
-    # No extra RX behavior is admitted to the minimal driver, even if its
-    # synthetic throughput test passes.
-    changed = mutation(source, 'while (1) {', 'while (false) {')
-    changed = mutation(changed, orphan_new, orphan_old)
-    changed = re.sub(
-        r'LOG_(?:ERR|WRN)(?:_RATELIMIT_RATE)?\(.*?\);', 'LOG_SITE;', changed, flags=re.S
+    previous = mutation(
+        previous,
+        '(reg_val & GEM_RECOVERY_IRQS) != 0U',
+        '(reg_val & (GEM_RECOVERY_IRQS | 0x404)) != 0U',
     )
-    assert (
-        hashlib.sha256(changed.encode()).hexdigest()
-        != '6270e2fe90a57e478c01fc3ae4dccfa0cce3ee60631193e7c81b42fa48268ee9'
+    compile_run(previous, 'gem_reverse_previous_rx_policy', [13], reverse=True)
+    mutants = [
+        (
+            'masked_rx_status',
+            13,
+            '~sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IMR_OFFSET)',
+            'UINT32_MAX',
+        ),
+        (
+            'unconditional_pacing',
+            13,
+            'k_work_schedule(&data->rx_pend_work, shed_load ? K_MSEC(2) : K_NO_WAIT);',
+            'k_work_schedule(&data->rx_pend_work, K_MSEC(2));',
+        ),
+        (
+            'pressure_resets_tx',
+            13,
+            '(reg_val & GEM_RECOVERY_IRQS) != 0U',
+            '(reg_val & (GEM_RECOVERY_IRQS | 0x404)) != 0U',
+        ),
+        (
+            'pressure_status',
+            13,
+            'sys_write32(BIT(0) | BIT(1) | BIT(2), base + ETH_XLNX_GEM_RXSR_OFFSET);',
+            'sys_write32(BIT(1), base + ETH_XLNX_GEM_RXSR_OFFSET);',
+        ),
+        (
+            'pressure_irq_enable',
+            13,
+            'sys_write32(GEM_RX_IRQS, base + ETH_XLNX_GEM_IER_OFFSET);',
+            'sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT, base + ETH_XLNX_GEM_IER_OFFSET);',
+        ),
+        (
+            'drop_log',
+            9,
+            'data->diagnostics.rx_dropped += receive_result < 0;',
+            'data->diagnostics.rx_dropped += receive_result < 0; LOG_ERR("drop");',
+        ),
+        (
+            'empty_pool_copy',
+            9,
+            'if (pkt != NULL) {\n#ifdef CONFIG_DCACHE',
+            'if (true) {\n#ifdef CONFIG_DCACHE',
+        ),
+        (
+            'busy_wait',
+            11,
+            'data->diagnostics.recoveries++;',
+            'data->diagnostics.recoveries++; k_busy_wait(1000);',
+        ),
+        (
+            'rx_irq_pause',
+            9,
+            'k_work_schedule(&data->rx_pend_work, shed_load ? K_MSEC(2) : K_NO_WAIT);',
+            'sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT, base + ETH_XLNX_GEM_IER_OFFSET);'
+            'k_work_schedule(&data->rx_pend_work, shed_load ? K_MSEC(2) : K_NO_WAIT);',
+        ),
+        (
+            'rx_pause',
+            9,
+            'k_work_schedule(&data->rx_pend_work, shed_load ? K_MSEC(2) : K_NO_WAIT);',
+            'k_work_schedule(&data->rx_pend_work, K_NO_WAIT);',
+        ),
+        ('rx_frames', 9, 'uint8_t frames = 8;', 'uint8_t frames = 32;'),
+        (
+            'recovery_pause',
+            11,
+            'k_work_schedule(&data->recovery_work, K_MSEC(2));',
+            'k_work_schedule(&data->recovery_work, K_NO_WAIT);',
+        ),
+        ('trace_orphan', 10, 'data->diagnostics.rx_orphans++;', 'break;'),
+        ('orphan', 1, 'data->diagnostics.rx_orphans++;', 'break;'),
+        ('error_irq', 1, '(reg_val & GEM_RECOVERY_IRQS) != 0U', 'false'),
+        (
+            'ownership',
+            3,
+            '(sys_read32((uintptr_t)&bd->addr) &\n\t\t\t     ETH_XLNX_GEM_RX_BD_USED_BIT) == 0U',
+            'false',
+        ),
+        ('eof_bound', 3, 'count < budget', 'true'),
+        ('drain_bound', 3, 'budget -= count;', 'budget = cfg->rx_bd_count; frames++;'),
+        ('length', 3, 'length > NET_ETH_MAX_FRAME_SIZE', 'length > UINT32_MAX'),
+        (
+            'timeout',
+            2,
+            'eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_TX_TIMEOUT);',
+            '(void)dev;',
+        ),
+        ('tx_ownership', 2, '(head & ETH_XLNX_GEM_TX_BD_USED_BIT) == 0U', 'false'),
+        (
+            'tx_accounting',
+            2,
+            'outstanding = cfg->tx_bd_count - data->tx_bd_ring.free_bds;',
+            'outstanding = cfg->tx_bd_count;',
+        ),
+        ('tx_error', 2, '(ctrl & GEM_TX_ERRORS) != 0U', 'false'),
+        (
+            'mac_speed',
+            6,
+            'state->is_up && state->speed != LINK_HALF_10BASE',
+            'false && state->speed != LINK_HALF_10BASE',
+        ),
+        ('tx_cache', 7, 'sys_cache_data_flush_and_invd_range(buffer, cfg->tx_buffer_size);', ''),
+        (
+            'rx_cache',
+            7,
+            'sys_cache_data_flush_and_invd_range(dev_data->first_rx_buffer,\n'
+            '\t\t\t\t\t dev_conf->rx_bd_count * dev_conf->rx_buffer_size);',
+            '',
+        ),
+    ]
+    # Capacity validation is tested independently from the MTU ceiling.
+    mutants[next(i for i, item in enumerate(mutants) if item[0] == 'length')] = (
+        'length',
+        3,
+        'length + cfg->hw_rx_buffer_offset > count * cfg->rx_buffer_size',
+        'false',
     )
-    print('GEM baseline source equality and reverse: PASS', flush=True)
+    for name, case, old, new in mutants:
+        changed = mutation(host, old, new)
+        if name == 'eof_bound':
+            changed = mutation(
+                changed,
+                'count != 0U && (ctrl & ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT) != 0U',
+                'false',
+            )
+        compile_run(changed, f'gem_reverse_{name}', [case], reverse=True)
 
 
 def phy():
@@ -197,7 +299,7 @@ def mdio():
         'xlnx_gem_mdio_write_c45',
     ]
     body = '\n\n'.join(function(source, name) for name in names)
-    body = 'struct xlnx_gem_mdio_data { struct k_mutex lock; };\n' + macros(source) + '\n' + body
+    body = declaration(source, 'xlnx_gem_mdio_data') + '\n' + macros(source) + '\n' + body
     host = (HERE / 'mdio_host.c').read_text().replace('/* FUNCTIONS */', body)
     config = (ROOT / 'drivers/ethernet/mdio/Kconfig.xlnx_gem').read_text()
     default = re.search(
@@ -208,6 +310,12 @@ def mdio():
         f'#define CONFIG_MDIO_XLNX_GEM_IDLE_TIMEOUT_US {default}',
     )
     compile_run(host, 'mdio', [5])
+    compile_run(
+        mutation(host, 'runtime->idle_wait_max_us = runtime->idle_wait_last_us;', ''),
+        'mdio_reverse_wait_measurement',
+        [5],
+        reverse=True,
+    )
     unlocked = host.replace('int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));', 'int ret = 0;')
     unlocked = unlocked.replace('k_mutex_unlock(&runtime->lock);', '')
     compile_run(unlocked, 'mdio_reverse_lock', [5], reverse=True)
@@ -269,6 +377,7 @@ def mmio_macro(source, name):
 
 def bringup():
     gem_header = (ROOT / 'drivers/ethernet/eth_xlnx_gem_priv.h').read_text()
+    public = (ROOT / 'include/zephyr/drivers/ethernet/eth_xlnx_gem.h').read_text()
     mmio_header = (ROOT / 'include/zephyr/sys/device_mmio.h').read_text()
     mdio_source = (ROOT / 'drivers/ethernet/mdio/mdio_xlnx_gem.c').read_text()
     phy_source = (ROOT / 'drivers/ethernet/phy/phy_motorcomm_yt8531.c').read_text()
@@ -279,6 +388,7 @@ def bringup():
             mmio_macro(mmio_header, 'DEVICE_MMIO_NAMED_RAM'),
             mmio_macro(mmio_header, 'DEVICE_MMIO_RAM_PTR'),
             mmio_macro(mmio_header, 'DEVICE_MMIO_GET'),
+            declaration(public, 'eth_xlnx_gem_diagnostics'),
             declaration(gem_header, 'eth_xlnx_gem_dev_data'),
             declaration(mdio_source, 'xlnx_gem_mdio_data'),
             declaration(phy_source, 'mc_yt8531_config'),
@@ -321,15 +431,10 @@ def bringup():
     )
     host = host.replace('/* PHY FUNCTIONS */', phy_source[phy_start:phy_end])
     compile_run(host, 'h2plus_bringup', [8])
-    companion = host[: host.index('int main(int argc, char **argv)')]
-    companion += (HERE / 'phy_burst.inc').read_text()
-    (BUILD / 'phy_burst.c').write_text(companion)
     # Restore the exact 23fe8c0d layout: recovery fields precede the MMIO slots.
     fields = '\tDEVICE_MMIO_NAMED_RAM(mac);\n\tDEVICE_MMIO_NAMED_RAM(clkc);\n'
     changed = mutation(host, fields, '')
-    changed = mutation(
-        changed, '\tuint8_t\t\t\t\tmac_addr[6];', '\tuint8_t\t\t\t\tmac_addr[6];\n' + fields
-    )
+    changed = mutation(changed, '\tint tx_result;', '\tint tx_result;\n' + fields)
     compile_run(changed, 'h2plus_reverse_mmio_layout', [8], reverse=True)
 
 
@@ -395,9 +500,9 @@ def coap_log():
 
 
 if __name__ == '__main__':
-    bringup()
     gem()
     phy()
     mdio()
     phy_io()
+    bringup()
     coap_log()

@@ -37,6 +37,7 @@ static _Thread_local uint32_t locked, ticks, sleeps, generation, address_generat
 static _Thread_local uint16_t expected;
 static uint32_t command;
 static bool stuck;
+static uint32_t wake_delay_us;
 static int k_mutex_lock(struct k_mutex *lock, int timeout)
 {
 	assert(timeout == 10);
@@ -56,13 +57,17 @@ static int64_t k_uptime_ticks(void)
 {
 	return ticks;
 }
+static uint64_t k_ticks_to_us_floor64(int64_t value)
+{
+	return value;
+}
 static int64_t k_us_to_ticks_ceil64(int us)
 {
 	return us;
 }
 static void k_usleep(int us)
 {
-	ticks += us;
+	ticks += us + wake_delay_us;
 	sleeps++;
 	sched_yield();
 }
@@ -91,7 +96,7 @@ static void sys_write32(uint32_t value, uintptr_t addr)
 	sched_yield();
 }
 /* FUNCTIONS */
-static struct xlnx_gem_mdio_data runtime = {{PTHREAD_MUTEX_INITIALIZER}};
+static struct xlnx_gem_mdio_data runtime = {.lock = {PTHREAD_MUTEX_INITIALIZER}};
 static struct device device = {"fake MDIO", &runtime, NULL};
 static void *client(void *arg)
 {
@@ -121,7 +126,19 @@ int main(int argc, char **argv)
 
 	assert(xlnx_gem_mdio_read(&device, 1, 1, &value) == -ETIMEDOUT);
 	assert(ticks <= 1000 && sleeps > 0 && locked == 0);
+	assert(runtime.idle_wait_last_us == 1000 && runtime.idle_wait_max_us == 1000);
+	assert(runtime.idle_timeouts == 1 && runtime.idle_waits == 2401);
 	stuck = false;
 	assert(xlnx_gem_mdio_read(&device, 1, 1, &value) == 0 && value == 1);
+	assert(runtime.idle_wait_last_us == 0 && runtime.idle_wait_max_us == 1000);
+	assert(runtime.idle_timeouts == 1 && runtime.idle_waits == 2403);
+	/* A nominal 1 ms deadline cannot bound descheduling. Record actual
+	 * elapsed time if a sleeping poll is not dispatched for 30 seconds.
+	 */
+	stuck = true;
+	wake_delay_us = 30000000;
+	assert(xlnx_gem_mdio_read(&device, 1, 1, &value) == -ETIMEDOUT);
+	assert(runtime.idle_wait_last_us == 30000050 && runtime.idle_wait_max_us == 30000050);
+	assert(runtime.idle_timeouts == 2 && runtime.idle_waits == 2404);
 	return 0;
 }

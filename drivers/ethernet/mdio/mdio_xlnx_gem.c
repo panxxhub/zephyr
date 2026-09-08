@@ -84,6 +84,11 @@ enum eth_xlnx_mdc_clock_divider {
 
 struct xlnx_gem_mdio_data {
 	struct k_mutex lock;
+	/* Protected by lock; elapsed times include descheduling during a poll. */
+	uint64_t idle_wait_last_us;
+	uint64_t idle_wait_max_us;
+	uint32_t idle_waits;
+	uint32_t idle_timeouts;
 };
 
 static inline bool xlnx_gem_mdio_is_idle(mm_reg_t reg_base)
@@ -92,21 +97,31 @@ static inline bool xlnx_gem_mdio_is_idle(mm_reg_t reg_base)
 		ETH_XLNX_GEM_NWSR_MDIO_IDLE_BIT) != 0;
 }
 
-static bool xlnx_gem_mdio_poll_idle(mm_reg_t reg_base)
+static bool xlnx_gem_mdio_poll_idle(mm_reg_t reg_base, struct xlnx_gem_mdio_data *runtime)
 {
 	/* 64 MDC cycles at cpu_1x / 224 are about 108 us at 133 MHz.
 	 * Allow 1 ms by default, sleeping between polls so a stuck bus yields.
 	 */
-	int64_t deadline = k_uptime_ticks() +
-		k_us_to_ticks_ceil64(CONFIG_MDIO_XLNX_GEM_IDLE_TIMEOUT_US);
+	int64_t start = k_uptime_ticks();
+	int64_t deadline = start + k_us_to_ticks_ceil64(CONFIG_MDIO_XLNX_GEM_IDLE_TIMEOUT_US);
+	bool idle;
 
 	do {
 		if (xlnx_gem_mdio_is_idle(reg_base)) {
-			return true;
+			idle = true;
+			goto record;
 		}
 		k_usleep(50);
 	} while (k_uptime_ticks() < deadline);
-	return xlnx_gem_mdio_is_idle(reg_base);
+	idle = xlnx_gem_mdio_is_idle(reg_base);
+record:
+	runtime->idle_wait_last_us = k_ticks_to_us_floor64(k_uptime_ticks() - start);
+	if (runtime->idle_wait_last_us > runtime->idle_wait_max_us) {
+		runtime->idle_wait_max_us = runtime->idle_wait_last_us;
+	}
+	runtime->idle_waits++;
+	runtime->idle_timeouts += !idle;
+	return idle;
 }
 
 /**
@@ -141,7 +156,7 @@ static int xlnx_gem_mdio_transfer(const struct device *dev, uint8_t prtad, uint8
 
 	mm_reg_t reg_base = DEVICE_MMIO_GET(mac_dev);
 
-	if (!xlnx_gem_mdio_poll_idle(reg_base)) {
+	if (!xlnx_gem_mdio_poll_idle(reg_base, dev->data)) {
 		LOG_ERR_RATELIMIT_RATE(
 			1000, "%s: MDIO bus idle timeout pre-op (op 0x%1X, PHY %hhu, reg 0x%02x)",
 			dev->name, (uint32_t)op, prtad, regad);
@@ -161,7 +176,7 @@ static int xlnx_gem_mdio_transfer(const struct device *dev, uint8_t prtad, uint8
 
 	sys_write32(reg_val, reg_base + ETH_XLNX_GEM_PHY_MAINTENANCE_OFFSET);
 
-	if (!xlnx_gem_mdio_poll_idle(reg_base)) {
+	if (!xlnx_gem_mdio_poll_idle(reg_base, dev->data)) {
 		LOG_ERR_RATELIMIT_RATE(
 			1000, "%s: MDIO bus idle timeout post-op (op 0x%1X, PHY %hhu, reg 0x%02x)",
 			dev->name, (uint32_t)op, prtad, regad);

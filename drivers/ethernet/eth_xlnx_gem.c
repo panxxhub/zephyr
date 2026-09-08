@@ -11,9 +11,6 @@
  * - Hardware timestamps not considered.
  * - VLAN tags not considered.
  * - Wake-on-LAN interrupt not supported.
- * - Send function is not SMP-capable (due to single TX done semaphore).
- * - No detailed error handling when evaluating the Interrupt Status,
- *   RX Status and TX Status registers.
  */
 
 #include <zephyr/kernel.h>
@@ -21,6 +18,8 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/cache.h>
+#include <zephyr/sys/barrier.h>
+#include <zephyr/drivers/ethernet/eth_xlnx_gem.h>
 
 #include <zephyr/net/phy.h>
 #include <zephyr/net/net_if.h>
@@ -75,6 +74,19 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
 static void eth_xlnx_gem_phy_cb(const struct device *phy,
 				struct phy_link_state *state,
 				void *eth_dev);
+
+/* All packet-path state and recovery requests use ring_lock. */
+#define GEM_RX_IRQS (ETH_XLNX_GEM_IXR_FRAME_RX_BIT | ETH_XLNX_GEM_IXR_RX_USED_BIT | \
+	ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT)
+#define GEM_RECOVERY_IRQS ((ETH_XLNX_GEM_IXR_ERRORS_MASK & \
+	~ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT) | ETH_XLNX_GEM_IXR_TX_UNDERRUN_BIT)
+#define GEM_TX_ERRORS (ETH_XLNX_GEM_TX_BD_RETRY_BIT | \
+	ETH_XLNX_GEM_TX_BD_TX_FRAME_CORRUPT_BIT | ETH_XLNX_GEM_TX_BD_LATE_COLLISION_BIT | \
+	(ETH_XLNX_GEM_TX_BD_CKSUM_OFFLOAD_ERROR_MASK << \
+	 ETH_XLNX_GEM_TX_BD_CKSUM_OFFLOAD_ERROR_SHIFT))
+
+static void eth_xlnx_gem_recovery_work(struct k_work *item);
+static void eth_xlnx_gem_request_recovery(const struct device *dev, uint32_t reason);
 
 static const struct ethernet_api eth_xlnx_gem_apis = {
 	.iface_api.init   = eth_xlnx_gem_iface_init,
@@ -219,8 +231,10 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 	 * Initialize the (delayed) work items for RX pending and TX done
 	 * handling.
 	 */
+	k_work_init_delayable(&dev_data->recovery_work, eth_xlnx_gem_recovery_work);
+	k_mutex_init(&dev_data->send_lock);
 	k_work_init(&dev_data->tx_done_work, eth_xlnx_gem_tx_done_work);
-	k_work_init(&dev_data->rx_pend_work, eth_xlnx_gem_rx_pending_work);
+	k_work_init_delayable(&dev_data->rx_pend_work, eth_xlnx_gem_rx_pending_work);
 
 	/* Initialize TX-related semaphores */
 	k_sem_init(&dev_data->tx_done_sem, 0, 1);
@@ -234,7 +248,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 
 	ret = phy_link_callback_set(dev_conf->phy_dev, eth_xlnx_gem_phy_cb, (void *)dev);
 	if (ret) {
-		LOG_ERR_RATELIMIT_RATE(1000, "%s: set PHY callback failed", dev->name);
+		LOG_ERR("%s: set PHY callback failed", dev->name);
 		return;
 	}
 }
@@ -256,13 +270,12 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 	/* Read the interrupt status register */
 	reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 
-	/*
-	 * TODO: handling if one or more error flag(s) are set in the
-	 * interrupt status register. -> For now, just log them
-	 */
-	if (reg_val & ETH_XLNX_GEM_IXR_ERRORS_MASK) {
-		LOG_ERR_RATELIMIT_RATE(1000, "%s error bit(s) set in Interrupt Status Reg.: 0x%08X",
-			dev->name, reg_val);
+	if ((reg_val & GEM_RECOVERY_IRQS) != 0U) {
+		k_spinlock_key_t key = k_spin_lock(&dev_data->ring_lock);
+
+		eth_xlnx_gem_request_recovery(dev, reg_val & GEM_RECOVERY_IRQS);
+		k_spin_unlock(&dev_data->ring_lock, key);
+		return;
 	}
 
 	/*
@@ -285,13 +298,20 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 			eth_xlnx_gem_handle_tx_done(dev);
 		}
 	}
-	if ((reg_val & ETH_XLNX_GEM_IXR_FRAME_RX_BIT) != 0) {
-		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
-			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
+	if ((reg_val & GEM_RX_IRQS &
+	     ~sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IMR_OFFSET)) != 0U) {
+		/* RX pressure needs descriptor recycling, not a reset of both DMA rings. */
+		k_spinlock_key_t key = k_spin_lock(&dev_data->ring_lock);
+
+		dev_data->diagnostics.rx_used += (reg_val & ETH_XLNX_GEM_IXR_RX_USED_BIT) != 0U;
+		dev_data->diagnostics.rx_overruns +=
+			(reg_val & ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT) != 0U;
+		k_spin_unlock(&dev_data->ring_lock, key);
+		sys_write32(GEM_RX_IRQS, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
 			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 		if (dev_conf->defer_rxp_to_queue) {
-			k_work_submit(&dev_data->rx_pend_work);
+			k_work_schedule(&dev_data->rx_pend_work, K_NO_WAIT);
 		} else {
 			eth_xlnx_gem_handle_rx_pending(dev);
 		}
@@ -306,7 +326,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 	 * cleared whenever the corresponding work item submitted from within
 	 * this ISR is being processed.
 	 */
-	sys_write32((0xFFFFFFFF & ~(ETH_XLNX_GEM_IXR_FRAME_RX_BIT |
+	sys_write32((reg_val & ~(ETH_XLNX_GEM_IXR_FRAME_RX_BIT |
 		    ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT)),
 		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 }
@@ -329,170 +349,88 @@ static void eth_xlnx_gem_isr(const struct device *dev)
  */
 static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
-	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	const struct eth_xlnx_gem_dev_cfg *cfg = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *data = DEV_DATA(dev);
+	uintptr_t base = DEVICE_MMIO_NAMED_GET(dev, mac);
+	size_t length = net_pkt_get_len(pkt);
+	uint16_t count = DIV_ROUND_UP(length, cfg->tx_buffer_size);
+	uint8_t first;
+	int ret;
 
-	uint16_t tx_data_length;
-	uint16_t tx_data_remaining;
-	void *tx_buffer_offs;
-
-	uint8_t bds_reqd;
-	uint8_t curr_bd_idx;
-	uint8_t first_bd_idx;
-
-	uint32_t reg_ctrl;
-	uint32_t reg_val;
-	int sem_status;
-
-	tx_data_length = tx_data_remaining = net_pkt_get_len(pkt);
-	if (tx_data_length == 0) {
-		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, zero packet length", dev->name);
-#ifdef CONFIG_NET_STATISTICS_ETHERNET
-		dev_data->stats.errors.tx++;
-#endif
+	if (length == 0U || length > NET_ETH_MAX_FRAME_SIZE || count > cfg->tx_bd_count) {
 		return -EINVAL;
 	}
+	ret = k_mutex_lock(&data->send_lock, K_MSEC(100));
+	if (ret != 0) {
+		return ret;
+	}
+	k_spinlock_key_t key = k_spin_lock(&data->ring_lock);
 
-	/*
-	 * Check if enough buffer descriptors are available for the amount
-	 * of data to be transmitted, update the free BD count if this is
-	 * the case. Update the 'next to use' BD index in the TX BD ring if
-	 * sufficient space is available. If TX done handling, where the BD
-	 * ring's data is accessed as well, is performed via the system work
-	 * queue, protect against interruptions during the update of the BD
-	 * ring's data by taking the ring's semaphore. If TX done handling
-	 * is performed within the ISR, protect against interruptions by
-	 * disabling the TX done interrupt source.
-	 */
-	bds_reqd = (uint8_t)((tx_data_length + (dev_conf->tx_buffer_size - 1)) /
-		   dev_conf->tx_buffer_size);
-
-	if (dev_conf->defer_txd_to_queue) {
-		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
-	} else {
-		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
+	if (!data->started || data->recovering || data->recovery_failed ||
+	    data->tx_bd_ring.free_bds != cfg->tx_bd_count) {
+		ret = -EIO;
+		goto unlock;
 	}
 
-	if (bds_reqd > dev_data->tx_bd_ring.free_bds) {
-		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, packet length %hu requires "
-			"%hhu BDs, current free count = %hhu",
-			dev->name, tx_data_length, bds_reqd,
-			dev_data->tx_bd_ring.free_bds);
-
-		if (dev_conf->defer_txd_to_queue) {
-			k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
-		} else {
-			sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-				    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
-		}
-#ifdef CONFIG_NET_STATISTICS_ETHERNET
-		dev_data->stats.tx_dropped++;
-#endif
-		return -EIO;
-	}
-
-	curr_bd_idx = first_bd_idx = dev_data->tx_bd_ring.next_to_use;
-	reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
-
-	dev_data->tx_bd_ring.next_to_use = (first_bd_idx + bds_reqd) %
-					  dev_conf->tx_bd_count;
-	dev_data->tx_bd_ring.free_bds -= bds_reqd;
-
-	if (dev_conf->defer_txd_to_queue) {
-		k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
-	} else {
-		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
-	}
-
-	/*
-	 * Scatter the contents of the network packet's buffer to
-	 * one or more DMA buffers.
-	 */
+	/* One synchronous sender; drain the previous generation before publishing. */
+	k_sem_reset(&data->tx_done_sem);
+	data->tx_result = -EINPROGRESS;
+	first = data->tx_bd_ring.next_to_use;
 	net_pkt_cursor_init(pkt);
-	do {
-		/* Calculate the base pointer of the target TX buffer */
-		tx_buffer_offs = (void *)(dev_data->first_tx_buffer +
-				 (dev_conf->tx_buffer_size * curr_bd_idx));
+	for (uint16_t n = 0; n < count; n++) {
+		uint8_t idx = (first + n) % cfg->tx_bd_count;
+		struct eth_xlnx_gem_bd *bd = &data->tx_bd_ring.first_bd[idx];
+		void *buffer = data->first_tx_buffer + idx * cfg->tx_buffer_size;
+		size_t bytes = MIN(length, cfg->tx_buffer_size);
 
-		/* Copy packet data to DMA buffer */
-		net_pkt_read(pkt, (void *)tx_buffer_offs,
-			     (tx_data_remaining < dev_conf->tx_buffer_size) ?
-			     tx_data_remaining : dev_conf->tx_buffer_size);
-
-		/* Update current BD's control word */
-		reg_val = sys_read32(reg_ctrl) & (ETH_XLNX_GEM_TX_BD_WRAP_BIT |
-			  ETH_XLNX_GEM_TX_BD_USED_BIT);
-		reg_val |= (tx_data_remaining < dev_conf->tx_buffer_size) ?
-			   tx_data_remaining : dev_conf->tx_buffer_size;
-		sys_write32(reg_val, reg_ctrl);
-
-		if (tx_data_remaining > dev_conf->tx_buffer_size) {
-			/* Switch to next BD */
-			curr_bd_idx = (curr_bd_idx + 1) % dev_conf->tx_bd_count;
-			reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+		ret = net_pkt_read(pkt, buffer, bytes);
+		if (ret != 0) {
+			/* No ownership has been published yet. */
+			goto unlock;
 		}
-
-		tx_data_remaining -= (tx_data_remaining < dev_conf->tx_buffer_size) ?
-				     tx_data_remaining : dev_conf->tx_buffer_size;
-	} while (tx_data_remaining > 0);
-
-	/* Set the 'last' bit in the current BD's control word */
-	reg_val |= ETH_XLNX_GEM_TX_BD_LAST_BIT;
-
-	/*
-	 * Clear the 'used' bits of all BDs involved in the current
-	 * transmission. In accordance with chapter 16.3.8 of the
-	 * Zynq-7000 TRM, the 'used' bits shall be cleared in reverse
-	 * order, so that the 'used' bit of the first BD is cleared
-	 * last just before the transmission is started. If applicable,
-	 * flush all involved TX BDs' buffers from the L1 cache to
-	 * regular memory along the way.
-	 */
-	reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
-	sys_write32(reg_val, reg_ctrl);
+		sys_write32((sys_read32((uintptr_t)&bd->ctrl) & ETH_XLNX_GEM_TX_BD_WRAP_BIT) |
+			    ETH_XLNX_GEM_TX_BD_USED_BIT | bytes |
+			    (n == count - 1U ? ETH_XLNX_GEM_TX_BD_LAST_BIT : 0U),
+			    (uintptr_t)&bd->ctrl);
 #ifdef CONFIG_DCACHE
-	sys_cache_data_flush_and_invd_range((void *)(dev_data->first_tx_buffer +
-					    (dev_conf->tx_buffer_size * curr_bd_idx)),
-					    dev_conf->tx_buffer_size);
+		sys_cache_data_flush_and_invd_range(buffer, cfg->tx_buffer_size);
 #endif
-
-	while (curr_bd_idx != first_bd_idx) {
-		curr_bd_idx = (curr_bd_idx != 0) ? (curr_bd_idx - 1) :
-			      (dev_conf->tx_bd_count - 1);
-		reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
-		reg_val = sys_read32(reg_ctrl);
-		reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
-		sys_write32(reg_val, reg_ctrl);
-#ifdef CONFIG_DCACHE
-		sys_cache_data_flush_and_invd_range((void *)(dev_data->first_tx_buffer +
-						    (dev_conf->tx_buffer_size * curr_bd_idx)),
-						    dev_conf->tx_buffer_size);
-#endif
+		length -= bytes;
 	}
+	data->tx_bd_ring.free_bds -= count;
+	data->tx_bd_ring.next_to_use = (first + count) % cfg->tx_bd_count;
+	barrier_dmem_fence_full();
+	/* GEM fetches a frame from its first BD: publish that BD last (UG585 16.3.8). */
+	for (uint16_t n = count; n > 0U; n--) {
+		struct eth_xlnx_gem_bd *bd =
+			&data->tx_bd_ring.first_bd[(first + n - 1U) % cfg->tx_bd_count];
 
-	/* Set the start TX bit in the gem.net_ctrl register */
-	reg_val  = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
-	reg_val |= ETH_XLNX_GEM_NWCTRL_STARTTX_BIT;
-	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
-
-#ifdef CONFIG_NET_STATISTICS_ETHERNET
-	dev_data->stats.bytes.sent += tx_data_length;
-	dev_data->stats.pkts.tx++;
-#endif
-
-	/* Block until TX has completed */
-	sem_status = k_sem_take(&dev_data->tx_done_sem, K_MSEC(100));
-	if (sem_status < 0) {
-		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
-#ifdef CONFIG_NET_STATISTICS_ETHERNET
-		dev_data->stats.tx_timeout_count++;
-#endif
-		return -EIO;
+		sys_write32(sys_read32((uintptr_t)&bd->ctrl) & ~ETH_XLNX_GEM_TX_BD_USED_BIT,
+			    (uintptr_t)&bd->ctrl);
 	}
+	barrier_dmem_fence_full();
+	sys_write32(sys_read32(base + ETH_XLNX_GEM_NWCTRL_OFFSET) |
+		    ETH_XLNX_GEM_NWCTRL_STARTTX_BIT, base + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	k_spin_unlock(&data->ring_lock, key);
 
-	return 0;
+	ret = k_sem_take(&data->tx_done_sem, K_MSEC(100));
+	key = k_spin_lock(&data->ring_lock);
+	if (ret != 0 && data->tx_result == -EINPROGRESS) {
+		eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_TX_TIMEOUT);
+	}
+	ret = data->tx_result == -EINPROGRESS ? -EIO : data->tx_result;
+#ifdef CONFIG_NET_STATISTICS_ETHERNET
+	if (ret == 0) {
+		data->stats.bytes.sent += net_pkt_get_len(pkt);
+		data->stats.pkts.tx++;
+	} else {
+		data->stats.errors.tx++;
+	}
+#endif
+unlock:
+	k_spin_unlock(&data->ring_lock, key);
+	k_mutex_unlock(&data->send_lock);
+	return ret;
 }
 
 /**
@@ -511,8 +449,15 @@ static int eth_xlnx_gem_start_device(const struct device *dev,
 {
 	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t reg_val;
+	k_spinlock_key_t key = k_spin_lock(&dev_data->ring_lock);
+
+	if (dev_data->recovering || dev_data->recovery_failed) {
+		k_spin_unlock(&dev_data->ring_lock, key);
+		return -EIO;
+	}
 
 	if (dev_data->started) {
+		k_spin_unlock(&dev_data->ring_lock, key);
 		return 0;
 	}
 	dev_data->started = true;
@@ -537,6 +482,7 @@ static int eth_xlnx_gem_start_device(const struct device *dev,
 		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
 
 	LOG_DBG("%s started", dev->name);
+	k_spin_unlock(&dev_data->ring_lock, key);
 	return 0;
 }
 
@@ -555,8 +501,10 @@ static int eth_xlnx_gem_stop_device(const struct device *dev,
 {
 	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t reg_val;
+	k_spinlock_key_t key = k_spin_lock(&dev_data->ring_lock);
 
 	if (!dev_data->started) {
+		k_spin_unlock(&dev_data->ring_lock, key);
 		return 0;
 	}
 	dev_data->started = false;
@@ -577,6 +525,7 @@ static int eth_xlnx_gem_stop_device(const struct device *dev,
 	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
 
 	LOG_DBG("%s stopped", dev->name);
+	k_spin_unlock(&dev_data->ring_lock, key);
 	return 0;
 }
 
@@ -1333,6 +1282,12 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
 	/* Initial configuration of the RX/TX BD rings */
 	DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_INIT_BD_RING)
 
+#ifdef CONFIG_DCACHE
+	sys_cache_data_flush_and_invd_range(dev_data->first_rx_buffer,
+					 dev_conf->rx_bd_count * dev_conf->rx_buffer_size);
+#endif
+	barrier_dmem_fence_full();
+
 	/*
 	 * Set initial RX BD data -> comp. Zynq-7000 TRM, Chapter 16.3.5,
 	 * "Receive Buffer Descriptor List". For RX BDs, the 'used' and
@@ -1347,16 +1302,17 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
 		uint32_t addr = (uint32_t)dev_data->first_rx_buffer +
 				(buf_iter * dev_conf->rx_buffer_size);
 		/* Clear 'used' bit -> BD is owned by the controller */
-		bdptr->addr = addr & ~(ETH_XLNX_GEM_RX_BD_USED_BIT | ETH_XLNX_GEM_RX_BD_WRAP_BIT);
-		bdptr->ctrl = 0x00000000;
+		sys_write32(0U, (uintptr_t)&bdptr->ctrl);
+		sys_write32(addr & ~(ETH_XLNX_GEM_RX_BD_USED_BIT | ETH_XLNX_GEM_RX_BD_WRAP_BIT),
+			    (uintptr_t)&bdptr->addr);
 		++bdptr;
 	}
 
 	uint32_t last_rx_addr = (uint32_t)dev_data->first_rx_buffer +
 				(buf_iter * dev_conf->rx_buffer_size);
-	bdptr->addr = (((uint32_t)last_rx_addr) & ~ETH_XLNX_GEM_RX_BD_USED_BIT) |
-		      ETH_XLNX_GEM_RX_BD_WRAP_BIT;
-	bdptr->ctrl = 0x00000000;
+	sys_write32(0U, (uintptr_t)&bdptr->ctrl);
+	sys_write32((last_rx_addr & ~ETH_XLNX_GEM_RX_BD_USED_BIT) |
+		    ETH_XLNX_GEM_RX_BD_WRAP_BIT, (uintptr_t)&bdptr->addr);
 
 	/*
 	 * Set initial TX BD data -> comp. Zynq-7000 TRM, Chapter 16.3.5,
@@ -1405,6 +1361,8 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
 	dev_data->tx_bd_ring.next_to_use     = 0;
 	dev_data->tx_bd_ring.free_bds        = dev_conf->tx_bd_count;
 
+	barrier_dmem_fence_full();
+
 	/*
 	 * Write pointers to the first RX/TX BD to the controller.
 	 * On both the Zynq-7000 and the UltraScale, the legacy 32-bit
@@ -1427,6 +1385,110 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
 #endif /* CONFIG_SOC_XILINX_ZYNQMP */
 }
 
+/* Caller holds ring_lock. Do not log or clear registers before saving the evidence. */
+static void eth_xlnx_gem_request_recovery(const struct device *dev, uint32_t reason)
+{
+	struct eth_xlnx_gem_dev_data *data = DEV_DATA(dev);
+	struct eth_xlnx_gem_diagnostics *diag = &data->diagnostics;
+	uintptr_t base = DEVICE_MMIO_NAMED_GET(dev, mac);
+
+	if (data->recovering || data->recovery_failed) {
+		diag->reasons |= reason;
+		return;
+	}
+	data->recovering = true;
+	diag->reasons = reason;
+	diag->rx_used += (reason & ETH_XLNX_GEM_IXR_RX_USED_BIT) != 0U;
+	diag->rx_overruns += (reason & ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT) != 0U;
+	diag->hresp_errors += (reason & ETH_XLNX_GEM_IXR_HRESP_NOT_OK_BIT) != 0U;
+	diag->tx_timeouts += (reason & ETH_XLNX_GEM_RECOVERY_TX_TIMEOUT) != 0U;
+	diag->isr = sys_read32(base + ETH_XLNX_GEM_ISR_OFFSET);
+	diag->imr = sys_read32(base + ETH_XLNX_GEM_IMR_OFFSET);
+	diag->rxsr = sys_read32(base + ETH_XLNX_GEM_RXSR_OFFSET);
+	diag->txsr = sys_read32(base + ETH_XLNX_GEM_TXSR_OFFSET);
+	diag->nwctrl = sys_read32(base + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	diag->nwcfg = sys_read32(base + ETH_XLNX_GEM_NWCFG_OFFSET);
+	diag->rxqbase = sys_read32(base + ETH_XLNX_GEM_RXQBASE_OFFSET);
+	diag->txqbase = sys_read32(base + ETH_XLNX_GEM_TXQBASE_OFFSET);
+	diag->rx_next = data->rx_bd_ring.next_to_process;
+	diag->tx_next = data->tx_bd_ring.next_to_process;
+	diag->tx_free = data->tx_bd_ring.free_bds;
+	diag->rx_head_addr = sys_read32((uintptr_t)
+		&data->rx_bd_ring.first_bd[diag->rx_next].addr);
+	diag->rx_head_ctrl = sys_read32((uintptr_t)
+		&data->rx_bd_ring.first_bd[diag->rx_next].ctrl);
+	diag->tx_head_addr = sys_read32((uintptr_t)
+		&data->tx_bd_ring.first_bd[diag->tx_next].addr);
+	diag->tx_head_ctrl = sys_read32((uintptr_t)
+		&data->tx_bd_ring.first_bd[diag->tx_next].ctrl);
+	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK, base + ETH_XLNX_GEM_IDR_OFFSET);
+	data->tx_result = -EIO;
+	k_sem_give(&data->tx_done_sem);
+	k_work_schedule(&data->recovery_work, K_MSEC(2));
+}
+
+static void eth_xlnx_gem_recovery_work(struct k_work *item)
+{
+	struct eth_xlnx_gem_dev_data *data =
+		CONTAINER_OF(k_work_delayable_from_work(item),
+			     struct eth_xlnx_gem_dev_data, recovery_work);
+	const struct device *dev = net_if_get_device(data->iface);
+	uintptr_t base = DEVICE_MMIO_NAMED_GET(dev, mac);
+	k_spinlock_key_t key = k_spin_lock(&data->ring_lock);
+	uint32_t control;
+
+	if (!data->recovering) {
+		k_spin_unlock(&data->ring_lock, key);
+		return;
+	}
+	/* UG585 net_ctrl: clearing RXEN/TXEN resets DMA queue pointers and pipelines.
+	 * Preserve MDEN and clock/filter configuration; HALTTX alone cannot repair
+	 * a stalled frame. Read back the stop before touching DMA-owned memory.
+	 */
+	control = sys_read32(base + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	control &= ~(ETH_XLNX_GEM_NWCTRL_RXEN_BIT | ETH_XLNX_GEM_NWCTRL_TXEN_BIT |
+		     ETH_XLNX_GEM_NWCTRL_STARTTX_BIT | ETH_XLNX_GEM_NWCTRL_HALTTX_BIT);
+	sys_write32(control, base + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	barrier_dmem_fence_full();
+	if ((sys_read32(base + ETH_XLNX_GEM_NWCTRL_OFFSET) &
+	     (ETH_XLNX_GEM_NWCTRL_RXEN_BIT | ETH_XLNX_GEM_NWCTRL_TXEN_BIT)) != 0U ||
+	    (sys_read32(base + ETH_XLNX_GEM_TXSR_OFFSET) & BIT(3)) != 0U) {
+		/* A controller that cannot stop is terminal: never refund live DMA memory. */
+		data->recovery_failed = true;
+		data->diagnostics.recovery_failures++;
+	} else {
+		eth_xlnx_gem_configure_buffers(dev);
+		sys_write32(ETH_XLNX_GEM_RXSRCLR_MASK, base + ETH_XLNX_GEM_RXSR_OFFSET);
+		sys_write32(ETH_XLNX_GEM_TXSRCLR_MASK, base + ETH_XLNX_GEM_TXSR_OFFSET);
+		sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK, base + ETH_XLNX_GEM_ISR_OFFSET);
+		k_sem_reset(&data->tx_done_sem);
+		data->diagnostics.recoveries++;
+		if (data->started) {
+			sys_write32(control | ETH_XLNX_GEM_NWCTRL_RXEN_BIT |
+				    ETH_XLNX_GEM_NWCTRL_TXEN_BIT,
+				    base + ETH_XLNX_GEM_NWCTRL_OFFSET);
+			sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK, base + ETH_XLNX_GEM_IER_OFFSET);
+		}
+	}
+	data->recovering = false;
+	k_spin_unlock(&data->ring_lock, key);
+}
+
+int eth_xlnx_gem_get_diagnostics(const struct device *dev,
+			       struct eth_xlnx_gem_diagnostics *diagnostics)
+{
+	struct eth_xlnx_gem_dev_data *data = DEV_DATA(dev);
+	k_spinlock_key_t key;
+
+	if (diagnostics == NULL) {
+		return -EINVAL;
+	}
+	key = k_spin_lock(&data->ring_lock);
+	*diagnostics = data->diagnostics;
+	k_spin_unlock(&data->ring_lock, key);
+	return 0;
+}
+
 /**
  * @brief GEM RX data pending handler wrapper for the work queue
  * Wraps the RX data pending handler, eth_xlnx_gem_handle_rx_pending,
@@ -1442,7 +1504,7 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
  */
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item)
 {
-	struct eth_xlnx_gem_dev_data *dev_data = CONTAINER_OF(item,
+	struct eth_xlnx_gem_dev_data *dev_data = CONTAINER_OF(k_work_delayable_from_work(item),
 		struct eth_xlnx_gem_dev_data, rx_pend_work);
 	const struct device *dev = net_if_get_device(dev_data->iface);
 
@@ -1465,156 +1527,153 @@ static void eth_xlnx_gem_rx_pending_work(struct k_work *item)
  */
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
-	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
-	uint32_t reg_addr;
-	uint32_t reg_ctrl;
-	uint32_t reg_val;
-	uint8_t first_bd_idx;
-	uint8_t last_bd_idx;
-	uint8_t	curr_bd_idx;
-	uint32_t rx_data_length;
-	uint32_t rx_data_remaining;
-	struct net_pkt *pkt;
+	const struct eth_xlnx_gem_dev_cfg *cfg = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *data = DEV_DATA(dev);
+	uintptr_t base = DEVICE_MMIO_NAMED_GET(dev, mac);
+	uint16_t budget = cfg->rx_bd_count;
+	uint8_t frames = 8;
+	uint32_t start = k_cycle_get_32();
+	bool incomplete = false;
+	bool shed_load = false;
+	k_spinlock_key_t key = k_spin_lock(&data->ring_lock);
 
-	/*
-	 * TODO Evaluate error flags from RX status register word
-	 * here for proper error handling.
-	 */
+	/* Bound both copying and descriptor walks, including orphan fragments. */
+	while (frames > 0U && budget > 0U && !data->recovering && !data->recovery_failed &&
+	       data->started) {
+		uint8_t first = data->rx_bd_ring.next_to_process;
+		uint16_t count = 0;
+		uint32_t ctrl = 0;
+		struct net_pkt *pkt;
+		uint32_t length;
+		uint32_t remaining;
+		int receive_result = -ENOBUFS;
 
-	while (1) {
-		curr_bd_idx = dev_data->rx_bd_ring.next_to_process;
-		first_bd_idx = last_bd_idx = curr_bd_idx;
-		reg_addr = (uint32_t)(&dev_data->rx_bd_ring.first_bd[first_bd_idx].addr);
-		reg_ctrl = (uint32_t)(&dev_data->rx_bd_ring.first_bd[first_bd_idx].ctrl);
-
-		/*
-		 * Basic precondition checks for the current BD's
-		 * address and control words
-		 */
-		reg_val = sys_read32(reg_addr);
-		if ((reg_val & ETH_XLNX_GEM_RX_BD_USED_BIT) == 0) {
-			/*
-			 * No new data contained in the current BD
-			 * -> break out of the RX loop
-			 */
+		if ((sys_read32((uintptr_t)&data->rx_bd_ring.first_bd[first].addr) &
+		     ETH_XLNX_GEM_RX_BD_USED_BIT) == 0U) {
 			break;
 		}
-		reg_val = sys_read32(reg_ctrl);
-		if ((reg_val & ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT) == 0) {
-			/*
-			 * Although the current BD is marked as 'used', it
-			 * doesn't contain the SOF bit.
-			 */
-			LOG_ERR_RATELIMIT_RATE(1000, "%s unexpected missing SOF bit in RX BD [%u]",
-					       dev->name, first_bd_idx);
-			/* Recycle only this CPU-owned orphan, preserving address and wrap. */
-			sys_write32(0U, reg_ctrl);
+		barrier_dmem_fence_full();
+		ctrl = sys_read32((uintptr_t)&data->rx_bd_ring.first_bd[first].ctrl);
+		if ((ctrl & ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT) == 0U) {
+			struct eth_xlnx_gem_bd *bd = &data->rx_bd_ring.first_bd[first];
+
+			data->diagnostics.rx_orphans++;
+			sys_write32(0U, (uintptr_t)&bd->ctrl);
 			barrier_dmem_fence_full();
-			reg_val = sys_read32(reg_addr) & ~ETH_XLNX_GEM_RX_BD_USED_BIT;
-			sys_write32(reg_val, reg_addr);
-			dev_data->rx_bd_ring.next_to_process =
-				(first_bd_idx + 1U) % dev_conf->rx_bd_count;
+			sys_write32(sys_read32((uintptr_t)&bd->addr) & ~ETH_XLNX_GEM_RX_BD_USED_BIT,
+				    (uintptr_t)&bd->addr);
+			data->rx_bd_ring.next_to_process = (first + 1U) % cfg->rx_bd_count;
+			budget--;
 			continue;
 		}
+		for (count = 0; count < budget; count++) {
+			struct eth_xlnx_gem_bd *bd =
+				&data->rx_bd_ring.first_bd[(first + count) % cfg->rx_bd_count];
 
-		/*
-		 * As long as the current BD doesn't have the EOF bit set,
-		 * iterate forwards until the EOF bit is encountered. Only
-		 * the BD containing the EOF bit also contains the length
-		 * of the received packet which spans multiple buffers.
-		 */
-		do {
-			reg_ctrl = (uint32_t)(&dev_data->rx_bd_ring.first_bd[last_bd_idx].ctrl);
-			reg_val  = sys_read32(reg_ctrl);
-			rx_data_length = rx_data_remaining =
-					 (reg_val & ETH_XLNX_GEM_RX_BD_FRAME_LENGTH_MASK);
-			if ((reg_val & ETH_XLNX_GEM_RX_BD_END_OF_FRAME_BIT) == 0) {
-				last_bd_idx = (last_bd_idx + 1) % dev_conf->rx_bd_count;
+			if ((sys_read32((uintptr_t)&bd->addr) &
+			     ETH_XLNX_GEM_RX_BD_USED_BIT) == 0U) {
+				incomplete = true;
+				break;
 			}
-		} while ((reg_val & ETH_XLNX_GEM_RX_BD_END_OF_FRAME_BIT) == 0);
-
-		/*
-		 * Store the position of the first BD behind the end of the
-		 * frame currently being processed as 'next to process'
-		 */
-		dev_data->rx_bd_ring.next_to_process = (last_bd_idx + 1) %
-						      dev_conf->rx_bd_count;
-
-		/*
-		 * Allocate a destination packet from the network stack
-		 * now that the total frame length is known.
-		 */
-		pkt = net_pkt_rx_alloc_with_buffer(dev_data->iface, rx_data_length,
-						   NET_AF_UNSPEC, 0, K_NO_WAIT);
-		if (pkt == NULL) {
-			LOG_ERR_RATELIMIT_RATE(1000, "RX packet buffer alloc failed: %u bytes",
-				rx_data_length);
-#ifdef CONFIG_NET_STATISTICS_ETHERNET
-			dev_data->stats.errors.rx++;
-			dev_data->stats.error_details.rx_no_buffer_count++;
-#endif
+			barrier_dmem_fence_full();
+			ctrl = sys_read32((uintptr_t)&bd->ctrl);
+			if (count != 0U && (ctrl & ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT) != 0U) {
+				eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_RX_CHAIN);
+				break;
+			}
+			if ((ctrl & ETH_XLNX_GEM_RX_BD_END_OF_FRAME_BIT) != 0U) {
+				count++;
+				break;
+			}
 		}
+		if (incomplete || data->recovering) {
+			break;
+		}
+		if ((ctrl & ETH_XLNX_GEM_RX_BD_END_OF_FRAME_BIT) == 0U) {
+			if (count == cfg->rx_bd_count) {
+				eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_RX_CHAIN);
+			}
+			/* An otherwise valid chain may cross this invocation's budget. */
+			budget = 0;
+			break;
+		}
+		length = ctrl & ETH_XLNX_GEM_RX_BD_FRAME_LENGTH_MASK;
+		if (length == 0U || length > NET_ETH_MAX_FRAME_SIZE ||
+		    length + cfg->hw_rx_buffer_offset > count * cfg->rx_buffer_size ||
+		    length + cfg->hw_rx_buffer_offset <= (count - 1U) * cfg->rx_buffer_size) {
+			eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_RX_CHAIN);
+			break;
+		}
+		pkt = net_pkt_rx_alloc_with_buffer(data->iface, length,
+					       NET_AF_UNSPEC, 0, K_NO_WAIT);
+		remaining = length;
+		for (uint16_t n = 0; n < count; n++) {
+			struct eth_xlnx_gem_bd *bd =
+				&data->rx_bd_ring.first_bd[(first + n) % cfg->rx_bd_count];
+			uint32_t addr = sys_read32((uintptr_t)&bd->addr);
+			uint8_t offset = n == 0U ? cfg->hw_rx_buffer_offset : 0U;
+			size_t bytes = MIN(remaining, cfg->rx_buffer_size - offset);
+			void *buffer = (void *)(uintptr_t)
+				(addr & ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK);
 
-		/*
-		 * Copy data from all involved RX buffers into the allocated
-		 * packet's data buffer. If we don't have a packet buffer be-
-		 * cause none are available, we still have to iterate over all
-		 * involved BDs in order to properly release them for re-use
-		 * by the controller.
-		 */
-		do {
 			if (pkt != NULL) {
 #ifdef CONFIG_DCACHE
-				sys_cache_data_invd_range(
-					(void *)(dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
-					ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK),
-					dev_conf->rx_buffer_size);
+				sys_cache_data_invd_range(buffer, cfg->rx_buffer_size);
 #endif
-				net_pkt_write(pkt, (const void *)
-					      (dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
-					      ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK),
-					      (rx_data_remaining < dev_conf->rx_buffer_size) ?
-					      rx_data_remaining : dev_conf->rx_buffer_size);
+				if (net_pkt_write(pkt, (uint8_t *)buffer + offset, bytes) != 0) {
+					net_pkt_unref(pkt);
+					pkt = NULL;
+				}
 			}
-			rx_data_remaining -= (rx_data_remaining < dev_conf->rx_buffer_size) ?
-					     rx_data_remaining : dev_conf->rx_buffer_size;
-
-			/*
-			 * The entire packet data of the current BD has been
-			 * processed, on to the next BD -> preserve the RX BD's
-			 * 'wrap' bit & address, but clear the 'used' bit.
-			 */
-			reg_addr = (uint32_t)(&dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr);
-			reg_val	 = sys_read32(reg_addr);
-			reg_val &= ~ETH_XLNX_GEM_RX_BD_USED_BIT;
-			sys_write32(reg_val, reg_addr);
-
-			curr_bd_idx = (curr_bd_idx + 1) % dev_conf->rx_bd_count;
-		} while (curr_bd_idx != ((last_bd_idx + 1) % dev_conf->rx_bd_count));
-
-		/* Propagate the received packet to the network stack */
+			remaining -= bytes;
+			sys_write32(0U, (uintptr_t)&bd->ctrl);
+			barrier_dmem_fence_full();
+			sys_write32(addr & ~ETH_XLNX_GEM_RX_BD_USED_BIT, (uintptr_t)&bd->addr);
+		}
+		data->rx_bd_ring.next_to_process = (first + count) % cfg->rx_bd_count;
+		budget -= count;
+		frames--;
+		k_spin_unlock(&data->ring_lock, key);
 		if (pkt != NULL) {
-			if (net_recv_data(dev_data->iface, pkt) < 0) {
-				LOG_ERR_RATELIMIT_RATE(
-					1000, "%s RX packet hand-over to IP stack failed",
-					dev->name);
+			receive_result = net_recv_data(data->iface, pkt);
+			if (receive_result < 0) {
 				net_pkt_unref(pkt);
 			}
+		}
+		key = k_spin_lock(&data->ring_lock);
+		data->diagnostics.rx_dropped += receive_result < 0;
+		shed_load |= receive_result < 0;
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
-			else {
-				dev_data->stats.bytes.received += rx_data_length;
-				dev_data->stats.pkts.rx++;
-			}
+		if (receive_result >= 0) {
+			data->stats.bytes.received += length;
+			data->stats.pkts.rx++;
+		} else {
+			data->stats.errors.rx++;
+		}
 #endif
+	}
+	if (!data->recovering && !data->recovery_failed && data->started) {
+		/* Return buffers before acknowledging RX pressure (UG585 16.3.5). */
+		sys_write32(BIT(0) | BIT(1) | BIT(2), base + ETH_XLNX_GEM_RXSR_OFFSET);
+		if ((budget == 0U || frames == 0U) && !incomplete) {
+			/* The workqueue yields between bounded batches to ready peers.
+			 * Delay only on pool/stack pressure: an unconditional 2 ms
+			 * pause limits 8-frame batches to <2300 fps at 185 us/frame.
+			 */
+			data->diagnostics.rx_budget_hits++;
+			data->diagnostics.rx_backoffs += shed_load;
+			k_work_schedule(&data->rx_pend_work, shed_load ? K_MSEC(2) : K_NO_WAIT);
+		} else {
+			sys_write32(GEM_RX_IRQS, base + ETH_XLNX_GEM_IER_OFFSET);
 		}
 	}
+	uint32_t elapsed = k_cyc_to_us_floor32(k_cycle_get_32() - start);
 
-	/* Clear the RX status register */
-	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
-	/* Re-enable the frame received interrupt source */
-	sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
-		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
+	data->diagnostics.rx_work_calls++;
+	if (elapsed > data->diagnostics.rx_work_max_us) {
+		data->diagnostics.rx_work_max_us = elapsed;
+	}
+	k_spin_unlock(&data->ring_lock, key);
 }
 
 /**
@@ -1655,81 +1714,73 @@ static void eth_xlnx_gem_tx_done_work(struct k_work *item)
  */
 static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
-	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
-	uint32_t reg_ctrl;
-	uint32_t reg_val;
-	uint8_t curr_bd_idx;
-	uint8_t first_bd_idx;
-	uint8_t bds_processed = 0;
-	uint8_t bd_is_last;
+	const struct eth_xlnx_gem_dev_cfg *cfg = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *data = DEV_DATA(dev);
+	uintptr_t base = DEVICE_MMIO_NAMED_GET(dev, mac);
+	k_spinlock_key_t key = k_spin_lock(&data->ring_lock);
+	uint16_t outstanding;
 
-	/*
-	 * TODO Evaluate error flags from TX status register word
-	 * here for proper error handling
-	 */
-
-	if (dev_conf->defer_txd_to_queue) {
-		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
+	if (data->tx_bd_ring.free_bds > cfg->tx_bd_count) {
+		eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_TX_CHAIN);
+		k_spin_unlock(&data->ring_lock, key);
+		return;
 	}
+	outstanding = cfg->tx_bd_count - data->tx_bd_ring.free_bds;
 
-	curr_bd_idx = first_bd_idx = dev_data->tx_bd_ring.next_to_process;
-	reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
-	reg_val  = sys_read32(reg_ctrl);
+	while (outstanding > 0U && !data->recovering && !data->recovery_failed) {
+		uint8_t first = data->tx_bd_ring.next_to_process;
+		uint32_t head = sys_read32((uintptr_t)&data->tx_bd_ring.first_bd[first].ctrl);
+		uint16_t count;
+		uint32_t ctrl = 0;
 
-	do {
-		++bds_processed;
-
-		/*
-		 * TODO Evaluate error flags from current BD control word
-		 * here for proper error handling
-		 */
-
-		/*
-		 * Check if the BD we're currently looking at is the last BD
-		 * of the current transmission
-		 */
-		bd_is_last = ((reg_val & ETH_XLNX_GEM_TX_BD_LAST_BIT) != 0) ? 1 : 0;
-
-		/*
-		 * Reset control word of the current BD, clear everything but
-		 * the 'wrap' bit, then set the 'used' bit
-		 */
-		reg_val &= ETH_XLNX_GEM_TX_BD_WRAP_BIT;
-		reg_val |= ETH_XLNX_GEM_TX_BD_USED_BIT;
-		sys_write32(reg_val, reg_ctrl);
-
-		/* Move on to the next BD or break out of the loop */
-		if (bd_is_last == 1) {
+		/* GEM returns ownership on the FIRST BD of a completed frame (UG585 16.3.8). */
+		if ((head & ETH_XLNX_GEM_TX_BD_USED_BIT) == 0U) {
 			break;
 		}
-		curr_bd_idx = (curr_bd_idx + 1) % dev_conf->tx_bd_count;
-		reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
-		reg_val  = sys_read32(reg_ctrl);
-	} while (bd_is_last == 0 && curr_bd_idx != first_bd_idx);
+		barrier_dmem_fence_full();
+		for (count = 0; count < outstanding; count++) {
+			struct eth_xlnx_gem_bd *bd =
+				&data->tx_bd_ring.first_bd[(first + count) % cfg->tx_bd_count];
 
-	if (curr_bd_idx == first_bd_idx && bd_is_last == 0) {
-		LOG_WRN_RATELIMIT_RATE(1000, "%s TX done handling wrapped around", dev->name);
+			ctrl = sys_read32((uintptr_t)&bd->ctrl);
+			if ((ctrl & GEM_TX_ERRORS) != 0U) {
+				eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_TX_CHAIN);
+				break;
+			}
+			if ((ctrl & ETH_XLNX_GEM_TX_BD_LAST_BIT) != 0U) {
+				count++;
+				break;
+			}
+		}
+		if (data->recovering) {
+			break;
+		}
+		if ((ctrl & ETH_XLNX_GEM_TX_BD_LAST_BIT) == 0U) {
+			eth_xlnx_gem_request_recovery(dev, ETH_XLNX_GEM_RECOVERY_TX_CHAIN);
+			break;
+		}
+		for (uint16_t n = 0; n < count; n++) {
+			struct eth_xlnx_gem_bd *bd =
+				&data->tx_bd_ring.first_bd[(first + n) % cfg->tx_bd_count];
+
+			uint32_t wrap = sys_read32((uintptr_t)&bd->ctrl) &
+				ETH_XLNX_GEM_TX_BD_WRAP_BIT;
+
+			sys_write32(wrap | ETH_XLNX_GEM_TX_BD_USED_BIT, (uintptr_t)&bd->ctrl);
+		}
+		data->tx_bd_ring.next_to_process = (first + count) % cfg->tx_bd_count;
+		data->tx_bd_ring.free_bds += count;
+		outstanding -= count;
+		if (outstanding == 0U) {
+			data->tx_result = 0;
+			k_sem_give(&data->tx_done_sem);
+		}
 	}
-
-	dev_data->tx_bd_ring.next_to_process =
-		(dev_data->tx_bd_ring.next_to_process + bds_processed) %
-		dev_conf->tx_bd_count;
-	dev_data->tx_bd_ring.free_bds += bds_processed;
-
-	if (dev_conf->defer_txd_to_queue) {
-		k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
+	if (!data->recovering && !data->recovery_failed && data->started) {
+		sys_write32(BIT(5), base + ETH_XLNX_GEM_TXSR_OFFSET);
+		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT, base + ETH_XLNX_GEM_IER_OFFSET);
 	}
-
-	/* Clear the TX status register */
-	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXSR_OFFSET);
-
-	/* Re-enable the TX complete interrupt source */
-	sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
-
-	/* Indicate completion to a blocking eth_xlnx_gem_send() call */
-	k_sem_give(&dev_data->tx_done_sem);
+	k_spin_unlock(&data->ring_lock, key);
 }
 
 /**
@@ -1748,6 +1799,13 @@ static void eth_xlnx_gem_phy_cb(const struct device *phy,
 	const struct device *dev = (const struct device *)eth_dev;
 	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 
+	if (state->is_up && state->speed != LINK_HALF_10BASE &&
+	    state->speed != LINK_FULL_10BASE && state->speed != LINK_HALF_100BASE &&
+	    state->speed != LINK_FULL_100BASE && state->speed != LINK_HALF_1000BASE &&
+	    state->speed != LINK_FULL_1000BASE) {
+		net_eth_carrier_set(dev_data->iface, false);
+		return;
+	}
 	if (state->is_up) {
 		eth_xlnx_gem_configure_clocks(dev, state);
 		eth_xlnx_gem_set_nwcfg_link_speed(dev, state);

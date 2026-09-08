@@ -13,6 +13,8 @@
 
 #define DT_DRV_COMPAT xlnx_gem
 #define DEV_CFG(_dev) ((const struct eth_xlnx_gem_dev_cfg *)((_dev)->config))
+#include <zephyr/drivers/ethernet/eth_xlnx_gem.h>
+
 #define DEV_DATA(_dev) ((struct eth_xlnx_gem_dev_data *)((_dev)->data))
 
 #include <zephyr/kernel.h>
@@ -700,8 +702,17 @@ struct eth_xlnx_gem_mcast_filter {
  * data relating to the attached PHY or the auxiliary thread.
  */
 struct eth_xlnx_gem_dev_data {
+	/* MDIO uses DEVICE_MMIO_GET(parent): the MAC mapping must stay first. */
 	DEVICE_MMIO_NAMED_RAM(mac);
 	DEVICE_MMIO_NAMED_RAM(clkc);
+
+	struct k_spinlock ring_lock;
+	struct k_mutex send_lock;
+	struct k_work_delayable recovery_work;
+	struct eth_xlnx_gem_diagnostics diagnostics;
+	bool recovering;
+	bool recovery_failed;
+	int tx_result;
 
 	struct net_if			*iface;
 	uint8_t				mac_addr[6];
@@ -713,7 +724,7 @@ struct eth_xlnx_gem_dev_data {
 	uint8_t				mcast_hash_active;
 
 	struct k_work			tx_done_work;
-	struct k_work			rx_pend_work;
+	struct k_work_delayable		rx_pend_work;
 	struct k_sem			tx_done_sem;
 
 	uint8_t				*first_rx_buffer;
