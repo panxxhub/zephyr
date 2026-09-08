@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+name: GEM network recovery
+on:
+  pull_request:
+    paths:
+      - drivers/ethernet/eth_xlnx_gem*
+      - drivers/ethernet/mdio/mdio_xlnx_gem.c
+      - drivers/ethernet/mdio/Kconfig.xlnx_gem
+      - drivers/ethernet/phy/phy_motorcomm_yt8531.c
+      - include/zephyr/drivers/ethernet/eth_xlnx_gem.h
+      - subsys/net/lib/coap/coap.c
+      - subsys/net/lib/coap/coap_server.c
+      - tests/drivers/ethernet/xlnx_gem_recovery/**
+      - .github/workflows/gem-net-recovery.yml
+  push:
+    branches: [fix/gem-net-recovery]
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 tests/drivers/ethernet/xlnx_gem_recovery/test_recovery.py

@@ -629,7 +629,7 @@ static int parse_option(uint8_t *data, uint16_t offset, uint16_t *pos,
 		 * CONFIG_COAP_EXTENDED_OPTIONS_LEN_VALUE=<size>
 		 */
 		if (len > sizeof(option->value)) {
-			NET_ERR("%u is > sizeof(coap_option->value)(%zu)!",
+			LOG_ERR_RATELIMIT_RATE(1000, "%u is > sizeof(coap_option->value)(%zu)!",
 				len, sizeof(option->value));
 			return -EINVAL;
 		}
