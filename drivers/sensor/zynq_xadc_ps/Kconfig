@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+config ZYNQ_XADC_PS
+	bool "Zynq-7000 PS XADC sensor"
+	default y
+	depends on DT_HAS_XLNX_ZYNQ_XADC_PS_ENABLED
+	help
+	  Read internal temperature and supply sensors and their extrema through
+	  the PS devcfg XADC command/data FIFOs. No PL logic or interrupts needed.

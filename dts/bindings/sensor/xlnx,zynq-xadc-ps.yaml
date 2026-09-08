@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Zynq-7000 PS XADCIF internal temperature and supply sensors. The register
+  window starts at devcfg (0xf8007000), including the unlock register at
+  0x34 and the XADC command/data FIFO interface at 0x100. PCAP clock must
+  be enabled by platform initialization and must not exceed 200 MHz.
+  This driver owns XADC configuration exclusively; do not access XADC
+  through JTAG or PL while it is active. VP/VN and VAUX are not enabled.
+
+compatible: "xlnx,zynq-xadc-ps"
+include: sensor-device.yaml
+properties:
+  reg:
+    required: true
