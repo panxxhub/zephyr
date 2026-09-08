@@ -1,0 +1,17 @@
+name: Zynq PS XADC
+on:
+  pull_request:
+    paths:
+      - 'drivers/sensor/**'
+      - 'include/zephyr/drivers/sensor/zynq_xadc_ps.h'
+      - 'dts/bindings/sensor/xlnx,zynq-xadc-ps.yaml'
+      - 'tests/drivers/sensor/zynq_xadc_ps/**'
+      - '.github/workflows/zynq-xadc.yml'
+permissions:
+  contents: read
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - run: python3 tests/drivers/sensor/zynq_xadc_ps/host/run.py
