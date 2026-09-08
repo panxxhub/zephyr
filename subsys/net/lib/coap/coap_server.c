@@ -314,7 +314,7 @@ static int coap_server_process(int sock_fd)
 
 	ret = coap_packet_parse(&request, buf, MIN(received, sizeof(buf)), options, opt_num);
 	if (ret < 0) {
-		LOG_ERR("Failed To parse coap message (%d)", ret);
+		LOG_ERR_RATELIMIT_RATE(1000, "Failed To parse coap message (%d)", ret);
 		return ret;
 	}
 

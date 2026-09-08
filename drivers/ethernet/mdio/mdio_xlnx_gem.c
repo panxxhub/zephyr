@@ -82,6 +82,10 @@ enum eth_xlnx_mdc_clock_divider {
 	MDC_DIVIDER_224
 };
 
+struct xlnx_gem_mdio_data {
+	struct k_mutex lock;
+};
+
 static inline bool xlnx_gem_mdio_is_idle(mm_reg_t reg_base)
 {
 	return (sys_read32(reg_base + ETH_XLNX_GEM_NWSR_OFFSET) &
@@ -90,8 +94,19 @@ static inline bool xlnx_gem_mdio_is_idle(mm_reg_t reg_base)
 
 static bool xlnx_gem_mdio_poll_idle(mm_reg_t reg_base)
 {
-	return WAIT_FOR(xlnx_gem_mdio_is_idle(reg_base), CONFIG_MDIO_XLNX_GEM_IDLE_TIMEOUT_US,
-			k_busy_wait(1));
+	/* 64 MDC cycles at cpu_1x / 224 are about 108 us at 133 MHz.
+	 * Allow 1 ms by default, sleeping between polls so a stuck bus yields.
+	 */
+	int64_t deadline = k_uptime_ticks() +
+		k_us_to_ticks_ceil64(CONFIG_MDIO_XLNX_GEM_IDLE_TIMEOUT_US);
+
+	do {
+		if (xlnx_gem_mdio_is_idle(reg_base)) {
+			return true;
+		}
+		k_usleep(50);
+	} while (k_uptime_ticks() < deadline);
+	return xlnx_gem_mdio_is_idle(reg_base);
 }
 
 /**
@@ -127,7 +142,8 @@ static int xlnx_gem_mdio_transfer(const struct device *dev, uint8_t prtad, uint8
 	mm_reg_t reg_base = DEVICE_MMIO_GET(mac_dev);
 
 	if (!xlnx_gem_mdio_poll_idle(reg_base)) {
-		LOG_ERR("%s: MDIO bus idle timeout pre-op (op 0x%1X, PHY %hhu, reg 0x%02x)",
+		LOG_ERR_RATELIMIT_RATE(
+			1000, "%s: MDIO bus idle timeout pre-op (op 0x%1X, PHY %hhu, reg 0x%02x)",
 			dev->name, (uint32_t)op, prtad, regad);
 		return -ETIMEDOUT;
 	}
@@ -146,7 +162,8 @@ static int xlnx_gem_mdio_transfer(const struct device *dev, uint8_t prtad, uint8
 	sys_write32(reg_val, reg_base + ETH_XLNX_GEM_PHY_MAINTENANCE_OFFSET);
 
 	if (!xlnx_gem_mdio_poll_idle(reg_base)) {
-		LOG_ERR("%s: MDIO bus idle timeout post-op (op 0x%1X, PHY %hhu, reg 0x%02x)",
+		LOG_ERR_RATELIMIT_RATE(
+			1000, "%s: MDIO bus idle timeout post-op (op 0x%1X, PHY %hhu, reg 0x%02x)",
 			dev->name, (uint32_t)op, prtad, regad);
 		return -ETIMEDOUT;
 	}
@@ -177,8 +194,17 @@ static int xlnx_gem_mdio_transfer(const struct device *dev, uint8_t prtad, uint8
 static int xlnx_gem_mdio_read(const struct device *dev, uint8_t prtad, uint8_t regad,
 			      uint16_t *data)
 {
-	return xlnx_gem_mdio_transfer(dev, prtad, regad, MDIO_OP_C22_READ, false,
+	struct xlnx_gem_mdio_data *runtime = dev->data;
+	int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));
+
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = xlnx_gem_mdio_transfer(dev, prtad, regad, MDIO_OP_C22_READ, false,
 				      0, data);
+	k_mutex_unlock(&runtime->lock);
+	return ret;
 }
 
 /**
@@ -195,7 +221,13 @@ static int xlnx_gem_mdio_read(const struct device *dev, uint8_t prtad, uint8_t r
 static int xlnx_gem_mdio_read_c45(const struct device *dev, uint8_t prtad,
 				  uint8_t devad, uint16_t regad, uint16_t *data)
 {
-	int ret;
+	struct xlnx_gem_mdio_data *runtime = dev->data;
+	int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));
+
+	if (ret != 0) {
+		return ret;
+	}
+
 
 	ret = xlnx_gem_mdio_transfer(dev, prtad, devad, MDIO_OP_C45_ADDRESS, true,
 				     regad, NULL);
@@ -204,6 +236,7 @@ static int xlnx_gem_mdio_read_c45(const struct device *dev, uint8_t prtad,
 					     true, 0, data);
 	}
 
+	k_mutex_unlock(&runtime->lock);
 	return ret;
 }
 
@@ -220,8 +253,17 @@ static int xlnx_gem_mdio_read_c45(const struct device *dev, uint8_t prtad,
 static int xlnx_gem_mdio_write(const struct device *dev, uint8_t prtad, uint8_t regad,
 			       uint16_t data)
 {
-	return xlnx_gem_mdio_transfer(dev, prtad, regad, MDIO_OP_C22_WRITE, false,
+	struct xlnx_gem_mdio_data *runtime = dev->data;
+	int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));
+
+	if (ret != 0) {
+		return ret;
+	}
+
+	ret = xlnx_gem_mdio_transfer(dev, prtad, regad, MDIO_OP_C22_WRITE, false,
 				      data, NULL);
+	k_mutex_unlock(&runtime->lock);
+	return ret;
 }
 
 /**
@@ -238,7 +280,13 @@ static int xlnx_gem_mdio_write(const struct device *dev, uint8_t prtad, uint8_t 
 static int xlnx_gem_mdio_write_c45(const struct device *dev, uint8_t prtad,
 				   uint8_t devad, uint16_t regad, uint16_t data)
 {
-	int ret;
+	struct xlnx_gem_mdio_data *runtime = dev->data;
+	int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));
+
+	if (ret != 0) {
+		return ret;
+	}
+
 
 	ret = xlnx_gem_mdio_transfer(dev, prtad, devad, MDIO_OP_C45_ADDRESS, true,
 				     regad, NULL);
@@ -247,6 +295,7 @@ static int xlnx_gem_mdio_write_c45(const struct device *dev, uint8_t prtad,
 					     true, data, NULL);
 	}
 
+	k_mutex_unlock(&runtime->lock);
 	return ret;
 }
 
@@ -265,6 +314,9 @@ static int xlnx_gem_mdio_initialize(const struct device *dev)
 
 	uint32_t reg_val;
 	uint32_t mdc_divider = (uint32_t)MDC_DIVIDER_224;
+	struct xlnx_gem_mdio_data *runtime = dev->data;
+
+	k_mutex_init(&runtime->lock);
 
 	if (!device_is_ready(mac_dev)) {
 		LOG_ERR("%s: cannot initialize MDIO device, parent MAC device not ready",
@@ -297,7 +349,9 @@ static DEVICE_API(mdio, xlnx_gem_mdio_api) = {
 };
 
 #define XLNX_GEM_MDIO_DEV_INIT(port)\
-	DEVICE_DT_INST_DEFINE(port, &xlnx_gem_mdio_initialize, NULL, NULL,\
+	static struct xlnx_gem_mdio_data xlnx_gem_mdio_data_##port;\
+	DEVICE_DT_INST_DEFINE(port, &xlnx_gem_mdio_initialize, NULL,\
+			      &xlnx_gem_mdio_data_##port,\
 			      DEVICE_DT_GET(DT_INST_PARENT(port)), POST_KERNEL,\
 			      CONFIG_MDIO_INIT_PRIORITY, &xlnx_gem_mdio_api);
 

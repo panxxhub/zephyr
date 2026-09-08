@@ -101,31 +101,51 @@ struct mc_yt8531_data {
 	phy_callback_t cb;
 	void *cb_data;
 	struct phy_link_state state;
-	struct k_sem sem;
+	struct k_mutex lock;
+	struct phy_link_state notified;
+	bool notified_valid;
+	uint32_t read_errors;
+	int64_t last_read_ms;
 	struct k_work_delayable monitor_work;
-	bool autoneg_in_progress;
-	k_timepoint_t autoneg_timeout;
 };
 
 /* How often to poll auto-negotiation status while waiting for it to complete */
 #define MII_AUTONEG_POLL_INTERVAL_MS 100
 
-static int mc_yt8531_read(const struct device *dev, uint16_t reg, uint32_t *data)
+static int mc_yt8531_read(const struct device *dev, uint16_t reg, uint32_t *value)
 {
 	const struct mc_yt8531_config *config = dev->config;
+	struct mc_yt8531_data *data = dev->data;
+	uint16_t result = 0;
+	int ret;
 
-	/* Make sure excessive bits 16-31 are reset */
-	*data = 0U;
-
-	/* Read the PHY register */
-	return mdio_read(config->mdio, config->phy_addr, reg, (uint16_t *)data);
+	*value = 0U;
+	ret = k_mutex_lock(&data->lock, K_MSEC(10));
+	if (ret != 0) {
+		return ret;
+	}
+	ret = mdio_read(config->mdio, config->phy_addr, reg, &result);
+	if (ret == 0) {
+		*value = result;
+	} else {
+		data->read_errors++;
+	}
+	k_mutex_unlock(&data->lock);
+	return ret;
 }
 
-static int mc_yt8531_write(const struct device *dev, uint16_t reg, uint32_t data)
+static int mc_yt8531_write(const struct device *dev, uint16_t reg, uint32_t value)
 {
 	const struct mc_yt8531_config *config = dev->config;
+	struct mc_yt8531_data *data = dev->data;
+	int ret = k_mutex_lock(&data->lock, K_MSEC(10));
 
-	return mdio_write(config->mdio, config->phy_addr, reg, (uint16_t)data);
+	if (ret != 0) {
+		return ret;
+	}
+	ret = mdio_write(config->mdio, config->phy_addr, reg, (uint16_t)value);
+	k_mutex_unlock(&data->lock);
+	return ret;
 }
 
 static int mc_yt8531_modify(const struct device *dev, uint16_t reg, uint16_t mask, uint16_t set)
@@ -149,38 +169,62 @@ static int mc_yt8531_modify(const struct device *dev, uint16_t reg, uint16_t mas
 
 static int mc_yt8531_read_ext(const struct device *dev, uint16_t reg, uint32_t *data)
 {
-	int ret;
+	struct mc_yt8531_data *runtime = dev->data;
+	int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));
 
-	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
-	if (ret) {
+	if (ret != 0) {
 		return ret;
 	}
 
-	return mc_yt8531_read(dev, YTPHY_PAGE_DATA, data);
+	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
+	if (ret) {
+		k_mutex_unlock(&runtime->lock);
+		return ret;
+	}
+
+	ret = mc_yt8531_read(dev, YTPHY_PAGE_DATA, data);
+	k_mutex_unlock(&runtime->lock);
+	return ret;
 }
 
 static int mc_yt8531_write_ext(const struct device *dev, uint16_t reg, uint32_t data)
 {
-	int ret;
+	struct mc_yt8531_data *runtime = dev->data;
+	int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));
 
-	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
-	if (ret) {
+	if (ret != 0) {
 		return ret;
 	}
 
-	return mc_yt8531_write(dev, YTPHY_PAGE_DATA, data);
+	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
+	if (ret) {
+		k_mutex_unlock(&runtime->lock);
+		return ret;
+	}
+
+	ret = mc_yt8531_write(dev, YTPHY_PAGE_DATA, data);
+	k_mutex_unlock(&runtime->lock);
+	return ret;
 }
 
 static int mc_yt8531_modify_ext(const struct device *dev, uint16_t reg, uint16_t mask, uint16_t set)
 {
-	int ret;
+	struct mc_yt8531_data *runtime = dev->data;
+	int ret = k_mutex_lock(&runtime->lock, K_MSEC(10));
 
-	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
-	if (ret) {
+	if (ret != 0) {
 		return ret;
 	}
 
-	return mc_yt8531_modify(dev, YTPHY_PAGE_DATA, mask, set);
+	ret = mc_yt8531_write(dev, YTPHY_PAGE_SELECT, reg);
+	if (ret) {
+		k_mutex_unlock(&runtime->lock);
+		return ret;
+	}
+
+	ret = mc_yt8531_modify(dev, YTPHY_PAGE_DATA, mask, set);
+	k_mutex_unlock(&runtime->lock);
+	return ret;
 }
 
 static int mc_yt8531_soft_reset(const struct device *dev)
@@ -199,16 +243,15 @@ static int mc_yt8531_soft_reset(const struct device *dev)
 
 		ret = mc_yt8531_read(dev, MII_BMCR, &data);
 		if (ret) {
-			break;
+			return ret;
 		}
 
 		if (!(data & MII_BMCR_RESET)) {
-			ret = 0;
-			break;
+			return 0;
 		}
 	}
 
-	return ret;
+	return -ETIMEDOUT;
 }
 
 static int mc_yt8531_cfg_clock_delay(const struct device *dev)
@@ -263,16 +306,16 @@ static int mc_yt8531_resume(const struct device *dev)
 
 static void invoke_link_cb(const struct device *dev)
 {
-	struct mc_yt8531_data *const data = dev->data;
-	struct phy_link_state state;
+	struct mc_yt8531_data *data = dev->data;
+	struct phy_link_state state = data->state;
 
-	if (data->cb == NULL) {
-		return;
+	/* Caller holds the recursive PHY lock. Never perform a second MDIO read. */
+	if (data->cb != NULL && (!data->notified_valid ||
+	    state.is_up != data->notified.is_up || state.speed != data->notified.speed)) {
+		data->notified = state;
+		data->notified_valid = true;
+		data->cb(dev, &state, data->cb_data);
 	}
-
-	mc_yt8531_get_link_state(dev, &state);
-
-	data->cb(data->dev, &state, data->cb_data);
 }
 
 static inline enum phy_link_speed mc_yt8531_get_link_speed_stat_reg(const struct device *dev,
@@ -309,167 +352,63 @@ static inline enum phy_link_speed mc_yt8531_get_link_speed_stat_reg(const struct
 
 static int mc_yt8531_read_live_link_state(const struct device *dev, struct phy_link_state *state)
 {
-	uint32_t stat_reg;
+	struct mc_yt8531_data *data = dev->data;
+	uint32_t status;
+	int ret;
 
-	if (mc_yt8531_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
-		return -EIO;
+	*state = (struct phy_link_state){0};
+	ret = mc_yt8531_read(dev, YTPHY_SPECIFIC_STATUS_REG, &status);
+	if (ret != 0) {
+		return ret;
 	}
-
-	state->speed = 0;
-	state->is_up = false;
-
-	if (((uint16_t)stat_reg & YTPHY_SSR_LINK) == 0U) {
-		return 0;
+	if ((status & YTPHY_SSR_LINK) != 0U) {
+		state->speed = mc_yt8531_get_link_speed_stat_reg(dev, status);
+		if (state->speed == 0) {
+			return -EIO;
+		}
+		state->is_up = true;
 	}
-
-	state->is_up = true;
-	state->speed = mc_yt8531_get_link_speed_stat_reg(dev, stat_reg);
-
+	data->last_read_ms = k_uptime_get();
 	return 0;
 }
 
 static int update_link_state(const struct device *dev)
 {
-	const struct mc_yt8531_config *const cfg = dev->config;
-	struct mc_yt8531_data *const data = dev->data;
-	uint32_t bmcr_reg;
-	struct phy_link_state old_state = data->state;
-	struct phy_link_state live_state;
+	struct mc_yt8531_data *data = dev->data;
+	struct phy_link_state state = {0};
+	uint32_t bmcr;
+	int ret = mc_yt8531_read_live_link_state(dev, &state);
 
-	if (mc_yt8531_read_live_link_state(dev, &live_state) < 0) {
-		return -EIO;
+	if (ret != 0) {
+		return ret;
 	}
-
-	/* If link is down, we can stop here. */
-	if (!live_state.is_up) {
-		data->state = live_state;
-		if (old_state.is_up) {
-			LOG_INF("PHY (%d) is down", cfg->phy_addr);
-			return 0;
+	if (state.is_up) {
+		ret = mc_yt8531_read(dev, MII_BMCR, &bmcr);
+		if (ret != 0) {
+			return ret;
 		}
-		return -EAGAIN;
-	}
-
-	if (mc_yt8531_read(dev, MII_BMCR, &bmcr_reg) < 0) {
-		return -EIO;
-	}
-
-	/* If auto-negotiation is not enabled, we only need to check the link speed */
-	if ((bmcr_reg & MII_BMCR_AUTONEG_ENABLE) == 0U) {
-		data->state = live_state;
-
-		if (memcmp(&old_state, &data->state, sizeof(data->state)) != 0) {
-			LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", cfg->phy_addr,
-				PHY_LINK_IS_SPEED_1000M(data->state.speed)
-					? "1000"
-					: (PHY_LINK_IS_SPEED_100M(data->state.speed) ? "100"
-										     : "10"),
-				PHY_LINK_IS_FULL_DUPLEX(data->state.speed) ? "full" : "half");
-
-			return 0;
+		if ((bmcr & (MII_BMCR_RESET | MII_BMCR_POWER_DOWN)) != 0U) {
+			return -EAGAIN;
 		}
-		return -EAGAIN;
 	}
-
-	/* If auto-negotiation is enabled and the live link already reports speed,
-	 * publish it immediately. This keeps get_link_state() and monitor callbacks
-	 * coherent with the PHY status register instead of relying on stale cache.
-	 */
-	data->state = live_state;
-	if (data->state.speed != 0) {
-		if (memcmp(&old_state, &data->state, sizeof(data->state)) != 0) {
-			LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", cfg->phy_addr,
-				PHY_LINK_IS_SPEED_1000M(data->state.speed)
-					? "1000"
-					: (PHY_LINK_IS_SPEED_100M(data->state.speed) ? "100"
-										     : "10"),
-				PHY_LINK_IS_FULL_DUPLEX(data->state.speed) ? "full" : "half");
-			return 0;
-		}
-		return -EAGAIN;
-	}
-
-	LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
-
-	data->autoneg_timeout = sys_timepoint_calc(K_MSEC(CONFIG_PHY_AUTONEG_TIMEOUT_MS));
-	return -EINPROGRESS;
-}
-
-static int check_autonegotiation_completion(const struct device *dev)
-{
-	const struct mc_yt8531_config *const cfg = dev->config;
-	struct mc_yt8531_data *const data = dev->data;
-
-	uint32_t stat_reg = 0;
-	uint32_t bmsr_reg = 0;
-
-	/* On some PHY chips, the BMSR bits are latched, so the first read may
-	 * show incorrect status. A second read ensures correct values.
-	 */
-	if (mc_yt8531_read(dev, MII_BMSR, &bmsr_reg) < 0) {
-		return -EIO;
-	}
-
-	/* Second read, clears the latched bits and gives the correct status */
-	if (mc_yt8531_read(dev, MII_BMSR, &bmsr_reg) < 0) {
-		return -EIO;
-	}
-
-	if ((bmsr_reg & MII_BMSR_AUTONEG_COMPLETE) == 0U) {
-		if (sys_timepoint_expired(data->autoneg_timeout)) {
-			LOG_DBG("PHY (%d) auto-negotiate timeout", cfg->phy_addr);
-			return -ETIMEDOUT;
-		}
-		return -EINPROGRESS;
-	}
-
-	LOG_DBG("PHY (%d) auto-negotiate sequence completed", cfg->phy_addr);
-
-	if (mc_yt8531_read(dev, YTPHY_SPECIFIC_STATUS_REG, &stat_reg) < 0) {
-		return -EIO;
-	}
-
-	data->state.speed = mc_yt8531_get_link_speed_stat_reg(dev, stat_reg);
-
-	data->state.is_up = (bmsr_reg & MII_BMSR_LINK_STATUS) != 0U;
-
-	LOG_INF("PHY (%d) Link speed %s Mb, %s duplex", cfg->phy_addr,
-		PHY_LINK_IS_SPEED_1000M(data->state.speed)
-			? "1000"
-			: (PHY_LINK_IS_SPEED_100M(data->state.speed) ? "100" : "10"),
-		PHY_LINK_IS_FULL_DUPLEX(data->state.speed) ? "full" : "half");
-
+	data->state = state;
 	return 0;
 }
+
+
 
 static void monitor_work_handler(struct k_work *work)
 {
 	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-	struct mc_yt8531_data *const data = CONTAINER_OF(dwork, struct mc_yt8531_data, monitor_work);
-	const struct device *dev = data->dev;
-	int rc;
+	struct mc_yt8531_data *data = CONTAINER_OF(dwork, struct mc_yt8531_data, monitor_work);
 
-	if (k_sem_take(&data->sem, K_NO_WAIT) == 0) {
-		if (data->autoneg_in_progress) {
-			rc = check_autonegotiation_completion(dev);
-		} else {
-			/* If autonegotiation is not in progress, just update the link state */
-			rc = update_link_state(dev);
+	if (k_mutex_lock(&data->lock, K_NO_WAIT) == 0) {
+		if (update_link_state(data->dev) == 0) {
+			invoke_link_cb(data->dev);
 		}
-
-		data->autoneg_in_progress = (rc == -EINPROGRESS);
-
-		k_sem_give(&data->sem);
-
-		/* If link state has changed and a callback is set, invoke callback */
-		if (rc == 0) {
-			invoke_link_cb(dev);
-		}
+		k_mutex_unlock(&data->lock);
 	}
-
-	k_work_reschedule(&data->monitor_work, data->autoneg_in_progress
-						       ? K_MSEC(MII_AUTONEG_POLL_INTERVAL_MS)
-						       : K_MSEC(CONFIG_PHY_MONITOR_PERIOD));
+	k_work_reschedule(&data->monitor_work, K_MSEC(CONFIG_PHY_MONITOR_PERIOD));
 }
 
 static int mc_yt8531_cfg_link(const struct device *dev, enum phy_link_speed adv_speeds,
@@ -479,21 +418,17 @@ static int mc_yt8531_cfg_link(const struct device *dev, enum phy_link_speed adv_
 	const struct mc_yt8531_config *const cfg = dev->config;
 	int ret = 0;
 
-	k_sem_take(&data->sem, K_FOREVER);
+	k_mutex_lock(&data->lock, K_FOREVER);
 
 	if ((flags & PHY_FLAG_AUTO_NEGOTIATION_DISABLED) != 0U) {
 		ret = phy_mii_set_bmcr_reg_autoneg_disabled(dev, adv_speeds);
 		if (ret >= 0) {
-			data->autoneg_in_progress = false;
 			k_work_reschedule(&data->monitor_work, K_NO_WAIT);
 		}
 	} else {
 		ret = phy_mii_cfg_link_autoneg(dev, adv_speeds, true);
 		if (ret >= 0) {
 			LOG_DBG("PHY (%d) Starting MII PHY auto-negotiate sequence", cfg->phy_addr);
-			data->autoneg_in_progress = true;
-			data->autoneg_timeout =
-				sys_timepoint_calc(K_MSEC(CONFIG_PHY_AUTONEG_TIMEOUT_MS));
 			k_work_reschedule(&data->monitor_work,
 					  K_MSEC(MII_AUTONEG_POLL_INTERVAL_MS));
 		}
@@ -503,7 +438,7 @@ static int mc_yt8531_cfg_link(const struct device *dev, enum phy_link_speed adv_
 		LOG_DBG("PHY (%d) Link already configured", cfg->phy_addr);
 	}
 
-	k_sem_give(&data->sem);
+	k_mutex_unlock(&data->lock);
 
 	return ret;
 }
@@ -513,31 +448,28 @@ static int mc_yt8531_get_link_state(const struct device *dev, struct phy_link_st
 	struct mc_yt8531_data *const data = dev->data;
 	int ret;
 
-	k_sem_take(&data->sem, K_FOREVER);
+	k_mutex_lock(&data->lock, K_FOREVER);
 
 	ret = mc_yt8531_read_live_link_state(dev, state);
-	if (ret == 0) {
-		data->state = *state;
-	}
 
-	k_sem_give(&data->sem);
+	k_mutex_unlock(&data->lock);
 
 	return ret;
 }
 
 static int mc_yt8531_link_cb_set(const struct device *dev, phy_callback_t cb, void *user_data)
 {
-	struct mc_yt8531_data *const data = dev->data;
+	struct mc_yt8531_data *data = dev->data;
 
+	k_mutex_lock(&data->lock, K_FOREVER);
 	data->cb = cb;
 	data->cb_data = user_data;
-
-	/**
-	 * Immediately invoke the callback to notify the caller of the
-	 * current link status.
-	 */
-	invoke_link_cb(dev);
-
+	data->notified_valid = false;
+	if (update_link_state(dev) == 0) {
+		invoke_link_cb(dev);
+	}
+	/* A failed initial read is retried by the monitor, without fabricating carrier. */
+	k_mutex_unlock(&data->lock);
 	return 0;
 }
 
@@ -591,7 +523,7 @@ static int mc_yt8531_init(const struct device *dev)
 	const struct mc_yt8531_config *const cfg = dev->config;
 	int ret;
 
-	k_sem_init(&data->sem, 1, 1);
+	k_mutex_init(&data->lock);
 
 	data->state.is_up = false;
 	data->dev = dev;
@@ -625,7 +557,7 @@ static int mc_yt8531_init(const struct device *dev)
 	/* Reset PHY */
 	ret = mc_yt8531_soft_reset(dev);
 	if (ret) {
-		return -EIO;
+		return ret;
 	}
 
 	/* Enable clock delay */
@@ -696,7 +628,7 @@ static DEVICE_API(ethphy, mc_yt8531_driver_api) = {
 	static struct mc_yt8531_data mc_yt8531_data_##n = {                                          \
 		.dev = DEVICE_DT_INST_GET(n),                                                      \
 		.cb = NULL,                                                                        \
-		.sem = Z_SEM_INITIALIZER(mc_yt8531_data_##n.sem, 1, 1),                             \
+		.lock = Z_MUTEX_INITIALIZER(mc_yt8531_data_##n.lock),                             \
 	};
 
 #define MC_YT8531_INIT &mc_yt8531_initialize_dynamic_link

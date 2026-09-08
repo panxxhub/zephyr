@@ -234,7 +234,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 
 	ret = phy_link_callback_set(dev_conf->phy_dev, eth_xlnx_gem_phy_cb, (void *)dev);
 	if (ret) {
-		LOG_ERR("%s: set PHY callback failed", dev->name);
+		LOG_ERR_RATELIMIT_RATE(1000, "%s: set PHY callback failed", dev->name);
 		return;
 	}
 }
@@ -261,7 +261,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 	 * interrupt status register. -> For now, just log them
 	 */
 	if (reg_val & ETH_XLNX_GEM_IXR_ERRORS_MASK) {
-		LOG_ERR("%s error bit(s) set in Interrupt Status Reg.: 0x%08X",
+		LOG_ERR_RATELIMIT_RATE(1000, "%s error bit(s) set in Interrupt Status Reg.: 0x%08X",
 			dev->name, reg_val);
 	}
 
@@ -285,7 +285,8 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 			eth_xlnx_gem_handle_tx_done(dev);
 		}
 	}
-	if ((reg_val & ETH_XLNX_GEM_IXR_FRAME_RX_BIT) != 0) {
+	if ((reg_val & (ETH_XLNX_GEM_IXR_FRAME_RX_BIT | ETH_XLNX_GEM_IXR_RX_USED_BIT |
+		       ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT)) != 0) {
 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
 			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
@@ -346,7 +347,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 
 	tx_data_length = tx_data_remaining = net_pkt_get_len(pkt);
 	if (tx_data_length == 0) {
-		LOG_ERR("%s cannot TX, zero packet length", dev->name);
+		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, zero packet length", dev->name);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.errors.tx++;
 #endif
@@ -375,7 +376,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	}
 
 	if (bds_reqd > dev_data->tx_bd_ring.free_bds) {
-		LOG_ERR("%s cannot TX, packet length %hu requires "
+		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, packet length %hu requires "
 			"%hhu BDs, current free count = %hhu",
 			dev->name, tx_data_length, bds_reqd,
 			dev_data->tx_bd_ring.free_bds);
@@ -485,7 +486,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	/* Block until TX has completed */
 	sem_status = k_sem_take(&dev_data->tx_done_sem, K_MSEC(100));
 	if (sem_status < 0) {
-		LOG_ERR("%s TX confirmation timed out", dev->name);
+		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.tx_timeout_count++;
 #endif
@@ -1065,7 +1066,9 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
 		reg_val |= ETH_XLNX_GEM_NWCFG_1000_BIT;
 	} else {
 		if (!PHY_LINK_IS_SPEED_10M(state->speed)) {
-			LOG_ERR("%s unexpected link speed instead of expected 10MBps", dev->name);
+			LOG_ERR_RATELIMIT_RATE(
+				1000, "%s unexpected link speed instead of expected 10MBps",
+				dev->name);
 		}
 	}
 	/* Set FDEN bit for full-duplex operation */
@@ -1426,6 +1429,46 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
 }
 
 /**
+ * @brief Rebuild a halted RX queue and restart DMA at descriptor zero.
+ * @param dev Pointer to the device data
+ */
+static void eth_xlnx_gem_reset_rx_queue(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	k_spinlock_key_t key = k_spin_lock(&dev_data->nwcfg_lock);
+	uint32_t ctrl = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+
+	/* RXQBASE writes are ignored while RX is enabled (UG585, gem.rx_qbar). */
+	sys_write32(ctrl & ~ETH_XLNX_GEM_NWCTRL_RXEN_BIT,
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	barrier_dmem_fence_full();
+
+	for (uint32_t i = 0U; i < dev_conf->rx_bd_count; i++) {
+		uint32_t addr = (uint32_t)dev_data->first_rx_buffer +
+				(i * dev_conf->rx_buffer_size);
+		struct eth_xlnx_gem_bd *bd = &dev_data->rx_bd_ring.first_bd[i];
+
+		addr &= ~(ETH_XLNX_GEM_RX_BD_USED_BIT | ETH_XLNX_GEM_RX_BD_WRAP_BIT);
+		if (i == (dev_conf->rx_bd_count - 1U)) {
+			addr |= ETH_XLNX_GEM_RX_BD_WRAP_BIT;
+		}
+		sys_write32(0U, (uintptr_t)&bd->ctrl);
+		sys_write32(addr, (uintptr_t)&bd->addr);
+	}
+	dev_data->rx_bd_ring.next_to_process = 0U;
+	dev_data->rx_bd_ring.next_to_use = 0U;
+	dev_data->rx_bd_ring.free_bds = dev_conf->rx_bd_count;
+
+	/* Publish the rebuilt ring before resetting the hardware cursor. */
+	barrier_dmem_fence_full();
+	sys_write32((uint32_t)dev_data->rx_bd_ring.first_bd,
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXQBASE_OFFSET);
+	sys_write32(ctrl, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	k_spin_unlock(&dev_data->nwcfg_lock, key);
+}
+
+/**
  * @brief GEM RX data pending handler wrapper for the work queue
  * Wraps the RX data pending handler, eth_xlnx_gem_handle_rx_pending,
  * for the scenario in which the current GEM device is configured
@@ -1474,11 +1517,15 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 	uint32_t rx_data_length;
 	uint32_t rx_data_remaining;
 	struct net_pkt *pkt;
+	uint32_t skipped_bds = 0U;
 
-	/*
-	 * TODO Evaluate error flags from RX status register word
-	 * here for proper error handling.
-	 */
+	uint32_t rx_status = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
+	bool reset_rx = false;
+
+	/* A halted queue can contain an incomplete frame with no EOF. */
+	if ((rx_status & (ETH_XLNX_GEM_RXSR_BNA_BIT | ETH_XLNX_GEM_RXSR_OVERRUN_BIT)) != 0U) {
+		goto rx_done;
+	}
 
 	while (1) {
 		curr_bd_idx = dev_data->rx_bd_ring.next_to_process;
@@ -1504,9 +1551,13 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 			 * Although the current BD is marked as 'used', it
 			 * doesn't contain the SOF bit.
 			 */
-			LOG_ERR("%s unexpected missing SOF bit in RX BD [%u]",
-				dev->name, first_bd_idx);
-			break;
+			/* Resync to the next SOF, using the normal BD release path. */
+			reg_val = sys_read32(reg_addr) & ~ETH_XLNX_GEM_RX_BD_USED_BIT;
+			sys_write32(reg_val, reg_addr);
+			dev_data->rx_bd_ring.next_to_process =
+				(first_bd_idx + 1U) % dev_conf->rx_bd_count;
+			skipped_bds++;
+			continue;
 		}
 
 		/*
@@ -1522,6 +1573,10 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 					 (reg_val & ETH_XLNX_GEM_RX_BD_FRAME_LENGTH_MASK);
 			if ((reg_val & ETH_XLNX_GEM_RX_BD_END_OF_FRAME_BIT) == 0) {
 				last_bd_idx = (last_bd_idx + 1) % dev_conf->rx_bd_count;
+				if (last_bd_idx == first_bd_idx) {
+					reset_rx = true;
+					goto rx_done;
+				}
 			}
 		} while ((reg_val & ETH_XLNX_GEM_RX_BD_END_OF_FRAME_BIT) == 0);
 
@@ -1539,7 +1594,7 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 		pkt = net_pkt_rx_alloc_with_buffer(dev_data->iface, rx_data_length,
 						   NET_AF_UNSPEC, 0, K_NO_WAIT);
 		if (pkt == NULL) {
-			LOG_ERR("RX packet buffer alloc failed: %u bytes",
+			LOG_ERR_RATELIMIT_RATE(1000, "RX packet buffer alloc failed: %u bytes",
 				rx_data_length);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 			dev_data->stats.errors.rx++;
@@ -1587,7 +1642,8 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 		/* Propagate the received packet to the network stack */
 		if (pkt != NULL) {
 			if (net_recv_data(dev_data->iface, pkt) < 0) {
-				LOG_ERR("%s RX packet hand-over to IP stack failed",
+				LOG_ERR_RATELIMIT_RATE(
+					1000, "%s RX packet hand-over to IP stack failed",
 					dev->name);
 				net_pkt_unref(pkt);
 			}
@@ -1600,8 +1656,21 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 		}
 	}
 
-	/* Clear the RX status register */
-	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
+rx_done:
+	if (skipped_bds != 0U) {
+		LOG_ERR_RATELIMIT_RATE(1000, "%s RX resync skipped %u BDs", dev->name, skipped_bds);
+	}
+
+	/* Read and clear RX status, including buffer-not-available and overrun. */
+	rx_status |= sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
+	if (reset_rx || skipped_bds != 0U ||
+	    (rx_status & (ETH_XLNX_GEM_RXSR_BNA_BIT | ETH_XLNX_GEM_RXSR_OVERRUN_BIT)) != 0U) {
+		LOG_ERR_RATELIMIT_RATE(1000, "%s RX queue reset, status 0x%08X",
+				       dev->name, rx_status);
+		eth_xlnx_gem_reset_rx_queue(dev);
+	}
+	sys_write32(rx_status & ETH_XLNX_GEM_RXSRCLR_MASK,
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
 	/* Re-enable the frame received interrupt source */
 	sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
 		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
@@ -1699,7 +1768,7 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 	} while (bd_is_last == 0 && curr_bd_idx != first_bd_idx);
 
 	if (curr_bd_idx == first_bd_idx && bd_is_last == 0) {
-		LOG_WRN("%s TX done handling wrapped around", dev->name);
+		LOG_WRN_RATELIMIT_RATE(1000, "%s TX done handling wrapped around", dev->name);
 	}
 
 	dev_data->tx_bd_ring.next_to_process =
