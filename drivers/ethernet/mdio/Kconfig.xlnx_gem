@@ -13,9 +13,12 @@ if MDIO_XLNX_GEM
 
 config MDIO_XLNX_GEM_IDLE_TIMEOUT_US
 	int "MDIO idle wait timeout"
-	default 1000000
+	default 1000
+	range 100 10000
 	help
 	  Timeout in microseconds to wait for the GEM MDIO Bus
 	  to become idle before or after a read or write operation.
+	  A 64-cycle frame at 133 MHz / 224 takes about 108 us.
+	  Polls sleep between retries; PHY boot settling belongs in the PHY driver.
 
 endif # MDIO_XLNX_GEM

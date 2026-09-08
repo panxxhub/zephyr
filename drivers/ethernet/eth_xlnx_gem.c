@@ -234,7 +234,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 
 	ret = phy_link_callback_set(dev_conf->phy_dev, eth_xlnx_gem_phy_cb, (void *)dev);
 	if (ret) {
-		LOG_ERR("%s: set PHY callback failed", dev->name);
+		LOG_ERR_RATELIMIT_RATE(1000, "%s: set PHY callback failed", dev->name);
 		return;
 	}
 }
@@ -261,7 +261,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 	 * interrupt status register. -> For now, just log them
 	 */
 	if (reg_val & ETH_XLNX_GEM_IXR_ERRORS_MASK) {
-		LOG_ERR("%s error bit(s) set in Interrupt Status Reg.: 0x%08X",
+		LOG_ERR_RATELIMIT_RATE(1000, "%s error bit(s) set in Interrupt Status Reg.: 0x%08X",
 			dev->name, reg_val);
 	}
 
@@ -346,7 +346,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 
 	tx_data_length = tx_data_remaining = net_pkt_get_len(pkt);
 	if (tx_data_length == 0) {
-		LOG_ERR("%s cannot TX, zero packet length", dev->name);
+		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, zero packet length", dev->name);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.errors.tx++;
 #endif
@@ -375,7 +375,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	}
 
 	if (bds_reqd > dev_data->tx_bd_ring.free_bds) {
-		LOG_ERR("%s cannot TX, packet length %hu requires "
+		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, packet length %hu requires "
 			"%hhu BDs, current free count = %hhu",
 			dev->name, tx_data_length, bds_reqd,
 			dev_data->tx_bd_ring.free_bds);
@@ -485,7 +485,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	/* Block until TX has completed */
 	sem_status = k_sem_take(&dev_data->tx_done_sem, K_MSEC(100));
 	if (sem_status < 0) {
-		LOG_ERR("%s TX confirmation timed out", dev->name);
+		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.tx_timeout_count++;
 #endif
@@ -1065,7 +1065,9 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
 		reg_val |= ETH_XLNX_GEM_NWCFG_1000_BIT;
 	} else {
 		if (!PHY_LINK_IS_SPEED_10M(state->speed)) {
-			LOG_ERR("%s unexpected link speed instead of expected 10MBps", dev->name);
+			LOG_ERR_RATELIMIT_RATE(
+				1000, "%s unexpected link speed instead of expected 10MBps",
+				dev->name);
 		}
 	}
 	/* Set FDEN bit for full-duplex operation */
@@ -1504,9 +1506,16 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 			 * Although the current BD is marked as 'used', it
 			 * doesn't contain the SOF bit.
 			 */
-			LOG_ERR("%s unexpected missing SOF bit in RX BD [%u]",
-				dev->name, first_bd_idx);
-			break;
+			LOG_ERR_RATELIMIT_RATE(1000, "%s unexpected missing SOF bit in RX BD [%u]",
+					       dev->name, first_bd_idx);
+			/* Recycle only this CPU-owned orphan, preserving address and wrap. */
+			sys_write32(0U, reg_ctrl);
+			barrier_dmem_fence_full();
+			reg_val = sys_read32(reg_addr) & ~ETH_XLNX_GEM_RX_BD_USED_BIT;
+			sys_write32(reg_val, reg_addr);
+			dev_data->rx_bd_ring.next_to_process =
+				(first_bd_idx + 1U) % dev_conf->rx_bd_count;
+			continue;
 		}
 
 		/*
@@ -1539,7 +1548,7 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 		pkt = net_pkt_rx_alloc_with_buffer(dev_data->iface, rx_data_length,
 						   NET_AF_UNSPEC, 0, K_NO_WAIT);
 		if (pkt == NULL) {
-			LOG_ERR("RX packet buffer alloc failed: %u bytes",
+			LOG_ERR_RATELIMIT_RATE(1000, "RX packet buffer alloc failed: %u bytes",
 				rx_data_length);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 			dev_data->stats.errors.rx++;
@@ -1587,7 +1596,8 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 		/* Propagate the received packet to the network stack */
 		if (pkt != NULL) {
 			if (net_recv_data(dev_data->iface, pkt) < 0) {
-				LOG_ERR("%s RX packet hand-over to IP stack failed",
+				LOG_ERR_RATELIMIT_RATE(
+					1000, "%s RX packet hand-over to IP stack failed",
 					dev->name);
 				net_pkt_unref(pkt);
 			}
@@ -1699,7 +1709,7 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 	} while (bd_is_last == 0 && curr_bd_idx != first_bd_idx);
 
 	if (curr_bd_idx == first_bd_idx && bd_is_last == 0) {
-		LOG_WRN("%s TX done handling wrapped around", dev->name);
+		LOG_WRN_RATELIMIT_RATE(1000, "%s TX done handling wrapped around", dev->name);
 	}
 
 	dev_data->tx_bd_ring.next_to_process =
