@@ -21,7 +21,8 @@ permissions:
 jobs:
   assignment:
     name: Pull Request/Issue Assignment
-    if: github.event.pull_request.draft == false
+    # Maintainer assignment uses an upstream-only bot credential.
+    if: github.repository == 'zephyrproject-rtos/zephyr' && github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

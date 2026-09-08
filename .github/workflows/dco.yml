@@ -28,5 +28,31 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
+      - name: Select compliance range
+        id: compliance-range
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          comparison_base="origin/${BASE_REF}"
+          if [ "${{ github.repository }}" != "zephyrproject-rtos/zephyr" ]; then
+            comparison_base="${BASE_SHA}"
+            import_merge=$(git rev-list --reverse --first-parent --merges \
+              "${BASE_SHA}..HEAD" | head -n 1)
+            if [ -n "${import_merge}" ]; then
+              imported_commits=$(git rev-list --count \
+                "${BASE_SHA}..${import_merge}^2")
+              if [ "${imported_commits}" -ge 100 ]; then
+                comparison_base="${import_merge}"
+                echo "Detected an import of ${imported_commits} commits"
+              fi
+            fi
+          fi
+
+          echo "range=${comparison_base}.." >> "${GITHUB_OUTPUT}"
+          echo "Checking ${comparison_base}.."
+
       - name: Check commit sign-off
         uses: zephyrproject-rtos/action-dco@e3485a11e085fdc05fa4320e9cc3a86ccd665d89 # v1.0.0
+        with:
+          commit-range: ${{ steps.compliance-range.outputs.range }}
