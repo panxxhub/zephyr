@@ -129,6 +129,10 @@ static int64_t k_uptime_get(void)
 {
 	return now_us / 1000;
 }
+static uint64_t k_ticks_to_us_floor64(int64_t value)
+{
+	return value * 100;
+}
 static int64_t k_us_to_ticks_ceil64(int us)
 {
 	return (us + 99) / 100;
