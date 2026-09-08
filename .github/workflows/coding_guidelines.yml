@@ -5,19 +5,49 @@ on: pull_request
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   compliance_job:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     name: Run coding guidelines checks on patch series (PR)
     steps:
     - name: Checkout the code
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        persist-credentials: false
         ref: ${{ github.event.pull_request.head.sha }}
         fetch-depth: 0
 
+    - name: Select compliance range
+      id: compliance-range
+      env:
+        BASE_REF: ${{ github.base_ref }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        comparison_base="origin/${BASE_REF}"
+        if [ "${{ github.repository }}" != "zephyrproject-rtos/zephyr" ]; then
+          comparison_base="${BASE_SHA}"
+          import_merge=$(git rev-list --reverse --first-parent --merges \
+            "${BASE_SHA}..HEAD" | head -n 1)
+          if [ -n "${import_merge}" ]; then
+            imported_commits=$(git rev-list --count \
+              "${BASE_SHA}..${import_merge}^2")
+            if [ "${imported_commits}" -ge 100 ]; then
+              comparison_base="${import_merge}"
+              echo "Detected an import of ${imported_commits} commits"
+            fi
+          fi
+        fi
+
+        echo "range=${comparison_base}.." >> "${GITHUB_OUTPUT}"
+        echo "Checking ${comparison_base}.."
+
     - name: Set up Python
-      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
       with:
         python-version: 3.12
         cache: pip
@@ -44,21 +74,22 @@ jobs:
         git remote -v
         rm -fr ".git/rebase-apply"
         rm -fr ".git/rebase-merge"
-        git rebase origin/${BASE_REF}
+        if [ "${{ github.repository }}" = "zephyrproject-rtos/zephyr" ]; then
+          git rebase origin/${BASE_REF}
+        fi
         git clean -f -d
         source zephyr-env.sh
         # debug
         ls -la
         git log  --pretty=oneline | head -n 10
-        ./scripts/ci/guideline_check.py --output output.txt -c origin/${BASE_REF}..
+        ./scripts/ci/guideline_check.py --annotate --output output.txt -c "${{ steps.compliance-range.outputs.range }}"
 
     - name: check-warns
       run: |
         if [[ -s "output.txt" ]]; then
-            errors=$(cat output.txt)
-            errors="${errors//'%'/'%25'}"
-            errors="${errors//$'\n'/'%0A'}"
-            errors="${errors//$'\r'/'%0D'}"
-            echo "::error file=output.txt::$errors"
+            echo "Coding guideline violations, annotated on the changed lines:"
+            cat output.txt
+            count=$(wc -l < output.txt)
+            echo "::error title=Coding guidelines::${count} coding guideline violation(s), see the annotations on the changed lines"
             exit 1;
         fi

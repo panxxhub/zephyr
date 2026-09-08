@@ -28,6 +28,7 @@ LOG_MODULE_DECLARE(net_ipv6, CONFIG_NET_IPV6_LOG_LEVEL);
 #include "ipv6.h"
 #include "nbr.h"
 #include "6lo.h"
+#include "route_ipv6.h"
 #include "route.h"
 #include "net_stats.h"
 
@@ -147,13 +148,13 @@ static int mld_send(struct net_pkt *pkt)
 	return 0;
 }
 
-#if defined(CONFIG_NET_MCAST_ROUTE_MLD_REPORTS)
-static void count_mcast_routes(struct net_route_entry_mcast *entry, void *user_data)
+#if defined(CONFIG_NET_IPV6_MCAST_ROUTE_MLD_REPORTS)
+static void count_mcast_routes(struct net_route_ipv6_entry_mcast *entry, void *user_data)
 {
 	(*((int *)user_data))++;
 }
 
-static void append_mcast_routes(struct net_route_entry_mcast *entry, void *user_data)
+static void append_mcast_routes(struct net_route_ipv6_entry_mcast *entry, void *user_data)
 {
 	struct mcast_route_appending_info *info = (struct mcast_route_appending_info *)user_data;
 	struct net_if_mcast_addr *mcasts = info->iface->config.ip.ipv6->mcast;
@@ -212,15 +213,9 @@ drop:
 	return ret;
 }
 
-int net_ipv6_mld_rejoin(struct net_if *iface, const struct net_in6_addr *addr)
+int net_ipv6_mld_rejoin(struct net_if *iface, struct net_if_mcast_addr *addr)
 {
-	struct net_if_mcast_addr *maddr;
-	int ret = 0;
-
-	maddr = net_if_ipv6_maddr_lookup(addr, &iface);
-	if (maddr == NULL) {
-		return -ENOENT;
-	}
+	int ret;
 
 	if (net_if_flag_is_set(iface, NET_IF_IPV6_NO_MLD)) {
 		return 0;
@@ -230,21 +225,22 @@ int net_ipv6_mld_rejoin(struct net_if *iface, const struct net_in6_addr *addr)
 		goto out;
 	}
 
-	ret = net_ipv6_mld_send_single(iface, addr, NET_IPV6_MLDv2_CHANGE_TO_EXCLUDE_MODE);
+	ret = net_ipv6_mld_send_single(iface, &addr->address.in6_addr,
+				       NET_IPV6_MLDv2_CHANGE_TO_EXCLUDE_MODE);
 	if (ret < 0) {
 		return ret;
 	}
 
 out:
-	net_if_ipv6_maddr_join(iface, maddr);
+	net_if_ipv6_maddr_join(iface, addr);
 
-	net_if_mcast_monitor(iface, &maddr->address, true);
+	net_if_mcast_monitor(iface, &addr->address, true);
 
 	net_mgmt_event_notify_with_info(NET_EVENT_IPV6_MCAST_JOIN, iface,
-					&maddr->address.in6_addr,
+					&addr->address.in6_addr,
 					sizeof(struct net_in6_addr));
 
-	return ret;
+	return 0;
 }
 
 int net_ipv6_mld_join(struct net_if *iface, const struct net_in6_addr *addr)
@@ -335,6 +331,27 @@ out:
 	return ret;
 }
 
+void net_ipv6_mld_send_leave(struct net_if *iface, const struct net_if_mcast_addr *addr)
+{
+	if (net_if_flag_is_set(iface, NET_IF_IPV6_NO_MLD)) {
+		return;
+	}
+
+	if (net_if_is_offloaded(iface)) {
+		goto out;
+	}
+
+	net_ipv6_mld_send_single(iface, &addr->address.in6_addr,
+				 NET_IPV6_MLDv2_CHANGE_TO_INCLUDE_MODE);
+
+out:
+	net_if_mcast_monitor(iface, &addr->address, false);
+
+	net_mgmt_event_notify_with_info(NET_EVENT_IPV6_MCAST_LEAVE, iface,
+					&addr->address.in6_addr,
+					sizeof(struct net_in6_addr));
+}
+
 static int send_mld_report(struct net_if *iface)
 {
 	struct net_if_ipv6 *ipv6 = iface->config.ip.ipv6;
@@ -352,12 +369,12 @@ static int send_mld_report(struct net_if *iface)
 		count++;
 	}
 
-#if defined(CONFIG_NET_MCAST_ROUTE_MLD_REPORTS)
+#if defined(CONFIG_NET_IPV6_MCAST_ROUTE_MLD_REPORTS)
 	/* Increase number of slots by a number of multicast routes that
 	 * can be later added to the report. Checking for duplicates is done
 	 * while appending an entry.
 	 */
-	net_route_mcast_foreach(count_mcast_routes, NULL, (void *)&count);
+	net_route_ipv6_mcast_foreach(count_mcast_routes, NULL, (void *)&count);
 #endif
 
 	pkt = net_pkt_alloc_with_buffer(iface, IPV6_OPT_HDR_ROUTER_ALERT_LEN +
@@ -386,7 +403,7 @@ static int send_mld_report(struct net_if *iface)
 		}
 	}
 
-#if defined(CONFIG_NET_MCAST_ROUTE_MLD_REPORTS)
+#if defined(CONFIG_NET_IPV6_MCAST_ROUTE_MLD_REPORTS)
 	/* Append information about multicast routes as packets will be
 	 * forwarded to these interfaces on reception.
 	 */
@@ -397,7 +414,7 @@ static int send_mld_report(struct net_if *iface)
 	info.iface = iface;
 	info.skipped = 0;
 
-	net_route_mcast_foreach(append_mcast_routes, NULL, &info);
+	net_route_ipv6_mcast_foreach(append_mcast_routes, NULL, &info);
 
 	ret = info.status;
 	if (ret < 0) {

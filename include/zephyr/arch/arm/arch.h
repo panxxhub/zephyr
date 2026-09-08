@@ -19,6 +19,7 @@
 /* Add include for DTS generated information */
 #include <zephyr/devicetree.h>
 
+#include <zephyr/arch/arm/bit_rev.h>
 #include <zephyr/arch/arm/thread.h>
 #include <zephyr/arch/arm/exception.h>
 #include <zephyr/arch/arm/irq.h>
@@ -40,7 +41,8 @@
 #elif defined(CONFIG_CPU_AARCH32_CORTEX_R) || defined(CONFIG_CPU_AARCH32_CORTEX_A)
 #include <zephyr/arch/arm/cortex_a_r/cpu.h>
 #include <zephyr/arch/arm/cortex_a_r/sys_io.h>
-#if defined(CONFIG_AARCH32_ARMV8_R) || defined(CONFIG_CPU_CORTEX_A7)
+#if defined(CONFIG_AARCH32_ARMV8_R) || defined(CONFIG_AARCH32_ARMV8_A) || \
+	defined(CONFIG_CPU_CORTEX_A7)
 #include <zephyr/arch/arm/cortex_a_r/lib_helpers.h>
 #include <zephyr/arch/arm/cortex_a_r/armv7_v8_timer.h>
 #else

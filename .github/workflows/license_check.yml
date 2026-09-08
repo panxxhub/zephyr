@@ -5,22 +5,45 @@ on: [pull_request]
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   scancode_job:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     name: Scan code for licenses
     steps:
     - name: Checkout the code
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
+        persist-credentials: false
         fetch-depth: 0
+        ref: ${{ github.event.pull_request.head.sha }}
+    - name: Select fork scan baseline
+      if: github.repository != 'zephyrproject-rtos/zephyr'
+      env:
+        BASE_REF: ${{ github.base_ref }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: |
+        import_merge=$(git rev-list --reverse --first-parent --merges \
+          "${BASE_SHA}..HEAD" | head -n 1)
+        if [ -n "${import_merge}" ]; then
+          imported_commits=$(git rev-list --count \
+            "${BASE_SHA}..${import_merge}^2")
+          if [ "${imported_commits}" -ge 100 ]; then
+            git update-ref "refs/remotes/origin/${BASE_REF}" "${import_merge}"
+            echo "Scanning files added after an import of ${imported_commits} commits"
+          fi
+        fi
     - name: Scan the code
       id: scancode
       uses: zephyrproject-rtos/action_scancode@23ef91ce31cd4b954366a7b71eea47520da9b380 # v4
       with:
         directory-to-scan: 'scan/'
     - name: Artifact Upload
-      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: scancode
         path: ./artifacts

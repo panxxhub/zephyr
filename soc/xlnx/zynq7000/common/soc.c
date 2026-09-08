@@ -56,20 +56,6 @@ static const struct arm_mmu_region mmu_regions[] = {
 				      MPERM_R | MPERM_W),
 	/* ARM Arch timer, GIC are covered by the MPCore mapping */
 
-/* GEMs */
-#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gem0))
-	MMU_REGION_FLAT_ENTRY("gem0",
-			      DT_REG_ADDR(DT_NODELABEL(gem0)),
-			      DT_REG_SIZE(DT_NODELABEL(gem0)),
-			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
-#endif
-#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(gem1))
-	MMU_REGION_FLAT_ENTRY("gem1",
-			      DT_REG_ADDR(DT_NODELABEL(gem1)),
-			      DT_REG_SIZE(DT_NODELABEL(gem1)),
-			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
-#endif
-
 DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 
 	/*
@@ -98,6 +84,7 @@ const struct arm_mmu_config mmu_config = {
 	.mmu_regions = mmu_regions,
 };
 
+#ifdef CONFIG_SMP
 static void zynq_scu_enable(void)
 {
 	uint32_t scu_ctrl;
@@ -127,6 +114,7 @@ static void zynq_enable_smp_mode(void)
 		barrier_isync_fence_full();
 	}
 }
+#endif /* CONFIG_SMP */
 
 /*
  * Copy .ocm_data from its ROM load address (in DDR) to OCM.

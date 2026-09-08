@@ -56,8 +56,8 @@ static ALWAYS_INLINE unsigned int arch_irq_lock(void)
 	key = __get_BASEPRI();
 	__set_BASEPRI_MAX(_EXC_IRQ_DEFAULT_PRIO);
 	__ISB();
-#elif defined(CONFIG_ARMV7_R) || defined(CONFIG_AARCH32_ARMV8_R) \
-	|| defined(CONFIG_ARMV7_A)
+#elif defined(CONFIG_ARMV7_R) || defined(CONFIG_AARCH32_ARMV8_R) ||                                \
+	defined(CONFIG_ARM_A_PROFILE_AARCH32)
 	__asm__ volatile(
 		"mrs %0, cpsr;"
 		"and %0, #" STRINGIFY(I_BIT) ";"
@@ -88,8 +88,8 @@ static ALWAYS_INLINE void arch_irq_unlock(unsigned int key)
 #elif defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
 	__set_BASEPRI(key);
 	__ISB();
-#elif defined(CONFIG_ARMV7_R) || defined(CONFIG_AARCH32_ARMV8_R) \
-	|| defined(CONFIG_ARMV7_A)
+#elif defined(CONFIG_ARMV7_R) || defined(CONFIG_AARCH32_ARMV8_R) ||                                \
+	defined(CONFIG_ARM_A_PROFILE_AARCH32)
 	if (key != 0U) {
 		return;
 	}
@@ -103,6 +103,24 @@ static ALWAYS_INLINE bool arch_irq_unlocked(unsigned int key)
 {
 	/* This convention works for both PRIMASK and BASEPRI */
 	return key == 0U;
+}
+
+/** Implementation of @ref arch_cpu_irqs_are_enabled. */
+static ALWAYS_INLINE bool arch_cpu_irqs_are_enabled(void)
+{
+#if defined(CONFIG_ARMV6_M_ARMV8_M_BASELINE)
+	return __get_PRIMASK() == 0U;
+#elif defined(CONFIG_ARMV7_M_ARMV8_M_MAINLINE)
+	return __get_BASEPRI() == 0U;
+#elif defined(CONFIG_ARMV7_R) || defined(CONFIG_AARCH32_ARMV8_R) ||                                \
+	defined(CONFIG_ARM_A_PROFILE_AARCH32)
+	unsigned int cpsr;
+
+	__asm__ volatile("mrs %0, cpsr" : "=r" (cpsr));
+	return (cpsr & I_BIT) == 0U;
+#else
+#error Unknown ARM architecture
+#endif
 }
 
 #ifdef CONFIG_ZERO_LATENCY_IRQS

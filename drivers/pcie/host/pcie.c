@@ -376,6 +376,18 @@ static bool scan_flag(const struct pcie_scan_opt *opt, uint32_t flag)
 /* Forward declaration needed since scanning a device may reveal a bridge */
 static bool scan_bus(uint8_t bus, const struct pcie_scan_opt *opt);
 
+static inline bool should_skip_masked_bdf(pcie_bdf_t bdf, uint8_t func,
+					  const struct pcie_scan_opt *opt)
+{
+	ARG_UNUSED(func);
+
+	if (opt != NULL && opt->scan_masking_fn != NULL) {
+		return opt->scan_masking_fn(bdf);
+	}
+
+	return false;
+}
+
 static bool scan_dev(uint8_t bus, uint8_t dev, const struct pcie_scan_opt *opt)
 {
 	for (uint8_t func = 0; func <= PCIE_MAX_FUNC; func++) {
@@ -383,6 +395,11 @@ static bool scan_dev(uint8_t bus, uint8_t dev, const struct pcie_scan_opt *opt)
 		uint32_t secondary = 0;
 		uint32_t id, type;
 		bool do_cb;
+
+		/* Skip the scan loops if this BDF is registered in the mask */
+		if (should_skip_masked_bdf(bdf, func, opt)) {
+			continue;
+		}
 
 		id = pcie_conf_read(bdf, PCIE_CONF_ID);
 		if (!PCIE_ID_IS_VALID(id)) {
@@ -500,6 +517,12 @@ static bool pcie_dev_cb(pcie_bdf_t bdf, pcie_id_t id, void *cb_data)
 	return (data->found != data->max_dev);
 }
 
+#define PCIE_SCAN_EXTRA_BUS(node_id, prop, idx)                                \
+	if (data.found != data.max_dev) {                                          \
+		opt.bus = DT_PROP_BY_IDX(node_id, prop, idx);                     \
+		pcie_scan(&opt);                                                   \
+	}
+
 static int pcie_init(void)
 {
 	struct scan_data data;
@@ -533,7 +556,13 @@ static int pcie_init(void)
 
 	data.found = 0;
 
+	/* Scan default bus 0 */
 	pcie_scan(&opt);
+
+	/* Scan additional buses defined in devicetree scan-buses property */
+#if DT_INST_NODE_HAS_PROP(0, scan_buses)
+	DT_INST_FOREACH_PROP_ELEM(0, scan_buses, PCIE_SCAN_EXTRA_BUS)
+#endif
 
 	return 0;
 }

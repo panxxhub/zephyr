@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef ZEPHYR_INCLUDE_ARM_STRUCTS_H_
-#define ZEPHYR_INCLUDE_ARM_STRUCTS_H_
+#ifndef ZEPHYR_INCLUDE_ARCH_ARM_STRUCTS_H_
+#define ZEPHYR_INCLUDE_ARCH_ARM_STRUCTS_H_
 
 #include <zephyr/types.h>
 
@@ -12,6 +12,14 @@
 /* Per CPU architecture specifics */
 struct _cpu_arch {
 	int8_t exc_depth;
+#if defined(CONFIG_ARM_TRACK_ACTIVE_IRQ)
+	/*
+	 * INTID currently being serviced on this CPU, biased by one so
+	 * that the zero-initialized boot state reads as "none". Maintained
+	 * by the ISR wrapper; read through arch_irq_get_active().
+	 */
+	uint32_t active_irq;
+#endif
 };
 
 #else
@@ -30,4 +38,4 @@ struct _cpu_arch {
 
 #endif
 
-#endif /* ZEPHYR_INCLUDE_ARM_STRUCTS_H_ */
+#endif /* ZEPHYR_INCLUDE_ARCH_ARM_STRUCTS_H_ */

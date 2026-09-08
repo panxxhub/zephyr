@@ -42,7 +42,7 @@ fi
 
 err=0
 i=0
-sh_filter="(/_|run_parallel|compile|generate_coverage_report.sh|/ci\.)"
+sh_filter="(./_|run_parallel|compile|generate_coverage_report.sh|/ci\.)"
 
 if [ -n "${TESTS_FILE}" ]; then
 	#remove comments and empty lines from file
@@ -64,6 +64,8 @@ tmp_res_file=tmp.xml
 
 if [[ -v BOARD ]]; then
 	export FAILURE_EXTRA_INFO=" on ${BOARD}"
+else
+  export FAILURE_EXTRA_INFO=""
 fi
 
 all_cases_a=( $all_cases )

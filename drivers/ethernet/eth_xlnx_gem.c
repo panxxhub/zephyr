@@ -2,6 +2,7 @@
  * Xilinx Processor System Gigabit Ethernet controller (GEM) driver
  *
  * Copyright (c) 2021, Weidmueller Interface GmbH & Co. KG
+ * Copyright (c) 2026, Immo Birnbaum
  * SPDX-License-Identifier: Apache-2.0
  *
  * Known current limitations / TODOs:
@@ -11,7 +12,6 @@
  * - VLAN tags not considered.
  * - Wake-on-LAN interrupt not supported.
  * - Send function is not SMP-capable (due to single TX done semaphore).
- * - Interrupt-driven PHY management not supported - polling only.
  * - No detailed error handling when evaluating the Interrupt Status,
  *   RX Status and TX Status registers.
  */
@@ -20,11 +20,9 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/sys/__assert.h>
-#if defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
-#include <zephyr/drivers/syscon.h>
-#endif
 #include <zephyr/cache.h>
 
+#include <zephyr/net/phy.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/ethernet.h>
 #include <ethernet/eth_stats.h>
@@ -36,57 +34,59 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(LOG_MODULE_NAME);
 
-#if CONFIG_QEMU_TARGET ||\
-	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_rx_checksum_offload) ||\
-	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_tx_checksum_offload)
-#warning "xlnx_gem: at least one instance has checksum offloading to hardware disabled"
-#endif
-
 static int  eth_xlnx_gem_dev_init(const struct device *dev);
 static void eth_xlnx_gem_iface_init(struct net_if *iface);
 static void eth_xlnx_gem_isr(const struct device *dev);
 static int  eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt);
-static int  eth_xlnx_gem_start_device(const struct device *dev);
-static int  eth_xlnx_gem_stop_device(const struct device *dev);
+static int  eth_xlnx_gem_start_device(const struct device *dev, struct net_if *iface);
+static int  eth_xlnx_gem_stop_device(const struct device *dev, struct net_if *iface);
 static enum ethernet_hw_caps
-	eth_xlnx_gem_get_capabilities(const struct device *dev);
+	eth_xlnx_gem_get_capabilities(const struct device *dev, struct net_if *iface);
 static int  eth_xlnx_gem_get_config(const struct device *dev,
+				    struct net_if *iface,
 				    enum ethernet_config_type type,
 				    struct ethernet_config *config);
 static int eth_xlnx_gem_set_config(const struct device *dev,
+				   struct net_if *iface,
 				   enum ethernet_config_type type,
 				   const struct ethernet_config *config);
-#if defined(CONFIG_NET_STATISTICS_ETHERNET)
-static struct net_stats_eth *eth_xlnx_gem_stats(const struct device *dev);
+static const struct device *eth_xlnx_gem_get_phy(const struct device *dev,
+						 struct net_if *iface);
+#ifdef CONFIG_NET_STATISTICS_ETHERNET
+static struct net_stats_eth *eth_xlnx_gem_get_stats(const struct device *dev,
+						struct net_if *iface);
 #endif
 
 static void eth_xlnx_gem_reset_hw(const struct device *dev);
-static void eth_xlnx_gem_configure_clocks(const struct device *dev);
 static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev);
-static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev);
 static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
 					     const struct ethernet_filter *filter);
 static void eth_xlnx_gem_set_mac_address(const struct device *dev);
 static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev);
-static void eth_xlnx_gem_phy_link_changed(const struct device *phy_dev,
-					  struct phy_link_state *state,
-					  void *user_data);
 static void eth_xlnx_gem_configure_buffers(const struct device *dev);
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
 static void eth_xlnx_gem_tx_done_work(struct k_work *item);
 static void eth_xlnx_gem_handle_tx_done(const struct device *dev);
+static void eth_xlnx_gem_configure_clocks(const struct device *dev,
+					  struct phy_link_state *state);
+static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
+					      struct phy_link_state *state);
+static void eth_xlnx_gem_phy_cb(const struct device *phy,
+				struct phy_link_state *state,
+				void *eth_dev);
 
 static const struct ethernet_api eth_xlnx_gem_apis = {
 	.iface_api.init   = eth_xlnx_gem_iface_init,
 	.get_capabilities = eth_xlnx_gem_get_capabilities,
+	.get_phy	  = eth_xlnx_gem_get_phy,
 	.send		  = eth_xlnx_gem_send,
 	.start		  = eth_xlnx_gem_start_device,
 	.stop		  = eth_xlnx_gem_stop_device,
 	.get_config	  = eth_xlnx_gem_get_config,
 	.set_config	  = eth_xlnx_gem_set_config,
-#if defined(CONFIG_NET_STATISTICS_ETHERNET)
-	.get_stats	  = eth_xlnx_gem_stats,
+#ifdef CONFIG_NET_STATISTICS_ETHERNET
+	.get_stats	  = eth_xlnx_gem_get_stats,
 #endif
 };
 
@@ -117,36 +117,23 @@ DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_BUFFER_SIZE_CHECK)
 
 /**
  * @brief GEM device initialization function
- * Initializes the GEM itself, the DMA memory area used by the GEM and,
- * if enabled, an associated PHY attached to the GEM's MDIO interface.
+ * Initializes the respective GEM controller instance itself and its
+ * associated DMA area.
  *
  * @param dev Pointer to the device data
  * @retval 0 if the device initialization completed successfully
  */
 static int eth_xlnx_gem_dev_init(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+#if CONFIG_QEMU_TARGET ||\
+	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_rx_checksum_offload) ||\
+	DT_ANY_INST_HAS_BOOL_STATUS_OKAY(disable_tx_checksum_offload)
+	LOG_DBG("At least one GEM instance has hardware checksum offloading disabled");
+#endif
+
+	const struct eth_xlnx_gem_dev_cfg *dev_conf __maybe_unused = DEV_CFG(dev);
 
 	/* Precondition checks using assertions */
-	/* Valid max. / nominal link speed value */
-	__ASSERT((dev_conf->max_link_speed == LINK_10MBIT ||
-		 dev_conf->max_link_speed == LINK_100MBIT ||
-		 dev_conf->max_link_speed == LINK_1GBIT),
-		 "%s invalid max./nominal link speed value %u",
-		 dev->name, (uint32_t)dev_conf->max_link_speed);
-
-	/* MDC clock divider validity check, SoC dependent */
-#if defined(CONFIG_SOC_XILINX_ZYNQMP)
-	__ASSERT(dev_conf->mdc_divider <= MDC_DIVIDER_48,
-		 "%s invalid MDC clock divider value %u, must be in "
-		 "range 0 to %u", dev->name, dev_conf->mdc_divider,
-		 (uint32_t)MDC_DIVIDER_48);
-#elif defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
-	__ASSERT(dev_conf->mdc_divider <= MDC_DIVIDER_224,
-		 "%s invalid MDC clock divider value %u, must be in "
-		 "range 0 to %u", dev->name, dev_conf->mdc_divider,
-		 (uint32_t)MDC_DIVIDER_224);
-#endif
 
 	/* AMBA AHB configuration options */
 	__ASSERT((dev_conf->ahb_burst_length == AHB_BURST_SINGLE ||
@@ -189,30 +176,22 @@ static int eth_xlnx_gem_dev_init(const struct device *dev)
 		 "must be 16380 bytes maximum.", dev->name,
 		 dev_conf->tx_buffer_size);
 
+	/* Map controller & clock control memory areas */
+	DEVICE_MMIO_NAMED_MAP(dev, mac, K_MEM_CACHE_NONE);
+	DEVICE_MMIO_NAMED_MAP(dev, clkc, K_MEM_CACHE_NONE);
+
 	/*
 	 * Initialization procedure as described in the Zynq-7000 TRM,
-	 * chapter 16.3.x.
+	 * chapter 16.3.x. MDIO initialization (16.3.4) is handled prior
+	 * to the following initialization procedure within the separate
+	 * GEM MDIO driver. TX clock divisor configuration (16.3.3) is
+	 * handled from within the PHY state change callback function
+	 * (if applicable).
 	 */
 	eth_xlnx_gem_reset_hw(dev);		/* Chapter 16.3.1 */
 	eth_xlnx_gem_set_initial_nwcfg(dev);	/* Chapter 16.3.2 */
 	eth_xlnx_gem_set_mac_address(dev);	/* Chapter 16.3.2 */
 	eth_xlnx_gem_set_initial_dmacr(dev);	/* Chapter 16.3.2 */
-
-	/*
-	 * Re-enable MDIO management port after reset_hw cleared NWCTRL.
-	 * The MDIO bus driver sets MDEN during its own init, but GEM's
-	 * reset_hw writes 0 to NWCTRL, clearing it. Restore it here so
-	 * the PHY driver's monitor_work can continue reading registers.
-	 */
-	if (dev_conf->phy_dev != NULL) {
-		uint32_t nwctrl = sys_read32(dev_conf->base_addr +
-					     ETH_XLNX_GEM_NWCTRL_OFFSET);
-		nwctrl |= ETH_XLNX_GEM_NWCTRL_MDEN_BIT;
-		sys_write32(nwctrl, dev_conf->base_addr +
-			    ETH_XLNX_GEM_NWCTRL_OFFSET);
-	}
-
-	eth_xlnx_gem_configure_clocks(dev);	/* Chapter 16.3.3 */
 	eth_xlnx_gem_configure_buffers(dev);	/* Chapter 16.3.5 */
 
 	return 0;
@@ -227,16 +206,19 @@ static int eth_xlnx_gem_dev_init(const struct device *dev)
 static void eth_xlnx_gem_iface_init(struct net_if *iface)
 {
 	const struct device *dev = net_if_get_device(iface);
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	int ret;
 
 	/* Set the initial contents of the current instance's run-time data */
 	dev_data->iface = iface;
 	net_if_set_link_addr(iface, dev_data->mac_addr, 6, NET_LINK_ETHERNET);
 	ethernet_init(iface);
-	net_if_carrier_off(iface);
 
-	/* Initialize work items for RX pending and TX done handlers */
+	/*
+	 * Initialize the (delayed) work items for RX pending and TX done
+	 * handling.
+	 */
 	k_work_init(&dev_data->tx_done_work, eth_xlnx_gem_tx_done_work);
 	k_work_init(&dev_data->rx_pend_work, eth_xlnx_gem_rx_pending_work);
 
@@ -247,26 +229,13 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 	/* Initialize the device's interrupt */
 	dev_conf->config_func(dev);
 
-	/* Register PHY link change callback if a PHY device is configured */
-	if (dev_conf->phy_dev != NULL) {
-		phy_link_callback_set(dev_conf->phy_dev,
-				      eth_xlnx_gem_phy_link_changed, (void *)dev);
-	} else {
-		/*
-		 * No PHY configured: assume link up at max configured speed.
-		 * Apply clock and speed settings, then bring carrier up.
-		 */
-		dev_data->eff_link_speed = dev_conf->max_link_speed;
-		eth_xlnx_gem_configure_clocks(dev);
-		eth_xlnx_gem_set_nwcfg_link_speed(dev);
-		net_eth_carrier_on(dev_data->iface);
+	/* PHY device is either an actual PHY device or a fixed link */
+	net_if_carrier_off(iface);
 
-		LOG_WRN("%s no PHY configured, assuming link up at %s",
-			dev->name,
-			(dev_conf->max_link_speed == LINK_1GBIT) ? "1 GBit/s" :
-			(dev_conf->max_link_speed == LINK_100MBIT) ? "100 MBit/s" :
-			(dev_conf->max_link_speed == LINK_10MBIT) ? "10 MBit/s" :
-			"undefined");
+	ret = phy_link_callback_set(dev_conf->phy_dev, eth_xlnx_gem_phy_cb, (void *)dev);
+	if (ret) {
+		LOG_ERR("%s: set PHY callback failed", dev->name);
+		return;
 	}
 }
 
@@ -280,12 +249,12 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
  */
 static void eth_xlnx_gem_isr(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t reg_val;
 
 	/* Read the interrupt status register */
-	reg_val = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_ISR_OFFSET);
+	reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 
 	/*
 	 * TODO: handling if one or more error flag(s) are set in the
@@ -307,9 +276,9 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 	 */
 	if ((reg_val & ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT) != 0) {
 		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-			    dev_conf->base_addr + ETH_XLNX_GEM_IDR_OFFSET);
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-			    dev_conf->base_addr + ETH_XLNX_GEM_ISR_OFFSET);
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 		if (dev_conf->defer_txd_to_queue) {
 			k_work_submit(&dev_data->tx_done_work);
 		} else {
@@ -318,9 +287,9 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 	}
 	if ((reg_val & ETH_XLNX_GEM_IXR_FRAME_RX_BIT) != 0) {
 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
-			    dev_conf->base_addr + ETH_XLNX_GEM_IDR_OFFSET);
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
-			    dev_conf->base_addr + ETH_XLNX_GEM_ISR_OFFSET);
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 		if (dev_conf->defer_rxp_to_queue) {
 			k_work_submit(&dev_data->rx_pend_work);
 		} else {
@@ -339,7 +308,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 	 */
 	sys_write32((0xFFFFFFFF & ~(ETH_XLNX_GEM_IXR_FRAME_RX_BIT |
 		    ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT)),
-		    dev_conf->base_addr + ETH_XLNX_GEM_ISR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 }
 
 /**
@@ -360,8 +329,8 @@ static void eth_xlnx_gem_isr(const struct device *dev)
  */
 static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 
 	uint16_t tx_data_length;
 	uint16_t tx_data_remaining;
@@ -374,14 +343,6 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	uint32_t reg_ctrl;
 	uint32_t reg_val;
 	int sem_status;
-
-	if (!dev_data->started || dev_data->eff_link_speed == LINK_DOWN ||
-			(!net_if_flag_is_set(dev_data->iface, NET_IF_UP))) {
-#ifdef CONFIG_NET_STATISTICS_ETHERNET
-		dev_data->stats.tx_dropped++;
-#endif
-		return -EIO;
-	}
 
 	tx_data_length = tx_data_remaining = net_pkt_get_len(pkt);
 	if (tx_data_length == 0) {
@@ -410,7 +371,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
 	} else {
 		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-			    dev_conf->base_addr + ETH_XLNX_GEM_IDR_OFFSET);
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 	}
 
 	if (bds_reqd > dev_data->tx_bd_ring.free_bds) {
@@ -423,7 +384,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 			k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
 		} else {
 			sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-				    dev_conf->base_addr + ETH_XLNX_GEM_IER_OFFSET);
+				    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
 		}
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.tx_dropped++;
@@ -442,7 +403,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 		k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
 	} else {
 		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-			    dev_conf->base_addr + ETH_XLNX_GEM_IER_OFFSET);
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
 	}
 
 	/*
@@ -512,9 +473,9 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	}
 
 	/* Set the start TX bit in the gem.net_ctrl register */
-	reg_val  = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	reg_val  = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 	reg_val |= ETH_XLNX_GEM_NWCTRL_STARTTX_BIT;
-	sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 	dev_data->stats.bytes.sent += tx_data_length;
@@ -545,10 +506,10 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
  * @param dev Pointer to the device data
  * @retval    0 upon successful completion
  */
-static int eth_xlnx_gem_start_device(const struct device *dev)
+static int eth_xlnx_gem_start_device(const struct device *dev,
+				     struct net_if *iface __unused)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t reg_val;
 
 	if (dev_data->started) {
@@ -558,22 +519,22 @@ static int eth_xlnx_gem_start_device(const struct device *dev)
 
 	/* Disable & clear all the MAC interrupts */
 	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_IDR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_ISR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 
 	/* Clear RX & TX status registers */
-	sys_write32(0xFFFFFFFF, dev_conf->base_addr + ETH_XLNX_GEM_TXSR_OFFSET);
-	sys_write32(0xFFFFFFFF, dev_conf->base_addr + ETH_XLNX_GEM_RXSR_OFFSET);
+	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXSR_OFFSET);
+	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
 
 	/* RX and TX enable */
-	reg_val  = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	reg_val  = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 	reg_val |= (ETH_XLNX_GEM_NWCTRL_RXEN_BIT | ETH_XLNX_GEM_NWCTRL_TXEN_BIT);
-	sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 
 	/* Enable all the MAC interrupts */
 	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_IER_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
 
 	LOG_DBG("%s started", dev->name);
 	return 0;
@@ -589,10 +550,10 @@ static int eth_xlnx_gem_start_device(const struct device *dev)
  * @param dev Pointer to the device data
  * @retval    0 upon successful completion
  */
-static int eth_xlnx_gem_stop_device(const struct device *dev)
+static int eth_xlnx_gem_stop_device(const struct device *dev,
+				    struct net_if *iface __unused)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t reg_val;
 
 	if (!dev_data->started) {
@@ -601,19 +562,19 @@ static int eth_xlnx_gem_stop_device(const struct device *dev)
 	dev_data->started = false;
 
 	/* RX and TX disable */
-	reg_val  = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	reg_val  = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 	reg_val &= (~(ETH_XLNX_GEM_NWCTRL_RXEN_BIT | ETH_XLNX_GEM_NWCTRL_TXEN_BIT));
-	sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 
 	/* Disable & clear all the MAC interrupts */
 	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_IDR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 	sys_write32(ETH_XLNX_GEM_IXR_ALL_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_ISR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 
 	/* Clear RX & TX status registers */
-	sys_write32(0xFFFFFFFF, dev_conf->base_addr + ETH_XLNX_GEM_TXSR_OFFSET);
-	sys_write32(0xFFFFFFFF, dev_conf->base_addr + ETH_XLNX_GEM_RXSR_OFFSET);
+	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXSR_OFFSET);
+	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
 
 	LOG_DBG("%s stopped", dev->name);
 	return 0;
@@ -629,19 +590,15 @@ static int eth_xlnx_gem_stop_device(const struct device *dev)
  * @return Enumeration containing the current GEM device's capabilities
  */
 static enum ethernet_hw_caps eth_xlnx_gem_get_capabilities(
-	const struct device *dev)
+	const struct device *dev,
+	struct net_if *iface __unused)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
 	enum ethernet_hw_caps caps = (enum ethernet_hw_caps)0;
 
-	if (dev_conf->max_link_speed == LINK_1GBIT) {
-		caps |= (ETHERNET_LINK_1000BASE | ETHERNET_LINK_100BASE |
-			 ETHERNET_LINK_10BASE);
-	} else if (dev_conf->max_link_speed == LINK_100MBIT) {
-		caps |= (ETHERNET_LINK_100BASE | ETHERNET_LINK_10BASE);
-	} else {
-		caps |= ETHERNET_LINK_10BASE;
-	}
+	caps |= ETHERNET_LINK_1000BASE |
+		ETHERNET_LINK_100BASE |
+		ETHERNET_LINK_10BASE;
 
 	if (!dev_conf->disable_rx_chksum_offload) {
 		caps |= ETHERNET_HW_RX_CHKSUM_OFFLOAD;
@@ -654,6 +611,19 @@ static enum ethernet_hw_caps eth_xlnx_gem_get_capabilities(
 	caps |= ETHERNET_PROMISC_MODE | ETHERNET_HW_FILTERING;
 
 	return caps;
+}
+
+/**
+ * @brief Returns a pointer to the associated PHY device
+ * @param dev Parent GEM device of the requested PHY device
+ * @return Pointer to the associated PHY device
+ */
+static const struct device *eth_xlnx_gem_get_phy(const struct device *dev,
+						 struct net_if *iface __unused)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+
+	return dev_conf->phy_dev;
 }
 
 /**
@@ -677,10 +647,11 @@ static enum ethernet_hw_caps eth_xlnx_gem_get_capabilities(
  *         is not supported by this function.
  */
 static int eth_xlnx_gem_get_config(const struct device *dev,
+				   struct net_if *iface __unused,
 				   enum ethernet_config_type type,
 				   struct ethernet_config *config)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
 
 	switch (type) {
 	case ETHERNET_CONFIG_TYPE_RX_CHECKSUM_SUPPORT:
@@ -725,36 +696,35 @@ static int eth_xlnx_gem_get_config(const struct device *dev,
  *         is not supported by this function.
  */
 static int eth_xlnx_gem_set_config(const struct device *dev,
+				   struct net_if *iface __unused,
 				   enum ethernet_config_type type,
 				   const struct ethernet_config *config)
 {
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 
 	switch (type) {
 #ifdef CONFIG_NET_PROMISCUOUS_MODE
 	case ETHERNET_CONFIG_TYPE_PROMISC_MODE: {
-		const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-		k_spinlock_key_t key;
-		uint32_t reg_val;
+		k_spinlock_key_t key = k_spin_lock(&dev_data->nwcfg_lock);
+		uint32_t reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) +
+					      ETH_XLNX_GEM_NWCFG_OFFSET);
 
-		key = k_spin_lock(&dev_data->nwcfg_lock);
-		reg_val = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
 		if (config->promisc_mode) {
 			reg_val |= ETH_XLNX_GEM_NWCFG_COPYALLEN_BIT;
 		} else {
 			reg_val &= ~ETH_XLNX_GEM_NWCFG_COPYALLEN_BIT;
 		}
-		sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+		sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
 		k_spin_unlock(&dev_data->nwcfg_lock, key);
 		break;
 	}
 #endif
+	case ETHERNET_CONFIG_TYPE_FILTER:
+		return eth_xlnx_gem_set_multicast_filter(dev, &config->filter);
 	case ETHERNET_CONFIG_TYPE_MAC_ADDRESS:
 		memcpy(dev_data->mac_addr, config->mac_address.addr, sizeof(dev_data->mac_addr));
 		eth_xlnx_gem_set_mac_address(dev);
 		break;
-	case ETHERNET_CONFIG_TYPE_FILTER:
-		return eth_xlnx_gem_set_multicast_filter(dev, &config->filter);
 	default:
 		return -ENOTSUP;
 	};
@@ -770,9 +740,10 @@ static int eth_xlnx_gem_set_config(const struct device *dev,
  * @param dev Pointer to the device data
  * @return Pointer to the current GEM device's statistics data
  */
-static struct net_stats_eth *eth_xlnx_gem_stats(const struct device *dev)
+static struct net_stats_eth *eth_xlnx_gem_get_stats(const struct device *dev,
+						    struct net_if *iface __unused)
 {
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 
 	return &dev_data->stats;
 }
@@ -787,58 +758,60 @@ static struct net_stats_eth *eth_xlnx_gem_stats(const struct device *dev)
  */
 static void eth_xlnx_gem_reset_hw(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	uint32_t nwctrl;
 
 	/*
 	 * Controller reset sequence as described in the Zynq-7000 TRM,
 	 * chapter 16.3.1.
 	 */
 
-	/* Clear the NWCTRL register */
-	sys_write32(0x00000000,
-		    dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
-
-	/* Clear the statistics counters */
-	sys_write32(ETH_XLNX_GEM_STATCLR_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	/*
+	 * Prepare the NWCTRL register, preserve the MDEN bit
+	 * If MDIO is active, the separate MDIO driver will have already set this.
+	 */
+	nwctrl = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	nwctrl &= ETH_XLNX_GEM_NWCTRL_MDEN_BIT;
+	nwctrl |= ETH_XLNX_GEM_NWCTRL_STATCLR_BIT; /* clear statistics counters */
+	sys_write32(nwctrl, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 
 	/* Clear the RX/TX status registers */
 	sys_write32(ETH_XLNX_GEM_TXSRCLR_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_TXSR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXSR_OFFSET);
 	sys_write32(ETH_XLNX_GEM_RXSRCLR_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_RXSR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
 
 	/* Disable all interrupts */
 	sys_write32(ETH_XLNX_GEM_IDRCLR_MASK,
-		    dev_conf->base_addr + ETH_XLNX_GEM_IDR_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
 
 	/* Clear the buffer queues */
 	sys_write32(0x00000000,
-		    dev_conf->base_addr + ETH_XLNX_GEM_RXQBASE_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXQBASE_OFFSET);
 	sys_write32(0x00000000,
-		    dev_conf->base_addr + ETH_XLNX_GEM_TXQBASE_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXQBASE_OFFSET);
 	/*
 	 * The unicast and multicast hash filters share these registers.
 	 * Preserve entries installed before this driver starts, while resetting
 	 * the run-time multicast reference state deterministically.
 	 */
 	dev_data->hash_baseline[0] =
-		sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_HASHL_OFFSET);
+		sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_HASHL_OFFSET);
 	dev_data->hash_baseline[1] =
-		sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_HASHH_OFFSET);
+		sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_HASHH_OFFSET);
 	memset(dev_data->mcast_hash_refcnt, 0, sizeof(dev_data->mcast_hash_refcnt));
 	memset(dev_data->mcast_filter, 0, sizeof(dev_data->mcast_filter));
 	dev_data->mcast_hash_active = 0U;
+
 #ifdef CONFIG_SOC_XILINX_ZYNQMP
 	sys_write32(0x00000000,
-		    dev_conf->base_addr + ETH_XLNX_GEM_RX1QBASEL_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RX1QBASEL_OFFSET);
 	sys_write32(0x00000000,
-		    dev_conf->base_addr + ETH_XLNX_GEM_RX1QBASEH_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RX1QBASEH_OFFSET);
 	sys_write32(0x00000000,
-		    dev_conf->base_addr + ETH_XLNX_GEM_TX1QBASEL_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TX1QBASEL_OFFSET);
 	sys_write32(0x00000000,
-		    dev_conf->base_addr + ETH_XLNX_GEM_TX1QBASEH_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TX1QBASEH_OFFSET);
 #endif
 }
 
@@ -849,8 +822,10 @@ static void eth_xlnx_gem_reset_hw(const struct device *dev)
  * from within the device initialization function.
  *
  * @param dev Pointer to the device data
+ * @param state pointer to the current PHY link state data
  */
-static void eth_xlnx_gem_configure_clocks(const struct device *dev)
+static void eth_xlnx_gem_configure_clocks(const struct device *dev,
+					  struct phy_link_state *state)
 {
 	/*
 	 * Clock source configuration for the respective GEM as described
@@ -859,8 +834,7 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 	 * values for the respective GEM's TX clock are calculated here.
 	 */
 
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
 
 	uint32_t div0;
 	uint32_t div1;
@@ -868,30 +842,12 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 	uint32_t tmp;
 	uint32_t clk_ctrl_reg;
 
-	if (dev_data->eff_link_speed == LINK_DOWN) {
-		/*
-		 * Run-time data indicates 'link down' -> use max/nominal
-		 * link speed for initial clock configuration.
-		 */
-		if (dev_conf->max_link_speed == LINK_10MBIT) {
-			target = 2500000;   /* Target frequency: 2.5 MHz */
-		} else if (dev_conf->max_link_speed == LINK_100MBIT) {
-			target = 25000000;  /* Target frequency: 25 MHz */
-		} else if (dev_conf->max_link_speed == LINK_1GBIT) {
-			target = 125000000; /* Target frequency: 125 MHz */
-		}
-	} else if (dev_data->eff_link_speed != LINK_DOWN) {
-		/*
-		 * Use the effective link speed instead of the maximum/nominal
-		 * link speed for clock configuration.
-		 */
-		if (dev_data->eff_link_speed == LINK_10MBIT) {
-			target = 2500000;   /* Target frequency: 2.5 MHz */
-		} else if (dev_data->eff_link_speed == LINK_100MBIT) {
-			target = 25000000;  /* Target frequency: 25 MHz */
-		} else if (dev_data->eff_link_speed == LINK_1GBIT) {
-			target = 125000000; /* Target frequency: 125 MHz */
-		}
+	if (PHY_LINK_IS_SPEED_1000M(state->speed)) {
+		target = 125000000; /* Target frequency: 125 MHz */
+	} else if (PHY_LINK_IS_SPEED_100M(state->speed)) {
+		target = 25000000;  /* Target frequency: 25 MHz */
+	} else {
+		target = 2500000;   /* Target frequency: 2.5 MHz */
 	}
 
 	/*
@@ -920,7 +876,7 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 	 * Unlock CRL_APB write access if the write protect bit
 	 * is currently set, restore it afterwards.
 	 */
-	clk_ctrl_reg  = sys_read32(dev_conf->clk_ctrl_reg_address);
+	clk_ctrl_reg  = sys_read32(DEVICE_MMIO_NAMED_GET(dev, clkc));
 	clk_ctrl_reg &= ~((ETH_XLNX_CRL_APB_GEMX_REF_CTRL_DIVISOR_MASK <<
 			ETH_XLNX_CRL_APB_GEMX_REF_CTRL_DIVISOR0_SHIFT) |
 			(ETH_XLNX_CRL_APB_GEMX_REF_CTRL_DIVISOR_MASK <<
@@ -941,17 +897,12 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 		sys_write32((tmp & ~ETH_XLNX_CRL_APB_WPROT_BIT),
 			    ETH_XLNX_CRL_APB_WPROT_REGISTER_ADDRESS);
 	}
-	sys_write32(clk_ctrl_reg, dev_conf->clk_ctrl_reg_address);
+	sys_write32(clk_ctrl_reg, DEVICE_MMIO_NAMED_GET(dev, clkc));
 	if ((tmp & ETH_XLNX_CRL_APB_WPROT_BIT) > 0) {
 		sys_write32(tmp, ETH_XLNX_CRL_APB_WPROT_REGISTER_ADDRESS);
 	}
 # elif defined(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000)
-	if (!device_is_ready(dev_conf->syscon_dev)) {
-		LOG_ERR("%s: SLCR syscon device not ready", dev->name);
-		return;
-	}
-
-	syscon_read_reg(dev_conf->syscon_dev, dev_conf->clk_ctrl_reg_offset, &clk_ctrl_reg);
+	clk_ctrl_reg  = sys_read32(DEVICE_MMIO_NAMED_GET(dev, clkc));
 	clk_ctrl_reg &= ~((ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
 			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR0_SHIFT) |
 			(ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK <<
@@ -961,7 +912,7 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
 			((div1 & ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR_MASK) <<
 			ETH_XLNX_SLCR_GEMX_CLK_CTRL_DIVISOR1_SHIFT);
 
-	syscon_write_reg(dev_conf->syscon_dev, dev_conf->clk_ctrl_reg_offset, clk_ctrl_reg);
+	sys_write32(clk_ctrl_reg, DEVICE_MMIO_NAMED_GET(dev, clkc));
 #endif /* CONFIG_SOC_XILINX_ZYNQMP / CONFIG_SOC_FAMILY_XILINX_ZYNQ7000 */
 
 	LOG_DBG("%s set clock dividers div0/1 %u/%u for target "
@@ -979,9 +930,16 @@ static void eth_xlnx_gem_configure_clocks(const struct device *dev)
  */
 static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	uint32_t reg_val = 0;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	uint32_t reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) +
+				      ETH_XLNX_GEM_NWCFG_OFFSET);
 	uint32_t design_cfg5_reg_val;
+
+	/*
+	 * Don't touch the MDIO clock divider, if MDIO is active, the separate MDIO
+	 * driver will have already set this.
+	 */
+	reg_val &= (ETH_XLNX_GEM_NWCFG_MDC_MASK << ETH_XLNX_GEM_NWCFG_MDC_SHIFT);
 
 	if (dev_conf->ignore_ipg_rxer) {
 		/* [30]     ignore IPG rx_er */
@@ -1016,14 +974,12 @@ static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev)
 		reg_val |= ETH_XLNX_GEM_NWCFG_PAUSECOPYDI_BIT;
 	}
 	/* [22..21] Data bus width -> obtain from design_cfg5 register */
-	design_cfg5_reg_val = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_DESIGN_CFG5_OFFSET);
+	design_cfg5_reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) +
+					 ETH_XLNX_GEM_DESIGN_CFG5_OFFSET);
 	design_cfg5_reg_val >>= ETH_XLNX_GEM_DESIGN_CFG5_DBUSW_SHIFT;
 	design_cfg5_reg_val &= ETH_XLNX_GEM_NWCFG_DBUSW_MASK;
 	reg_val |= (design_cfg5_reg_val << ETH_XLNX_GEM_NWCFG_DBUSW_SHIFT);
-	/* [20..18] MDC clock divider */
-	reg_val |= (((uint32_t)dev_conf->mdc_divider &
-		   ETH_XLNX_GEM_NWCFG_MDC_MASK) <<
-		   ETH_XLNX_GEM_NWCFG_MDC_SHIFT);
+	/* [20..18] MDC clock divider -> managed by the MDIO driver */
 	if (dev_conf->discard_rx_fcs) {
 		/* [17]     Discard FCS from received frames */
 		reg_val |= ETH_XLNX_GEM_NWCFG_FCSREM_BIT;
@@ -1072,53 +1028,53 @@ static void eth_xlnx_gem_set_initial_nwcfg(const struct device *dev)
 		/* [01]     enable Full duplex */
 		reg_val |= ETH_XLNX_GEM_NWCFG_FDEN_BIT;
 	}
-	if (dev_conf->max_link_speed == LINK_100MBIT) {
-		/* [00]     10 or 100 Mbps */
-		reg_val |= ETH_XLNX_GEM_NWCFG_100_BIT;
-	} else if (dev_conf->max_link_speed == LINK_1GBIT) {
-		/* [10]     Gigabit mode enable */
-		reg_val |= ETH_XLNX_GEM_NWCFG_1000_BIT;
-	}
-	/*
-	 * No else-branch for 10Mbit/s mode:
-	 * in 10 Mbit/s mode, both bits [00] and [10] remain 0
-	 */
 
 	/* Write the assembled register contents to gem.net_cfg */
-	sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
 }
 
 /**
  * @brief GEM Network Configuration Register link speed update function
  * Updates only the link speed-related bits of the Network Configuration
- * register. This is called from the PHY link change callback.
+ * register. This is called from within #eth_xlnx_gem_poll_phy.
  *
  * @param dev Pointer to the device data
+ * @param state pointer to the current PHY link state data
  */
-static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev)
+static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
+					      struct phy_link_state *state)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
-	k_spinlock_key_t key;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	k_spinlock_key_t key = k_spin_lock(&dev_data->nwcfg_lock);
 	uint32_t reg_val;
 
 	/*
-	 * Read the current gem.net_cfg register contents and mask out
-	 * the link speed-related bits
+	 * Read the current gem.net_cfg register, mask out the link speed
+	 * and duplex related bits. Replace their contents with those
+	 * matching the current PHY state.
 	 */
-	key = k_spin_lock(&dev_data->nwcfg_lock);
-	reg_val  = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
-	reg_val &= ~(ETH_XLNX_GEM_NWCFG_1000_BIT | ETH_XLNX_GEM_NWCFG_100_BIT);
+	reg_val  = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
+	reg_val &= ~(ETH_XLNX_GEM_NWCFG_1000_BIT |
+		     ETH_XLNX_GEM_NWCFG_100_BIT |
+		     ETH_XLNX_GEM_NWCFG_FDEN_BIT);
 
 	/* No bits to set for 10 Mbps. 100 Mbps and 1 Gbps set one bit each. */
-	if (dev_data->eff_link_speed == LINK_100MBIT) {
+	if (PHY_LINK_IS_SPEED_100M(state->speed)) {
 		reg_val |= ETH_XLNX_GEM_NWCFG_100_BIT;
-	} else if (dev_data->eff_link_speed == LINK_1GBIT) {
+	} else if (PHY_LINK_IS_SPEED_1000M(state->speed)) {
 		reg_val |= ETH_XLNX_GEM_NWCFG_1000_BIT;
+	} else {
+		if (!PHY_LINK_IS_SPEED_10M(state->speed)) {
+			LOG_ERR("%s unexpected link speed instead of expected 10MBps", dev->name);
+		}
+	}
+	/* Set FDEN bit for full-duplex operation */
+	if (PHY_LINK_IS_FULL_DUPLEX(state->speed)) {
+		reg_val |= ETH_XLNX_GEM_NWCFG_FDEN_BIT;
 	}
 
 	/* Write the assembled register contents to gem.net_cfg */
-	sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
 	k_spin_unlock(&dev_data->nwcfg_lock, key);
 }
 
@@ -1212,16 +1168,16 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
 			dev_data->mcast_filter[free_slot].refcnt = 1U;
 
 			if (dev_data->mcast_hash_refcnt[hash]++ == 0U) {
-				reg_val = sys_read32(dev_conf->base_addr + hash_offset);
+				reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + hash_offset);
 				sys_write32(reg_val | hash_mask,
-					    dev_conf->base_addr + hash_offset);
+					    DEVICE_MMIO_NAMED_GET(dev, mac) + hash_offset);
 				dev_data->mcast_hash_active++;
 			}
 		}
 
-		reg_val = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+		reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
 		sys_write32(reg_val | ETH_XLNX_GEM_NWCFG_MCASTHASHEN_BIT,
-			    dev_conf->base_addr + ETH_XLNX_GEM_NWCFG_OFFSET);
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
 	} else {
 		if (filter_slot < 0) {
 			k_spin_unlock(&dev_data->nwcfg_lock, key);
@@ -1232,18 +1188,18 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
 			dev_data->mcast_hash_refcnt[hash]--;
 
 			if (dev_data->mcast_hash_refcnt[hash] == 0U) {
-				reg_val = sys_read32(dev_conf->base_addr + hash_offset);
+				reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) + hash_offset);
 				reg_val &= ~hash_mask;
 				reg_val |= dev_data->hash_baseline[hash / 32U] & hash_mask;
-				sys_write32(reg_val, dev_conf->base_addr + hash_offset);
+				sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + hash_offset);
 				dev_data->mcast_hash_active--;
 
 				if (dev_data->mcast_hash_active == 0U &&
 				    !dev_conf->enable_mcast_hash) {
-					reg_val = sys_read32(dev_conf->base_addr +
+					reg_val = sys_read32(DEVICE_MMIO_NAMED_GET(dev, mac) +
 							     ETH_XLNX_GEM_NWCFG_OFFSET);
 					reg_val &= ~ETH_XLNX_GEM_NWCFG_MCASTHASHEN_BIT;
-					sys_write32(reg_val, dev_conf->base_addr +
+					sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) +
 								    ETH_XLNX_GEM_NWCFG_OFFSET);
 				}
 			}
@@ -1266,8 +1222,7 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
  */
 static void eth_xlnx_gem_set_mac_address(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t regval_top;
 	uint32_t regval_bot;
 
@@ -1279,8 +1234,8 @@ static void eth_xlnx_gem_set_mac_address(const struct device *dev)
 	regval_top  = (dev_data->mac_addr[4] & 0xFF);
 	regval_top |= (dev_data->mac_addr[5] & 0xFF) << 8;
 
-	sys_write32(regval_bot, dev_conf->base_addr + ETH_XLNX_GEM_LADDR1L_OFFSET);
-	sys_write32(regval_top, dev_conf->base_addr + ETH_XLNX_GEM_LADDR1H_OFFSET);
+	sys_write32(regval_bot, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_LADDR1L_OFFSET);
+	sys_write32(regval_top, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_LADDR1H_OFFSET);
 
 	LOG_DBG("%s MAC %02X:%02X:%02X:%02X:%02X:%02X",
 		dev->name,
@@ -1302,7 +1257,7 @@ static void eth_xlnx_gem_set_mac_address(const struct device *dev)
  */
 static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
 	uint32_t reg_val = 0;
 
 	/*
@@ -1355,73 +1310,21 @@ static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev)
 		   ETH_XLNX_GEM_DMACR_AHB_BURST_LENGTH_MASK);
 
 	/* Write the assembled register contents */
-	sys_write32(reg_val, dev_conf->base_addr + ETH_XLNX_GEM_DMACR_OFFSET);
-}
-
-/**
- * @brief PHY link state change callback
- * Called by the standalone PHY driver whenever the link state or speed
- * changes. Maps the Zephyr phy_link_speed to the GEM's internal
- * eth_xlnx_link_speed, reconfigures clocks and NWCFG, and updates
- * carrier state.
- *
- * @param phy_dev  PHY device that triggered the callback
- * @param state    New link state from the PHY driver
- * @param user_data Pointer to the MAC device (cast from void *)
- */
-static void eth_xlnx_gem_phy_link_changed(const struct device *phy_dev,
-					   struct phy_link_state *state,
-					   void *user_data)
-{
-	const struct device *dev = (const struct device *)user_data;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
-
-	ARG_UNUSED(phy_dev);
-
-	if (!state->is_up) {
-		dev_data->eff_link_speed = LINK_DOWN;
-		net_eth_carrier_off(dev_data->iface);
-		LOG_DBG("%s link down", dev->name);
-		return;
-	}
-
-	/* Map phy_link_speed to eth_xlnx_link_speed */
-	if (PHY_LINK_IS_SPEED_1000M(state->speed)) {
-		dev_data->eff_link_speed = LINK_1GBIT;
-	} else if (PHY_LINK_IS_SPEED_100M(state->speed)) {
-		dev_data->eff_link_speed = LINK_100MBIT;
-	} else if (PHY_LINK_IS_SPEED_10M(state->speed)) {
-		dev_data->eff_link_speed = LINK_10MBIT;
-	} else {
-		dev_data->eff_link_speed = LINK_DOWN;
-		net_eth_carrier_off(dev_data->iface);
-		LOG_WRN("%s unknown PHY speed %u", dev->name, state->speed);
-		return;
-	}
-
-	eth_xlnx_gem_configure_clocks(dev);
-	eth_xlnx_gem_set_nwcfg_link_speed(dev);
-	net_eth_carrier_on(dev_data->iface);
-
-	LOG_INF("%s link up, %s", dev->name,
-		(dev_data->eff_link_speed == LINK_1GBIT) ? "1 GBit/s" :
-		(dev_data->eff_link_speed == LINK_100MBIT) ? "100 MBit/s" :
-		(dev_data->eff_link_speed == LINK_10MBIT) ? "10 MBit/s" :
-		"undefined");
+	sys_write32(reg_val, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_DMACR_OFFSET);
 }
 
 /**
  * @brief GEM DMA memory area setup function
  * Sets up the DMA memory area to be used by the current GEM device.
  * Called from within the device initialization function or from within
- * the context of the PHY link change callback.
+ * the context of the PHY status polling delayed work handler.
  *
  * @param dev Pointer to the device data
  */
 static void eth_xlnx_gem_configure_buffers(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	struct eth_xlnx_gem_bd *bdptr;
 	uint32_t buf_iter;
 
@@ -1509,16 +1412,16 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
 	 * both the RX and TX direction.
 	 */
 	sys_write32((uint32_t)dev_data->rx_bd_ring.first_bd,
-		    dev_conf->base_addr + ETH_XLNX_GEM_RXQBASE_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXQBASE_OFFSET);
 	sys_write32((uint32_t)dev_data->tx_bd_ring.first_bd,
-		    dev_conf->base_addr + ETH_XLNX_GEM_TXQBASE_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXQBASE_OFFSET);
 #ifdef CONFIG_SOC_XILINX_ZYNQMP
-	sys_write32(0x00000000, dev_conf->base_addr + ETH_XLNX_GEM_RX1QBASEH_OFFSET);
+	sys_write32(0x00000000, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RX1QBASEH_OFFSET);
 	sys_write32((uint32_t)dev_data->rx_bd_ring.tie_off_bd,
-		    dev_conf->base_addr + ETH_XLNX_GEM_RX1QBASEL_OFFSET);
-	sys_write32(0x00000000, dev_conf->base_addr + ETH_XLNX_GEM_TX1QBASEH_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RX1QBASEL_OFFSET);
+	sys_write32(0x00000000, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TX1QBASEH_OFFSET);
 	sys_write32((uint32_t)dev_data->tx_bd_ring.tie_off_bd,
-		    dev_conf->base_addr + ETH_XLNX_GEM_TX1QBASEL_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TX1QBASEL_OFFSET);
 #endif /* CONFIG_SOC_XILINX_ZYNQMP */
 }
 
@@ -1560,21 +1463,17 @@ static void eth_xlnx_gem_rx_pending_work(struct k_work *item)
  */
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t reg_addr;
 	uint32_t reg_ctrl;
 	uint32_t reg_val;
-	uint32_t reg_val_rxsr;
 	uint8_t first_bd_idx;
 	uint8_t last_bd_idx;
 	uint8_t	curr_bd_idx;
 	uint32_t rx_data_length;
 	uint32_t rx_data_remaining;
 	struct net_pkt *pkt;
-
-	/* Read the RX status register */
-	reg_val_rxsr = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_RXSR_OFFSET);
 
 	/*
 	 * TODO Evaluate error flags from RX status register word
@@ -1702,10 +1601,10 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 	}
 
 	/* Clear the RX status register */
-	sys_write32(0xFFFFFFFF, dev_conf->base_addr + ETH_XLNX_GEM_RXSR_OFFSET);
+	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXSR_OFFSET);
 	/* Re-enable the frame received interrupt source */
 	sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
-		    dev_conf->base_addr + ETH_XLNX_GEM_IER_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
 }
 
 /**
@@ -1746,18 +1645,14 @@ static void eth_xlnx_gem_tx_done_work(struct k_work *item)
  */
 static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 {
-	const struct eth_xlnx_gem_dev_cfg *dev_conf = dev->config;
-	struct eth_xlnx_gem_dev_data *dev_data = dev->data;
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 	uint32_t reg_ctrl;
 	uint32_t reg_val;
-	uint32_t reg_val_txsr;
 	uint8_t curr_bd_idx;
 	uint8_t first_bd_idx;
 	uint8_t bds_processed = 0;
 	uint8_t bd_is_last;
-
-	/* Read the TX status register */
-	reg_val_txsr = sys_read32(dev_conf->base_addr + ETH_XLNX_GEM_TXSR_OFFSET);
 
 	/*
 	 * TODO Evaluate error flags from TX status register word
@@ -1817,12 +1712,36 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 	}
 
 	/* Clear the TX status register */
-	sys_write32(0xFFFFFFFF, dev_conf->base_addr + ETH_XLNX_GEM_TXSR_OFFSET);
+	sys_write32(0xFFFFFFFFU, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXSR_OFFSET);
 
 	/* Re-enable the TX complete interrupt source */
 	sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
-		    dev_conf->base_addr + ETH_XLNX_GEM_IER_OFFSET);
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
 
 	/* Indicate completion to a blocking eth_xlnx_gem_send() call */
 	k_sem_give(&dev_data->tx_done_sem);
+}
+
+/**
+ * @brief PHY event callback function
+ * This handler function is called whenever a link state change or a
+ * link speed change is indicated by the associated PHY.
+ *
+ * @param dev Pointer to the device data
+ * @param state Updated PHY link/speed state
+ * @param eth_dev Pointer to the GEM instance's device struct
+ */
+static void eth_xlnx_gem_phy_cb(const struct device *phy,
+				struct phy_link_state *state,
+				void *eth_dev)
+{
+	const struct device *dev = (const struct device *)eth_dev;
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+
+	if (state->is_up) {
+		eth_xlnx_gem_configure_clocks(dev, state);
+		eth_xlnx_gem_set_nwcfg_link_speed(dev, state);
+	}
+
+	net_eth_carrier_set(dev_data->iface, state->is_up);
 }

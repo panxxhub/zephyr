@@ -28,6 +28,8 @@
 #define FIRST_DESCRIPTOR_FLAG           BIT(29)
 #define RECEIVE_CONTEXT_DESCRIPTOR_FLAG BIT(30)
 #define OWN_FLAG                        BIT(31)
+#define RX_STATUS1_VALID_FLAG           BIT(26)
+#define RX_TIMESTAMP_AVAILABLE_FLAG     BIT(14)
 
 #define RX_INTERRUPT_ON_COMPLETE_FLAG BIT(30)
 #define TX_INTERRUPT_ON_COMPLETE_FLAG BIT(31)
@@ -100,9 +102,11 @@ enum mac_address_source {
 };
 
 struct nxp_enet_qos_mac_config {
-	const struct device *enet_dev;
+	/* Module resources; kept first so ENET_QOS_MODULE_CFG() can resolve the
+	 * base/clock from the MDIO and PTP child devices via their parent.
+	 */
+	struct nxp_enet_qos_config module;
 	const struct device *phy_dev;
-	enet_qos_t *base;
 	struct nxp_enet_qos_hw_info hw_info;
 	void (*irq_config_func)(void);
 	enum mac_address_source mac_addr_source;

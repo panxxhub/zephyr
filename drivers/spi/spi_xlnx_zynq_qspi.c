@@ -129,7 +129,7 @@ static int zynq_qspi_configure(const struct device *dev,
 		return 0;
 	}
 
-	if (config->operation & SPI_OP_MODE_SLAVE) {
+	if (config->operation & SPI_OP_MODE_PERIPHERAL) {
 		LOG_ERR("Slave mode not supported");
 		return -ENOTSUP;
 	}

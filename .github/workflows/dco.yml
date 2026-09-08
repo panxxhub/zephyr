@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+name: DCO Check
+
+on: [pull_request]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco-check:
+    name: Check DCO sign-off
+    runs-on: ubuntu-24.04
+    # The sign-off check for dependabot should be skipped
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history and the PR head so the action can resolve the base
+          # branch and merge-base (see actions/checkout#552).
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Select compliance range
+        id: compliance-range
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          comparison_base="origin/${BASE_REF}"
+          if [ "${{ github.repository }}" != "zephyrproject-rtos/zephyr" ]; then
+            comparison_base="${BASE_SHA}"
+            import_merge=$(git rev-list --reverse --first-parent --merges \
+              "${BASE_SHA}..HEAD" | head -n 1)
+            if [ -n "${import_merge}" ]; then
+              imported_commits=$(git rev-list --count \
+                "${BASE_SHA}..${import_merge}^2")
+              if [ "${imported_commits}" -ge 100 ]; then
+                comparison_base="${import_merge}"
+                echo "Detected an import of ${imported_commits} commits"
+              fi
+            fi
+          fi
+
+          echo "range=${comparison_base}.." >> "${GITHUB_OUTPUT}"
+          echo "Checking ${comparison_base}.."
+
+      - name: Check commit sign-off
+        uses: zephyrproject-rtos/action-dco@e3485a11e085fdc05fa4320e9cc3a86ccd665d89 # v1.0.0
+        with:
+          commit-range: ${{ steps.compliance-range.outputs.range }}

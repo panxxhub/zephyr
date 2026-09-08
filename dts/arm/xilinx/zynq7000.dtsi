@@ -39,6 +39,97 @@
 			reg = <0xf8f00200 0x1c>;
 		};
 
+		gic: interrupt-controller@f8f01000 {
+			compatible = "arm,gic-v1", "arm,gic";
+			status = "okay";
+			reg = <0xf8f01000 0x1000>,
+			      <0xf8f00100 0x100>;
+			interrupt-controller;
+			#interrupt-cells = <4>;
+		};
+
+		i2c0: i2c@e0004000 {
+			compatible = "cdns,i2c";
+			reg = <0xe0004000 0x1000>;
+			status = "disabled";
+			interrupts = <GIC_SPI 25 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-depth = <16>;
+		};
+
+		i2c1: i2c@e0005000 {
+			compatible = "cdns,i2c";
+			reg = <0xe0005000 0x1000>;
+			status = "disabled";
+			interrupts = <GIC_SPI 48 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-depth = <16>;
+		};
+
+		gem0: ethernet@e000b000 {
+			compatible = "xlnx,gem";
+			status = "disabled";
+			reg = <0xe000b000 0x1000>,
+			      <0xf8000140 0x4>;
+			reg-names = "mac", "clkc";
+			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>,
+				     <GIC_SPI 23 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "irq_0", "irq_1";
+			amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_INCR16>;
+			hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
+			hw-rx-buffer-offset = <0>;
+			hw-tx-buffer-size-full;
+			rx-buffer-descriptors = <32>;
+			tx-buffer-descriptors = <32>;
+			rx-buffer-size = <1536>;
+			tx-buffer-size = <1536>;
+			discard-rx-fcs;
+			unicast-hash;
+
+			gem0_mdio: mdio {
+				compatible = "xlnx,gem-mdio";
+				status = "disabled";
+				#address-cells = <1>;
+				#size-cells = <0>;
+			};
+		};
+
+		gem1: ethernet@e000c000 {
+			compatible = "xlnx,gem";
+			status = "disabled";
+			reg = <0xe000c000 0x1000>,
+			      <0xf8000144 0x4>;
+			reg-names = "mac", "clkc";
+			interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>,
+				     <GIC_SPI 46 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			interrupt-names = "irq_0", "irq_1";
+			amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_INCR16>;
+			hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
+			hw-rx-buffer-offset = <0>;
+			hw-tx-buffer-size-full;
+			rx-buffer-descriptors = <32>;
+			tx-buffer-descriptors = <32>;
+			rx-buffer-size = <1536>;
+			tx-buffer-size = <1536>;
+			discard-rx-fcs;
+			unicast-hash;
+
+			gem1_mdio: mdio {
+				compatible = "xlnx,gem-mdio";
+				status = "disabled";
+				#address-cells = <1>;
+				#size-cells = <0>;
+			};
+		};
+
 		swdt0: watchdog@f8005000 {
 			compatible = "xlnx,zynq-swdt";
 			reg = <0xf8005000 0x1000>;
@@ -53,76 +144,12 @@
 			status = "disabled";
 		};
 
-		gic: interrupt-controller@f8f01000 {
-			compatible = "arm,gic-v1", "arm,gic";
-			status = "okay";
-			reg = <0xf8f01000 0x1000>,
-			      <0xf8f00100 0x100>;
-			interrupt-controller;
-			#interrupt-cells = <4>;
-		};
-
-		gem0: ethernet@e000b000 {
-			compatible = "xlnx,gem";
-			status = "disabled";
-			reg = <0xe000b000 0x1000>,
-			      <0xf8000140 0x4>;
-			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL
-				      IRQ_DEFAULT_PRIORITY>,
-				     <GIC_SPI 23 IRQ_TYPE_LEVEL
+		qspi: spi@e000d000 {
+			compatible = "xlnx,zynq-qspi";
+			reg = <0xe000d000 0x1000>;
+			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL
 				      IRQ_DEFAULT_PRIORITY>;
-			interrupt-names = "irq_0", "irq_1";
-			syscon = <&slcr>;
-			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
-			amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_SINGLE>;
-			hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
-			hw-rx-buffer-offset = <0>;
-			hw-tx-buffer-size-full;
-			rx-buffer-descriptors = <32>;
-			tx-buffer-descriptors = <32>;
-			rx-buffer-size = <512>;
-			tx-buffer-size = <512>;
-			discard-rx-fcs;
-			unicast-hash;
-			full-duplex;
-		};
-
-		gem0_mdio: mdio@e000b000 {
-			compatible = "xlnx,gem-mdio";
-			reg = <0xe000b000 0x1000>;
-			#address-cells = <1>;
-			#size-cells = <0>;
-			status = "disabled";
-		};
-
-		gem1: ethernet@e000c000 {
-			compatible = "xlnx,gem";
-			status = "disabled";
-			reg = <0xe000c000 0x1000>,
-			      <0xf8000144 0x4>;
-			interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL
-				      IRQ_DEFAULT_PRIORITY>,
-				     <GIC_SPI 46 IRQ_TYPE_LEVEL
-				      IRQ_DEFAULT_PRIORITY>;
-			interrupt-names = "irq_0", "irq_1";
-			syscon = <&slcr>;
-			link-speed = <XLNX_GEM_LINK_SPEED_100MBIT>;
-			amba-ahb-burst-length = <XLNX_GEM_AMBA_AHB_BURST_SINGLE>;
-			hw-rx-buffer-size = <XLNX_GEM_HW_RX_BUFFER_SIZE_8KB>;
-			hw-rx-buffer-offset = <0>;
-			hw-tx-buffer-size-full;
-			rx-buffer-descriptors = <32>;
-			tx-buffer-descriptors = <32>;
-			rx-buffer-size = <512>;
-			tx-buffer-size = <512>;
-			discard-rx-fcs;
-			unicast-hash;
-			full-duplex;
-		};
-
-		gem1_mdio: mdio@e000c000 {
-			compatible = "xlnx,gem-mdio";
-			reg = <0xe000c000 0x1000>;
+			clock-frequency = <200000000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "disabled";
@@ -146,15 +173,30 @@
 			interrupt-names = "irq_0";
 		};
 
-		qspi: spi@e000d000 {
-			compatible = "xlnx,zynq-qspi";
-			reg = <0xe000d000 0x1000>;
-			interrupts = <GIC_SPI 19 IRQ_TYPE_LEVEL
+		spi0: spi@e0006000 {
+			compatible = "cdns,spi";
+			reg = <0xe0006000 0x1000>;
+			status = "disabled";
+			interrupts = <GIC_SPI 26 IRQ_TYPE_LEVEL
 				      IRQ_DEFAULT_PRIORITY>;
-			clock-frequency = <200000000>;
 			#address-cells = <1>;
 			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
+		};
+
+		spi1: spi@e0007000 {
+			compatible = "cdns,spi";
+			reg = <0xe0007000 0x1000>;
 			status = "disabled";
+			interrupts = <GIC_SPI 49 IRQ_TYPE_LEVEL
+				      IRQ_DEFAULT_PRIORITY>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			fifo-width = <8>;
+			rx-fifo-depth = <128>;
+			tx-fifo-depth = <128>;
 		};
 
 		psgpio: gpio@e000a000 {

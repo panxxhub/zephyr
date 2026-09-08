@@ -42,6 +42,9 @@ can be disabled if not needed.
     (:rfc:`2131`).
   * The IPv4 address can also be configured manually. Static IPv4 addresses
     are supported by default.
+  * IPv4 NAT (Network Address Translation) is supported. Packets can
+    hop between interfaces by performing SNAT and DNAT. Connection tracking
+    and iptable rules are used to filter and forward packets across subnets.
 
 * **Dual stack support.** The networking stack allows a developer to configure
   the system to use both IPv6 and IPv4 at the same time.
@@ -62,7 +65,7 @@ can be disabled if not needed.
 
 * **Secure Sockets API** Experimental support for TLS/DTLS secure protocols and
   configuration options for sockets API. Secure functions for the implementation
-  are provided by mbedTLS library.
+  are provided by Mbed TLS library.
 
 * **MQTT** Message Queue Telemetry Transport (ISO/IEC PRF 20922) versions 3.1.1 and 5.0
   are supported.
@@ -76,7 +79,7 @@ can be disabled if not needed.
   Both :zephyr:code-sample:`coap-client` and :zephyr:code-sample:`coap-server` sample
   applications are provided.
 
-* **LWM2M** OMA Lightweight Machine-to-Machine Protocol
+* **LwM2M** OMA Lightweight Machine-to-Machine Protocol
   (`LwM2M specification 1.0.2`_) is supported via the "Bootstrap", "Client
   Registration", "Device Management & Service Enablement" and "Information
   Reporting" interfaces.  The required core LwM2M objects are implemented as

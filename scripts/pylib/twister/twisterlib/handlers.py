@@ -6,6 +6,7 @@
 # Copyright (c) 2024 Arm Limited (or its affiliates). All rights reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
 
 import argparse
 import contextlib
@@ -24,6 +25,7 @@ import time
 from enum import Enum
 from pathlib import Path
 from queue import Empty, Queue
+from typing import TYPE_CHECKING
 
 import psutil
 from domains import Domains
@@ -31,7 +33,11 @@ from twisterlib import ZEPHYR_BASE
 from twisterlib.environment import strip_ansi_sequences
 from twisterlib.hardwaredata import CompoundHardwareData
 from twisterlib.platform import Platform
+from twisterlib.runmonitor import console_ui_active
 from twisterlib.statuses import TwisterStatus
+
+if TYPE_CHECKING:
+    from twisterlib.testinstance import TestInstance
 
 try:
     import serial
@@ -50,6 +56,11 @@ except ImportError as capture_error:
 
 logger = logging.getLogger('twister')
 
+# Once a test reports its first status, the QEMU monitor keeps reading briefly
+# to catch late output. Coverage dumps take much longer than a normal tail.
+COVERAGE_TIMEOUT_EXTENSION = 30
+POST_STATUS_TIMEOUT_EXTENSION = 2
+
 
 def terminate_process(proc):
     """
@@ -60,10 +71,20 @@ def terminate_process(proc):
     so we need to use try_kill_process_by_pid.
     """
 
+    children = []
+
     with contextlib.suppress(ProcessLookupError, psutil.NoSuchProcess):
-        for child in psutil.Process(proc.pid).children(recursive=True):
+        children = psutil.Process(proc.pid).children(recursive=True)
+        for child in children:
             with contextlib.suppress(ProcessLookupError, psutil.NoSuchProcess):
                 os.kill(child.pid, signal.SIGTERM)
+
+    if children:
+        _, alive = psutil.wait_procs(children, timeout=5, callback=None)
+        for p in alive:
+            with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+                p.kill()
+
     proc.terminate()
     # sleep for a while before attempting to kill
     time.sleep(0.5)
@@ -76,7 +97,7 @@ class Handler:
         CRASH = "Crash"
         FLASH = "Flash Error"
         NONE = "None"
-    def __init__(self, instance, type_str: str, options: argparse.Namespace,
+    def __init__(self, instance: TestInstance, type_str: str, options: argparse.Namespace,
                  generator_cmd: str | None = None, suite_name_check: bool = True):
         """Constructor
 
@@ -302,18 +323,38 @@ class BinaryHandler(Handler):
             uart = ""
             # os.path.join cannot be used on a Mock object, so we are
             # explicitly checking the type
-            if isinstance(self.instance.platform, Platform):
-                for board_dir in self.options.board_root:
-                    path = os.path.join(Path(board_dir).parent, self.instance.platform.resc)
-                    if os.path.exists(path):
-                        resc = path
-                        break
-                uart = self.instance.platform.uart
-                command = ["renode-test",
-                            "--variable", "KEYWORDS:" + keywords,
-                            "--variable", "ELF:@" + elf,
-                            "--variable", "RESC:@" + resc,
-                            "--variable", "UART:" + uart]
+            plat = self.instance.platform
+            if isinstance(plat, Platform):
+                if plat.resc:
+                    for board_dir in self.options.board_root:
+                        path = os.path.join(Path(board_dir).parent, plat.resc)
+                        if os.path.exists(path):
+                            resc = path
+                            break
+                uart = plat.uart
+                sim = plat.simulator_by_name(None)
+                if resc:
+                    # Renode-based robot test (existing behavior)
+                    command = ["renode-test",
+                                "--variable", "KEYWORDS:" + keywords,
+                                "--variable", "ELF:@" + elf,
+                                "--variable", "RESC:@" + resc,
+                                "--variable", "UART:" + uart]
+                elif sim.name in ['native']:
+                    # native_sim support
+                    binary = os.path.join(self.build_dir, "zephyr", "zephyr.exe")
+                    robot_dir = os.path.join(ZEPHYR_BASE, 'tests', 'robot')
+                    native_keywords = os.path.join(robot_dir, 'common_native.robot')
+                    command = ["robot",
+                               "--pythonpath", robot_dir,
+                               "--outputdir", self.build_dir,
+                               "--variable", "KEYWORDS:" + native_keywords,
+                               "--variable", "ELF:@" + elf,
+                               "--variable", "BINARY:" + binary,
+                               "--variable", "BUILD_DIR:" + self.build_dir]
+                else:
+                    raise ValueError(f"Unsupported platform for robot test: {plat.name}")
+
         elif self.call_make_run:
             if self.options.sim_name:
                 target = f"run_{self.options.sim_name}"
@@ -359,7 +400,7 @@ class BinaryHandler(Handler):
         return env
 
     def handle(self, harness):
-        robot_test = getattr(harness, "is_robot_test", False)
+        robot_test = getattr(harness, "is_robot_test", False) is True
 
         command = self._create_command(robot_test)
 
@@ -376,8 +417,12 @@ class BinaryHandler(Handler):
             return
 
         stderr_log = f"{self.instance.build_dir}/handler_stderr.log"
+        # Keep the binary away from the terminal's stdin while the
+        # --console-monitor UI owns it, so it cannot steal or re-mode it.
+        stdin = subprocess.DEVNULL if console_ui_active() else None
         with open(stderr_log, "w+") as stderr_log_fp, subprocess.Popen(
-            command, stdout=subprocess.PIPE, stderr=stderr_log_fp, cwd=self.build_dir, env=env
+            command, stdin=stdin, stdout=subprocess.PIPE, stderr=stderr_log_fp,
+            cwd=self.build_dir, env=env
         ) as proc:
             logger.debug(f"Spawning BinaryHandler Thread for {self.name}")
             t = threading.Thread(target=self._output_handler, args=(proc, harness,), daemon=True)
@@ -397,7 +442,10 @@ class BinaryHandler(Handler):
 
         # FIXME: This is needed when killing the simulator, the console is
         # garbled and needs to be reset. Did not find a better way to do that.
-        if sys.stdout.isatty():
+        # Must not run while the --console-monitor curses UI owns the
+        # terminal: stty sane would knock it out of cbreak/noecho mode and
+        # kill its keyboard handling.
+        if sys.stdout.isatty() and not console_ui_active():
             subprocess.call(["stty", "sane"], stdin=sys.stdout)
 
         self._update_instance_info(harness)
@@ -554,7 +602,7 @@ class DeviceHandler(Handler):
             board_id = hardware.probe_id or hardware.id
             product = hardware.product
             if board_id is not None:
-                if runner in ("pyocd", "nrfjprog", "nrfutil", "nrfutil_next", "spsdk"):
+                if "nrf" in runner or runner in ("pyocd", "spsdk"):
                     command_extra_args.append("--dev-id")
                     command_extra_args.append(board_id)
                 elif runner == "esp32":
@@ -568,13 +616,10 @@ class DeviceHandler(Handler):
                 ):
                     command_extra_args.append("--cmd-pre-init")
                     command_extra_args.append(f"hla_serial {board_id}")
-                elif runner == "openocd" and product == "EDBG CMSIS-DAP":
-                    command_extra_args.append("--cmd-pre-init")
-                    command_extra_args.append(f"cmsis_dap_serial {board_id}")
-                elif runner == "openocd" and product == "LPC-LINK2 CMSIS-DAP":
+                elif runner == "openocd" and (product in ("EDBG CMSIS-DAP", "LPC-LINK2 CMSIS-DAP")):
                     command_extra_args.append("--cmd-pre-init")
                     command_extra_args.append(f"adapter serial {board_id}")
-                elif runner == "jlink":
+                elif runner in ("jlink", "mplab_ipe"):
                     command.append("--dev-id")
                     command.append(board_id)
                 elif runner == "linkserver":
@@ -655,7 +700,67 @@ class DeviceHandler(Handler):
 
         return ser_pty_process
 
+    def _handle_robot_test(self, harness, hardware, command, serial_device, serial_pty,
+                            post_flash_script, post_script, script_param, flash_timeout):
+        """Flash device and run Robot Framework test directly without serial monitoring."""
+        start_time = time.time()
+        d_log = f"{self.instance.build_dir}/device.log"
+        logger.debug(f'Flash command: {command}')
+        failure_type = Handler.FailureType.NONE
+        stderr = b""
+
+        try:
+            with subprocess.Popen(
+                command, stderr=subprocess.PIPE, stdout=subprocess.PIPE
+            ) as proc:
+                try:
+                    stdout, stderr = proc.communicate(timeout=flash_timeout)
+                    logger.debug(stdout.decode(errors="ignore"))
+                    if proc.returncode != 0:
+                        self.instance.status = TwisterStatus.ERROR
+                        self.instance.reason = "Device issue (Flash error?)"
+                        failure_type = Handler.FailureType.FLASH
+                        with open(d_log, "w") as dlog_fp:
+                            dlog_fp.write(stderr.decode())
+                except subprocess.TimeoutExpired:
+                    logger.warning("Flash operation timed out.")
+                    self.terminate(proc)
+                    proc.communicate()
+                    self.instance.status = TwisterStatus.ERROR
+                    self.instance.reason = "Device issue (Flash timeout)"
+                    failure_type = Handler.FailureType.FLASH
+        except subprocess.CalledProcessError:
+            self.instance.status = TwisterStatus.ERROR
+            self.instance.reason = "Device issue (Flash error)"
+            failure_type = Handler.FailureType.FLASH
+
+        if stderr:
+            with open(d_log, "w") as dlog_fp:
+                dlog_fp.write(stderr.decode())
+
+        if post_flash_script:
+            timeout = 30
+            if script_param:
+                timeout = script_param.get("post_flash_timeout", timeout)
+            self.run_custom_script(post_flash_script, timeout)
+
+        self.execution_time = time.time() - start_time
+
+        if failure_type == Handler.FailureType.NONE:
+            robot_command = ["robot",
+                             "--variable", f"SERIAL:{serial_device}",
+                             "--variable", f"BAUD:{hardware.serial_baud}",
+                             "--variable", f"BUILD_DIR:{self.build_dir}"]
+            harness.run_robot_test(robot_command, self)
+
+        if post_script:
+            timeout = 30
+            if script_param:
+                timeout = script_param.get("post_script_timeout", timeout)
+            self.run_custom_script(post_script, timeout)
+
     def handle(self, harness):
+        robot_test = getattr(harness, "is_robot_test", False) is True
         hardware: CompoundHardwareData = self.instance.reserved_duts[0]
 
         # Run pre-script BEFORE starting serial PTY to avoid conflicts
@@ -687,6 +792,15 @@ class DeviceHandler(Handler):
         flash_timeout = hardware.flash_timeout
         if hardware.flash_with_test:
             flash_timeout += self.get_test_timeout()
+
+        if robot_test:
+            # For robot tests: flash the device, then hand off to Robot Framework
+            # directly. Robot Framework will open the serial port itself.
+            self._handle_robot_test(
+                harness, hardware, command, serial_device, serial_pty,
+                post_flash_script, post_script, script_param, flash_timeout
+            )
+            return
 
         serial_port = None
         ser_pty_process = None
@@ -832,7 +946,73 @@ class DeviceHandler(Handler):
             self.run_custom_script(post_script, timeout)
 
 
-class QEMUHandler(Handler):
+class QEMUHandlerBase(Handler):
+    """Shared behaviour for the POSIX and Windows QEMU handlers.
+
+    Both spawn a thread to monitor QEMU console output and decide the test
+    result from it. The monitor loops themselves differ per OS (select.poll on
+    fifos vs a reader-thread Queue) and are kept in the subclasses; everything
+    that does not depend on that mechanism lives here.
+    """
+
+    @staticmethod
+    def _get_cpu_time(pid):
+        """get process CPU time.
+
+        The guest virtual time in QEMU icount mode isn't host time and
+        it's maintained by counting guest instructions, so we use QEMU
+        process execution time to mostly simulate the time of guest OS.
+        """
+        proc = psutil.Process(pid)
+        cpu_time = proc.cpu_times()
+        return cpu_time.user + cpu_time.system
+
+    @staticmethod
+    def _thread_update_instance_info(handler, status, reason):
+        handler.instance.execution_time = handler.execution_time
+        handler.instance.status = status
+        if reason:
+            handler.instance.reason = reason
+        elif status in [TwisterStatus.FAIL, TwisterStatus.ERROR]:
+            handler.instance.reason = "Unknown Error"
+        else:
+            # Not a failure (e.g. a pass): no reason to report. Clear it
+            # rather than keep it, so a stale reason from an earlier retry
+            # iteration cannot stick to a now-passing instance.
+            handler.instance.reason = None
+
+    @staticmethod
+    def _extend_timeout_on_status(harness):
+        """Return the extended monitor deadline after the first test status.
+
+        Coverage dumps can take a while, so allow much longer when capturing.
+        """
+        extension = (
+            COVERAGE_TIMEOUT_EXTENSION if harness.capture_coverage
+            else POST_STATUS_TIMEOUT_EXTENSION
+        )
+        return time.time() + extension
+
+    def _set_qemu_filenames(self, sysbuild_build_dir):
+        # PID file will be created in the main sysbuild app's build dir
+        self.pid_fn = os.path.join(sysbuild_build_dir, "qemu.pid")
+
+        if os.path.exists(self.pid_fn):
+            os.unlink(self.pid_fn)
+
+        self.log_fn = self.log
+
+    def _create_command(self, sysbuild_build_dir):
+        command = [self.generator_cmd]
+        command += ["-C", sysbuild_build_dir, "run"]
+
+        return command
+
+    def get_fifo(self):
+        return self.fifo_fn
+
+
+class QEMUHandler(QEMUHandlerBase):
     """Spawns a thread to monitor QEMU output from pipes
 
     We pass QEMU_PIPE to 'make run' and monitor the pipes for output.
@@ -871,32 +1051,11 @@ class QEMUHandler(Handler):
             self.ignore_unexpected_eof = False
 
     @staticmethod
-    def _get_cpu_time(pid):
-        """get process CPU time.
-
-        The guest virtual time in QEMU icount mode isn't host time and
-        it's maintained by counting guest instructions, so we use QEMU
-        process execution time to mostly simulate the time of guest OS.
-        """
-        proc = psutil.Process(pid)
-        cpu_time = proc.cpu_times()
-        return cpu_time.user + cpu_time.system
-
-    @staticmethod
     def _thread_get_fifo_names(fifo_fn):
         fifo_in = fifo_fn + ".in"
         fifo_out = fifo_fn + ".out"
 
         return fifo_in, fifo_out
-
-    @staticmethod
-    def _thread_update_instance_info(handler, status, reason):
-        handler.instance.execution_time = handler.execution_time
-        handler.instance.status = status
-        if reason:
-            handler.instance.reason = reason
-        else:
-            handler.instance.reason = "Unknown Error"
 
     @staticmethod
     def _thread(handler, timeout, outdir, logfile, fifo_fn, pid_fn,
@@ -1006,10 +1165,7 @@ class QEMUHandler(Handler):
                     # take some time.
                     if not timeout_extended or harness.capture_coverage:
                         timeout_extended = True
-                        if harness.capture_coverage:
-                            timeout_time = time.time() + 30
-                        else:
-                            timeout_time = time.time() + 2
+                        timeout_time = QEMUHandler._extend_timeout_on_status(harness)
                 line = ""
 
             handler.execution_time = time.time() - start_time
@@ -1033,24 +1189,31 @@ class QEMUHandler(Handler):
         # We pass this to QEMU which looks for fifos with .in and .out suffixes.
         # QEMU fifo will use main build dir
         self.fifo_fn = os.path.join(self.instance.build_dir, "qemu-fifo")
-        # PID file will be created in the main sysbuild app's build dir
-        self.pid_fn = os.path.join(sysbuild_build_dir, "qemu.pid")
-
-        if os.path.exists(self.pid_fn):
-            os.unlink(self.pid_fn)
-
-        self.log_fn = self.log
-
-    def _create_command(self, sysbuild_build_dir):
-        command = [self.generator_cmd]
-        command += ["-C", sysbuild_build_dir, "run"]
-
-        return command
+        super()._set_qemu_filenames(sysbuild_build_dir)
 
     def handle(self, harness):
-        self.run = True
+        robot_test = getattr(harness, "is_robot_test", False) is True
 
         domain_build_dir = self.get_default_domain_build_dir()
+
+        if robot_test:
+            # Robot Framework manages QEMU startup via QemuSimLibrary.
+            # QEMU_PIPE is already baked into the build as <build_dir>/qemu-fifo,
+            # so the library only needs BUILD_DIR and GENERATOR_CMD to start QEMU.
+            robot_dir = os.path.join(ZEPHYR_BASE, 'tests', 'robot')
+            qemu_keywords = os.path.join(robot_dir, 'common_qemu.robot')
+            robot_command = [
+                "robot",
+                "--pythonpath", robot_dir,
+                "--outputdir", self.build_dir,
+                "--variable", "KEYWORDS:" + qemu_keywords,
+                "--variable", "BUILD_DIR:" + domain_build_dir,
+                "--variable", "GENERATOR_CMD:" + (self.generator_cmd or "cmake"),
+            ]
+            harness.run_robot_test(robot_command, self)
+            return
+
+        self.run = True
 
         command = self._create_command(domain_build_dir)
 
@@ -1066,7 +1229,9 @@ class QEMUHandler(Handler):
         logger.debug(f"Spawning QEMUHandler Thread for {self.name}")
         self.thread.start()
         thread_max_time = time.time() + self.get_test_timeout()
-        if sys.stdout.isatty():
+        # See BinaryHandler._handle: never reset the terminal while the
+        # --console-monitor curses UI owns it.
+        if sys.stdout.isatty() and not console_ui_active():
             subprocess.call(["stty", "sane"], stdin=sys.stdout)
 
         logger.debug(f"Running {self.name} ({self.type_str})")
@@ -1074,9 +1239,13 @@ class QEMUHandler(Handler):
         failure_type = self.FailureType.NONE
         qemu_pid = None
 
+        # As in BinaryHandler._handle: no terminal stdin for QEMU while the
+        # --console-monitor UI owns the terminal.
+        stdin = subprocess.DEVNULL if console_ui_active() else None
         with open(self.stdout_fn, "w") as stdout_fp, \
             open(self.stderr_fn, "w") as stderr_fp, subprocess.Popen(
             command,
+            stdin=stdin,
             stdout=stdout_fp,
             stderr=stderr_fp,
             cwd=self.build_dir
@@ -1110,9 +1279,15 @@ class QEMUHandler(Handler):
                 logger.debug("Timed out while monitoring QEMU output")
 
             if os.path.exists(self.pid_fn):
-                with open(self.pid_fn) as pid_file:
-                    qemu_pid = int(pid_file.read())
-                os.unlink(self.pid_fn)
+                try:
+                    with open(self.pid_fn) as pid_file:
+                        qemu_pid = int(pid_file.read())
+                    os.unlink(self.pid_fn)
+                except FileNotFoundError:
+                    # QEMU may have exited and removed its own pid file
+                    # between the existence check above and the unlink
+                    # here. Don't let that crash the whole pipeline.
+                    pass
 
         logger.debug(f"return code from QEMU ({qemu_pid}): {self.returncode}")
 
@@ -1120,11 +1295,8 @@ class QEMUHandler(Handler):
 
         self._final_handle_actions(harness)
 
-    def get_fifo(self):
-        return self.fifo_fn
 
-
-class QEMUWinHandler(Handler):
+class QEMUWinHandler(QEMUHandlerBase):
     """Spawns a thread to monitor QEMU output from pipes on Windows OS
 
      QEMU creates single duplex pipe at //.pipe/path, where path is fifo_fn.
@@ -1162,18 +1334,6 @@ class QEMUWinHandler(Handler):
             self.ignore_unexpected_eof = False
 
     @staticmethod
-    def _get_cpu_time(pid):
-        """get process CPU time.
-
-        The guest virtual time in QEMU icount mode isn't host time and
-        it's maintained by counting guest instructions, so we use QEMU
-        process execution time to mostly simulate the time of guest OS.
-        """
-        proc = psutil.Process(pid)
-        cpu_time = proc.cpu_times()
-        return cpu_time.user + cpu_time.system
-
-    @staticmethod
     def _open_log_file(logfile):
         return open(logfile, "w")
 
@@ -1192,30 +1352,6 @@ class QEMUWinHandler(Handler):
                 pass
             except OSError:
                 pass
-
-    @staticmethod
-    def _monitor_update_instance_info(handler, status, reason):
-        handler.instance.execution_time = handler.execution_time
-        handler.instance.status = status
-        if reason:
-            handler.instance.reason = reason
-        else:
-            handler.instance.reason = "Unknown Error"
-
-    def _set_qemu_filenames(self, sysbuild_build_dir):
-        # PID file will be created in the main sysbuild app's build dir
-        self.pid_fn = os.path.join(sysbuild_build_dir, "qemu.pid")
-
-        if os.path.exists(self.pid_fn):
-            os.unlink(self.pid_fn)
-
-        self.log_fn = self.log
-
-    def _create_command(self, sysbuild_build_dir):
-        command = [self.generator_cmd]
-        command += ["-C", sysbuild_build_dir, "run"]
-
-        return command
 
     def _enqueue_char(self, queue):
         while not self.stop_thread:
@@ -1329,10 +1465,7 @@ class QEMUWinHandler(Handler):
                 # take some time.
                 if not timeout_extended or harness.capture_coverage:
                     timeout_extended = True
-                    if harness.capture_coverage:
-                        timeout_time = time.time() + 30
-                    else:
-                        timeout_time = time.time() + 2
+                    timeout_time = self._extend_timeout_on_status(harness)
             line = ""
 
         self.stop_thread = True
@@ -1342,7 +1475,7 @@ class QEMUWinHandler(Handler):
             f"QEMU ({self.pid}) complete with {_status} ({_reason}) "
             f"after {self.execution_time} seconds"
         )
-        self._monitor_update_instance_info(self, _status, _reason)
+        self._thread_update_instance_info(self, _status, _reason)
         self._close_log_file(log_out_fp)
         self._stop_qemu_process(self.pid)
 
@@ -1395,6 +1528,3 @@ class QEMUWinHandler(Handler):
         self._update_instance_info(harness, failure_type=failure_type)
 
         self._final_handle_actions(harness)
-
-    def get_fifo(self):
-        return self.fifo_fn
