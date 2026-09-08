@@ -33,7 +33,7 @@ jobs:
       - name: Manifest
         uses: zephyrproject-rtos/action-manifest@854c72013232bc7a3c437de93ba608d91212b010
         with:
-          github-token: ${{ secrets.ZB_MANIFEST_GITHUB_TOKEN }}
+          github-token: ${{ secrets.ZB_MANIFEST_GITHUB_TOKEN || github.token }}
           manifest-path: 'west.yml'
           checkout-path: 'zephyrproject/zephyr'
           use-tree-checkout: 'true'
