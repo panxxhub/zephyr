@@ -133,6 +133,16 @@ struct xlnx_sg_bd {
 	uint32_t app[5];        /* 0x20-0x30 */
 } __aligned(64);
 
+BUILD_ASSERT(sizeof(struct xlnx_sg_bd) == 64U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, next_desc_msb) == 0x04U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, buf_addr) == 0x08U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, buf_addr_msb) == 0x0cU);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, mcctl) == 0x10U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, stride_vsize) == 0x14U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, app) == 0x20U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, control) == 0x18U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, status) == 0x1cU);
+
 /* --------------------------------------------------------------------------
  * Reset timeout
  * -------------------------------------------------------------------------- */
@@ -146,6 +156,19 @@ struct xlnx_sg_bd {
 /* --------------------------------------------------------------------------
  * Per-channel runtime state
  * -------------------------------------------------------------------------- */
+/* Copied at the error IRQ, before callbacks can stop or rebuild the ring. */
+struct xlnx_sg_error_snapshot {
+	uint32_t channel, sr, cur, tail, head_written, tail_written;
+	uintptr_t bd_va;
+	uint32_t arm_control, arm_status;
+	bool arm_valid;
+	struct xlnx_sg_bd first;
+	uint32_t bd_count;
+	uint32_t bd_words[4][16];
+	bool payload_valid;
+	uint32_t payload[16];
+};
+
 struct dma_xlnx_sg_chan {
 	const struct device *dev;
 	struct xlnx_sg_bd *bds; /* pointer to static BD array */
@@ -172,6 +195,14 @@ struct dma_xlnx_sg_chan {
 	bool rx_stream_active;
 	dma_xlnx_sg_rx_stream_cb_t rx_stream_callback;
 	void *rx_stream_user_data;
+	struct k_work error_work;
+	struct k_spinlock error_lock;
+	struct xlnx_sg_error_snapshot error_snapshot;
+	/* Keep large worker dumps off the system workqueue stack. */
+	struct xlnx_sg_error_snapshot error_report;
+	uint32_t head_written, tail_written;
+	uint32_t arm_control, arm_status;
+	bool arm_valid;
 	struct k_work rx_stream_work;
 	struct k_work_sync rx_stream_work_sync;
 	uint32_t tail_idx; /* current TAILDESC BD index for ping-pong */
@@ -226,6 +257,13 @@ static inline uintptr_t chan_base(const struct device *dev, uint32_t channel)
 static inline void chan_write(const struct device *dev, uint32_t channel, uint32_t reg,
 			      uint32_t val)
 {
+	struct dma_xlnx_sg_data *data = dev->data;
+
+	if (reg == REG_CURDESC) {
+		data->ch[channel].head_written = val;
+	} else if (reg == REG_TAILDESC) {
+		data->ch[channel].tail_written = val;
+	}
 	sys_write32(val, chan_base(dev, channel) + reg);
 }
 
@@ -542,6 +580,108 @@ static void log_dma_errors(uint32_t channel, uint32_t dmasr)
 	}
 }
 
+static void dma_xlnx_sg_error_work(struct k_work *work)
+{
+	struct dma_xlnx_sg_chan *ch =
+		CONTAINER_OF(work, struct dma_xlnx_sg_chan, error_work);
+	k_spinlock_key_t key = k_spin_lock(&ch->error_lock);
+	struct xlnx_sg_error_snapshot *snap = &ch->error_report;
+
+	*snap = ch->error_snapshot;
+
+	k_spin_unlock(&ch->error_lock, key);
+	uintptr_t pa = snap->bd_va;
+	int mapped = 0;
+
+#ifdef CONFIG_MMU
+	mapped = arch_page_phys_get((void *)snap->bd_va, &pa);
+#endif
+	log_dma_errors(snap->channel, snap->sr);
+	LOG_ERR("SGdiag arm_valid=%u arm_ctrl=%08x arm_status=%08x",
+		snap->arm_valid, snap->arm_control, snap->arm_status);
+	LOG_ERR("SGdiag ch=%u sr=%08x cur=%08x tail=%08x",
+		snap->channel, snap->sr, snap->cur, snap->tail);
+	LOG_ERR("SGdiag head_written=%08x tail_written=%08x",
+		snap->head_written, snap->tail_written);
+	LOG_ERR("SGdiag bd0_va=%08x bd0_pa=%08x map_rc=%d",
+		(uint32_t)snap->bd_va, (uint32_t)pa, mapped);
+	LOG_ERR("SGdiag bd0 status=%08x next=%08x:%08x buf=%08x:%08x ctrl=%08x",
+		snap->first.status, snap->first.next_desc_msb,
+		snap->first.next_desc,
+		snap->first.buf_addr_msb, snap->first.buf_addr,
+		snap->first.control);
+	for (uint32_t i = 0; i < snap->bd_count; i++) {
+		for (uint32_t j = 0; j < 16U; j += 4U) {
+			LOG_ERR("SGdiag bd%u +%02x: %08x %08x %08x %08x",
+				i, j * 4U, snap->bd_words[i][j],
+				snap->bd_words[i][j + 1U],
+				snap->bd_words[i][j + 2U],
+				snap->bd_words[i][j + 3U]);
+		}
+	}
+	LOG_ERR("SGdiag rx_payload valid=%u addr=%08x words=%u",
+		snap->payload_valid, snap->first.buf_addr,
+		snap->payload_valid ? 16U : 0U);
+	if (snap->payload_valid) {
+		for (uint32_t j = 0; j < 16U; j += 4U) {
+			LOG_ERR("SGdiag rx +%02x: %08x %08x %08x %08x",
+				j * 4U, snap->payload[j], snap->payload[j + 1U],
+				snap->payload[j + 2U], snap->payload[j + 3U]);
+		}
+	}
+}
+
+static void latch_dma_error(const struct device *dev, uint32_t channel,
+			    uint32_t dmasr)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
+
+	if (!IS_ENABLED(CONFIG_LOG)) {
+		return;
+	}
+	k_spinlock_key_t key = k_spin_lock(&ch->error_lock);
+
+	ch->error_snapshot = (struct xlnx_sg_error_snapshot){
+		.channel = channel, .sr = dmasr,
+		.cur = chan_read(dev, channel, REG_CURDESC),
+		.tail = chan_read(dev, channel, REG_TAILDESC),
+		.head_written = ch->head_written,
+		.tail_written = ch->tail_written,
+		.bd_va = (uintptr_t)ch->bds,
+		.arm_control = ch->arm_control, .arm_status = ch->arm_status,
+		.arm_valid = ch->arm_valid,
+	};
+	struct xlnx_sg_error_snapshot *snap = &ch->error_snapshot;
+	uint32_t count = ch->active_bds ? ch->active_bds : ch->num_bds;
+
+	if (ch->bds != NULL && count > 0U && count <= ch->num_bds) {
+		snap->bd_count = MIN(count, ARRAY_SIZE(snap->bd_words));
+		cache_invd(ch->bds, snap->bd_count * sizeof(*ch->bds));
+		snap->first = ch->bds[0];
+		memcpy(snap->bd_words, ch->bds,
+		       snap->bd_count * sizeof(*ch->bds));
+		uintptr_t addr = snap->first.buf_addr;
+		uintptr_t base = buf_phys(dev, CH_RX);
+		size_t size = buf_size(dev, CH_RX);
+
+		/* Validate a potentially corrupted DMA buffer pointer. */
+		if (channel == CH_RX && snap->first.buf_addr_msb == 0U &&
+		    (addr & 3U) == 0U && addr >= base &&
+		    size >= sizeof(snap->payload) &&
+		    addr - base <= size - sizeof(snap->payload)) {
+			uintptr_t va = buf_virt(dev, CH_RX) + (addr - base);
+			void *src = (void *)va;
+
+			cache_invd(src, sizeof(snap->payload));
+			memcpy(snap->payload, src, sizeof(snap->payload));
+			snap->payload_valid = true;
+		}
+	}
+	k_spin_unlock(&ch->error_lock, key);
+	(void)k_work_submit(&ch->error_work);
+}
+
 /* --------------------------------------------------------------------------
  * TX ISR — non-cyclic completion
  * -------------------------------------------------------------------------- */
@@ -553,7 +693,7 @@ static void dma_xlnx_sg_tx_isr(const struct device *dev)
 
 	/* Check for errors */
 	if (dmasr & DMASR_ALL_ERR) {
-		log_dma_errors(CH_TX, dmasr);
+		latch_dma_error(dev, CH_TX, dmasr);
 		ch->error = true;
 		/* Clear error IRQ flag */
 		chan_write(dev, CH_TX, REG_DMASR, DMASR_ERR_IRQ);
@@ -590,7 +730,7 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 
 	/* Check for errors */
 	if (dmasr & DMASR_ALL_ERR) {
-		log_dma_errors(CH_RX, dmasr);
+		latch_dma_error(dev, CH_RX, dmasr);
 		ch->error = true;
 		chan_write(dev, CH_RX, REG_DMASR, DMASR_ERR_IRQ);
 	}
@@ -718,14 +858,19 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	}
 	ch->cyclic = (dma_cfg->cyclic != 0);
 
-	/* If RX channel is not halted (e.g. prior stream didn't stop cleanly),
-	 * force a soft reset before reconfiguring.
+	/* Halted does not imply clean: SG errors also halt the channel and
+	 * require reset. Do this before clearing the software error latch or
+	 * rebuilding descriptors that the engine may still own.
 	 */
 	if (channel == CH_RX) {
 		uint32_t dmasr = chan_read(dev, CH_RX, REG_DMASR);
 
-		if (!(dmasr & DMASR_HALTED)) {
-			(void)do_soft_reset(dev, CH_RX);
+		if (!(dmasr & DMASR_HALTED) || (dmasr & DMASR_ALL_ERR)) {
+			int ret = do_soft_reset(dev, CH_RX);
+
+			if (ret != 0) {
+				return ret;
+			}
 		}
 	}
 
@@ -815,6 +960,10 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	if (channel == CH_RX && ch->active_bds > 0 && ch->active_bds <= 255U) {
 		ch->irq_threshold = (uint16_t)ch->active_bds;
 	}
+	/* build_dmacr consumes the hardware threshold, not irq_threshold.
+	 * Ordinary finite transfers do not run the streaming initializer.
+	 */
+	ch->hw_irq_threshold = (uint8_t)ch->irq_threshold;
 
 	/* Reset indices */
 	ch->producer_idx = 0;
@@ -864,6 +1013,26 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
 		if (ret) {
 			return ret;
 		}
+	}
+
+	if (channel == CH_RX && !ch->cyclic) {
+		uint32_t count = ch->active_bds ? ch->active_bds : ch->num_bds;
+
+		ch->arm_valid = false;
+		if (ch->bds == NULL || count == 0U || count > ch->num_bds) {
+			return -EINVAL;
+		}
+		ch->arm_control = ch->bds[0].control;
+		ch->arm_status = ch->bds[0].status;
+		for (uint32_t i = 0; i < count; i++) {
+			/* RX control is length only; status starts clear. */
+			if (ch->bds[i].control != ch->bd_buf_bytes ||
+			    ch->bds[i].status != 0U) {
+				latch_dma_error(dev, channel, dmasr);
+				return -EINVAL;
+			}
+		}
+		ch->arm_valid = true;
 	}
 
 	kick_channel(dev, channel);
@@ -1268,6 +1437,8 @@ static int dma_xlnx_sg_init(const struct device *dev)
 
 	for (uint32_t channel = 0; channel < NUM_CHANNELS; channel++) {
 		data->ch[channel].dev = dev;
+		k_work_init(&data->ch[channel].error_work,
+			    dma_xlnx_sg_error_work);
 	}
 	data->ch[CH_RX].rx_stream_active = false;
 	data->ch[CH_RX].rx_stream_callback = NULL;
