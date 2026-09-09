@@ -146,6 +146,13 @@ struct xlnx_sg_bd {
 /* --------------------------------------------------------------------------
  * Per-channel runtime state
  * -------------------------------------------------------------------------- */
+/* Copied at the error IRQ, before callbacks can stop or rebuild the ring. */
+struct xlnx_sg_error_snapshot {
+	uint32_t channel, sr, cur, tail, head_written, tail_written;
+	uintptr_t bd_va;
+	struct xlnx_sg_bd first;
+};
+
 struct dma_xlnx_sg_chan {
 	const struct device *dev;
 	struct xlnx_sg_bd *bds; /* pointer to static BD array */
@@ -172,6 +179,10 @@ struct dma_xlnx_sg_chan {
 	bool rx_stream_active;
 	dma_xlnx_sg_rx_stream_cb_t rx_stream_callback;
 	void *rx_stream_user_data;
+	struct k_work error_work;
+	struct k_spinlock error_lock;
+	struct xlnx_sg_error_snapshot error_snapshot;
+	uint32_t head_written, tail_written;
 	struct k_work rx_stream_work;
 	struct k_work_sync rx_stream_work_sync;
 	uint32_t tail_idx; /* current TAILDESC BD index for ping-pong */
@@ -226,6 +237,13 @@ static inline uintptr_t chan_base(const struct device *dev, uint32_t channel)
 static inline void chan_write(const struct device *dev, uint32_t channel, uint32_t reg,
 			      uint32_t val)
 {
+	struct dma_xlnx_sg_data *data = dev->data;
+
+	if (reg == REG_CURDESC) {
+		data->ch[channel].head_written = val;
+	} else if (reg == REG_TAILDESC) {
+		data->ch[channel].tail_written = val;
+	}
 	sys_write32(val, chan_base(dev, channel) + reg);
 }
 
@@ -542,6 +560,61 @@ static void log_dma_errors(uint32_t channel, uint32_t dmasr)
 	}
 }
 
+static void dma_xlnx_sg_error_work(struct k_work *work)
+{
+	struct dma_xlnx_sg_chan *ch =
+		CONTAINER_OF(work, struct dma_xlnx_sg_chan, error_work);
+	k_spinlock_key_t key = k_spin_lock(&ch->error_lock);
+	struct xlnx_sg_error_snapshot snap = ch->error_snapshot;
+
+	k_spin_unlock(&ch->error_lock, key);
+	uintptr_t pa = snap.bd_va;
+	int mapped = 0;
+
+#ifdef CONFIG_MMU
+	mapped = arch_page_phys_get((void *)snap.bd_va, &pa);
+#endif
+	log_dma_errors(snap.channel, snap.sr);
+	LOG_ERR("SGdiag ch=%u sr=%08x cur=%08x tail=%08x",
+		snap.channel, snap.sr, snap.cur, snap.tail);
+	LOG_ERR("SGdiag head_written=%08x tail_written=%08x",
+		snap.head_written, snap.tail_written);
+	LOG_ERR("SGdiag bd0_va=%08x bd0_pa=%08x map_rc=%d",
+		(uint32_t)snap.bd_va, (uint32_t)pa, mapped);
+	LOG_ERR("SGdiag bd0 status=%08x next=%08x:%08x buf=%08x:%08x ctrl=%08x",
+		snap.first.status, snap.first.next_desc_msb,
+		snap.first.next_desc,
+		snap.first.buf_addr_msb, snap.first.buf_addr,
+		snap.first.control);
+}
+
+static void latch_dma_error(const struct device *dev, uint32_t channel,
+			    uint32_t dmasr)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
+
+	if (!IS_ENABLED(CONFIG_LOG)) {
+		return;
+	}
+	k_spinlock_key_t key = k_spin_lock(&ch->error_lock);
+
+	ch->error_snapshot = (struct xlnx_sg_error_snapshot){
+		.channel = channel, .sr = dmasr,
+		.cur = chan_read(dev, channel, REG_CURDESC),
+		.tail = chan_read(dev, channel, REG_TAILDESC),
+		.head_written = ch->head_written,
+		.tail_written = ch->tail_written,
+		.bd_va = (uintptr_t)ch->bds,
+	};
+	if (ch->bds != NULL) {
+		cache_invd(ch->bds, sizeof(*ch->bds));
+		ch->error_snapshot.first = ch->bds[0];
+	}
+	k_spin_unlock(&ch->error_lock, key);
+	(void)k_work_submit(&ch->error_work);
+}
+
 /* --------------------------------------------------------------------------
  * TX ISR — non-cyclic completion
  * -------------------------------------------------------------------------- */
@@ -553,7 +626,7 @@ static void dma_xlnx_sg_tx_isr(const struct device *dev)
 
 	/* Check for errors */
 	if (dmasr & DMASR_ALL_ERR) {
-		log_dma_errors(CH_TX, dmasr);
+		latch_dma_error(dev, CH_TX, dmasr);
 		ch->error = true;
 		/* Clear error IRQ flag */
 		chan_write(dev, CH_TX, REG_DMASR, DMASR_ERR_IRQ);
@@ -590,7 +663,7 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 
 	/* Check for errors */
 	if (dmasr & DMASR_ALL_ERR) {
-		log_dma_errors(CH_RX, dmasr);
+		latch_dma_error(dev, CH_RX, dmasr);
 		ch->error = true;
 		chan_write(dev, CH_RX, REG_DMASR, DMASR_ERR_IRQ);
 	}
@@ -1277,6 +1350,8 @@ static int dma_xlnx_sg_init(const struct device *dev)
 
 	for (uint32_t channel = 0; channel < NUM_CHANNELS; channel++) {
 		data->ch[channel].dev = dev;
+		k_work_init(&data->ch[channel].error_work,
+			    dma_xlnx_sg_error_work);
 	}
 	data->ch[CH_RX].rx_stream_active = false;
 	data->ch[CH_RX].rx_stream_callback = NULL;

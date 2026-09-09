@@ -132,6 +132,7 @@ static void before(void *fixture)
 	memset(&data, 0, sizeof(data));
 	memset(regs, 0, sizeof(regs));
 	memset(bds, 0xff, sizeof(bds));
+	k_work_init(&data.ch[CH_RX].error_work, dma_xlnx_sg_error_work);
 	data.ch[CH_RX].bds = bds;
 	data.ch[CH_RX].num_bds = ARRAY_SIZE(bds);
 	resets = 0;
@@ -214,4 +215,41 @@ ZTEST(xlnx_finite_rx, test_bad_tail_model_detects_refetch_of_completed_head)
 	zassert_ok(dma_xlnx_sg_start(&dev, CH_RX));
 	regs[0x40U / 4U] = (uint32_t)(uintptr_t)(bds + 8);
 	zassert_equal(feed_finite_packets(), -ESTALE);
+}
+
+static void reset_ring_on_error(const struct device *device, void *user,
+			       uint32_t channel, int status)
+{
+	completed(device, user, channel, status);
+	memset(bds, 0, sizeof(bds));
+	memset(regs, 0, sizeof(regs));
+}
+
+ZTEST(xlnx_finite_rx, test_error_snapshot_precedes_callback_teardown)
+{
+	struct k_work_sync sync;
+
+	zassert_ok(configure_rx());
+	data.ch[CH_RX].callback = reset_ring_on_error;
+	zassert_ok(dma_xlnx_sg_start(&dev, CH_RX));
+	bds[0].status = BIT(31) | 512U;
+	regs[0x34U / 4U] = 0x00204109;
+	k_sched_lock();
+	dma_xlnx_sg_rx_isr(&dev);
+	struct xlnx_sg_error_snapshot snap = data.ch[CH_RX].error_snapshot;
+
+	k_sched_unlock();
+	(void)k_work_flush(&data.ch[CH_RX].error_work, &sync);
+	zassert_equal(callbacks, 1);
+	zassert_equal(callback_status, -EIO);
+	zassert_equal(snap.sr, 0x00204109);
+	zassert_equal(snap.cur, (uintptr_t)&bds[0]);
+	zassert_equal(snap.tail, (uintptr_t)&bds[7]);
+	zassert_equal(snap.head_written, snap.cur);
+	zassert_equal(snap.tail_written, snap.tail);
+	zassert_equal(snap.first.status, BIT(31) | 512U);
+	zassert_equal(snap.first.next_desc, (uintptr_t)&bds[1]);
+	zassert_equal(snap.first.buf_addr, config.rx_buf_phys);
+	zassert_equal(snap.first.control, 512U);
+	zassert_equal(bds[0].status, 0, "Callback erased the live descriptor");
 }
