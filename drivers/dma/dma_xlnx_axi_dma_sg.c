@@ -718,14 +718,19 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	}
 	ch->cyclic = (dma_cfg->cyclic != 0);
 
-	/* If RX channel is not halted (e.g. prior stream didn't stop cleanly),
-	 * force a soft reset before reconfiguring.
+	/* Halted does not imply clean: SG errors also halt the channel and
+	 * require reset. Do this before clearing the software error latch or
+	 * rebuilding descriptors that the engine may still own.
 	 */
 	if (channel == CH_RX) {
 		uint32_t dmasr = chan_read(dev, CH_RX, REG_DMASR);
 
-		if (!(dmasr & DMASR_HALTED)) {
-			(void)do_soft_reset(dev, CH_RX);
+		if (!(dmasr & DMASR_HALTED) || (dmasr & DMASR_ALL_ERR)) {
+			int ret = do_soft_reset(dev, CH_RX);
+
+			if (ret != 0) {
+				return ret;
+			}
 		}
 	}
 
@@ -815,6 +820,10 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	if (channel == CH_RX && ch->active_bds > 0 && ch->active_bds <= 255U) {
 		ch->irq_threshold = (uint16_t)ch->active_bds;
 	}
+	/* build_dmacr consumes the hardware threshold, not irq_threshold.
+	 * Ordinary finite transfers do not run the streaming initializer.
+	 */
+	ch->hw_irq_threshold = (uint8_t)ch->irq_threshold;
 
 	/* Reset indices */
 	ch->producer_idx = 0;

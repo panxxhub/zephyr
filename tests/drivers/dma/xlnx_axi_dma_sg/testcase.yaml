@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+tests:
+  drivers.dma.xlnx_axi_dma_sg.finite:
+    tags:
+      - drivers
+      - dma
+    platform_allow:
+      - qemu_cortex_a9
+    integration_platforms:
+      - qemu_cortex_a9
