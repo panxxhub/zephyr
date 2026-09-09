@@ -232,7 +232,7 @@ ZTEST(xlnx_finite_rx, test_error_snapshot_precedes_callback_teardown)
 	zassert_ok(configure_rx());
 	data.ch[CH_RX].callback = reset_ring_on_error;
 	zassert_ok(dma_xlnx_sg_start(&dev, CH_RX));
-	bds[0].status = BIT(31) | 512U;
+	bds[0].control = 0x8c000200U;
 	regs[0x34U / 4U] = 0x00204109;
 	k_sched_lock();
 	dma_xlnx_sg_rx_isr(&dev);
@@ -243,13 +243,35 @@ ZTEST(xlnx_finite_rx, test_error_snapshot_precedes_callback_teardown)
 	zassert_equal(callbacks, 1);
 	zassert_equal(callback_status, -EIO);
 	zassert_equal(snap.sr, 0x00204109);
+	zassert_true(snap.arm_valid);
+	zassert_equal(snap.arm_control, 512U);
+	zassert_equal(snap.arm_status, 0U);
 	zassert_equal(snap.cur, (uintptr_t)&bds[0]);
 	zassert_equal(snap.tail, (uintptr_t)&bds[7]);
 	zassert_equal(snap.head_written, snap.cur);
 	zassert_equal(snap.tail_written, snap.tail);
-	zassert_equal(snap.first.status, BIT(31) | 512U);
+	zassert_equal(snap.first.status, 0U);
 	zassert_equal(snap.first.next_desc, (uintptr_t)&bds[1]);
 	zassert_equal(snap.first.buf_addr, config.rx_buf_phys);
-	zassert_equal(snap.first.control, 512U);
+	zassert_equal(snap.first.control, 0x8c000200U);
 	zassert_equal(bds[0].status, 0, "Callback erased the live descriptor");
+}
+
+ZTEST(xlnx_finite_rx, test_rx_rejects_status_bits_in_control_before_arm)
+{
+	struct k_work_sync sync;
+
+	zassert_ok(configure_rx());
+	/* Raw offsets are the hardware ABI, independent of C field names. */
+	uint32_t *words = (uint32_t *)&bds[0];
+
+	zassert_equal(words[0x18U / 4U], 512U);
+	zassert_equal(words[0x1cU / 4U], 0U);
+	words[0x18U / 4U] = 0x8c000200U;
+	zassert_equal(dma_xlnx_sg_start(&dev, CH_RX), -EINVAL);
+	(void)k_work_flush(&data.ch[CH_RX].error_work, &sync);
+	zassert_false(data.ch[CH_RX].arm_valid);
+	zassert_equal(regs[0x38U / 4U], 0U);
+	zassert_equal(regs[0x40U / 4U], 0U);
+	zassert_equal(data.ch[CH_RX].error_snapshot.arm_control, 0x8c000200U);
 }

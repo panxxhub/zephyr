@@ -133,6 +133,10 @@ struct xlnx_sg_bd {
 	uint32_t app[5];        /* 0x20-0x30 */
 } __aligned(64);
 
+BUILD_ASSERT(sizeof(struct xlnx_sg_bd) == 64U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, control) == 0x18U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, status) == 0x1cU);
+
 /* --------------------------------------------------------------------------
  * Reset timeout
  * -------------------------------------------------------------------------- */
@@ -150,6 +154,8 @@ struct xlnx_sg_bd {
 struct xlnx_sg_error_snapshot {
 	uint32_t channel, sr, cur, tail, head_written, tail_written;
 	uintptr_t bd_va;
+	uint32_t arm_control, arm_status;
+	bool arm_valid;
 	struct xlnx_sg_bd first;
 };
 
@@ -183,6 +189,8 @@ struct dma_xlnx_sg_chan {
 	struct k_spinlock error_lock;
 	struct xlnx_sg_error_snapshot error_snapshot;
 	uint32_t head_written, tail_written;
+	uint32_t arm_control, arm_status;
+	bool arm_valid;
 	struct k_work rx_stream_work;
 	struct k_work_sync rx_stream_work_sync;
 	uint32_t tail_idx; /* current TAILDESC BD index for ping-pong */
@@ -575,6 +583,8 @@ static void dma_xlnx_sg_error_work(struct k_work *work)
 	mapped = arch_page_phys_get((void *)snap.bd_va, &pa);
 #endif
 	log_dma_errors(snap.channel, snap.sr);
+	LOG_ERR("SGdiag arm_valid=%u arm_ctrl=%08x arm_status=%08x",
+		snap.arm_valid, snap.arm_control, snap.arm_status);
 	LOG_ERR("SGdiag ch=%u sr=%08x cur=%08x tail=%08x",
 		snap.channel, snap.sr, snap.cur, snap.tail);
 	LOG_ERR("SGdiag head_written=%08x tail_written=%08x",
@@ -606,6 +616,8 @@ static void latch_dma_error(const struct device *dev, uint32_t channel,
 		.head_written = ch->head_written,
 		.tail_written = ch->tail_written,
 		.bd_va = (uintptr_t)ch->bds,
+		.arm_control = ch->arm_control, .arm_status = ch->arm_status,
+		.arm_valid = ch->arm_valid,
 	};
 	if (ch->bds != NULL) {
 		cache_invd(ch->bds, sizeof(*ch->bds));
@@ -946,6 +958,26 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
 		if (ret) {
 			return ret;
 		}
+	}
+
+	if (channel == CH_RX && !ch->cyclic) {
+		uint32_t count = ch->active_bds ? ch->active_bds : ch->num_bds;
+
+		ch->arm_valid = false;
+		if (ch->bds == NULL || count == 0U || count > ch->num_bds) {
+			return -EINVAL;
+		}
+		ch->arm_control = ch->bds[0].control;
+		ch->arm_status = ch->bds[0].status;
+		for (uint32_t i = 0; i < count; i++) {
+			/* RX control is length only; status starts clear. */
+			if (ch->bds[i].control != ch->bd_buf_bytes ||
+			    ch->bds[i].status != 0U) {
+				latch_dma_error(dev, channel, dmasr);
+				return -EINVAL;
+			}
+		}
+		ch->arm_valid = true;
 	}
 
 	kick_channel(dev, channel);
