@@ -134,6 +134,12 @@ struct xlnx_sg_bd {
 } __aligned(64);
 
 BUILD_ASSERT(sizeof(struct xlnx_sg_bd) == 64U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, next_desc_msb) == 0x04U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, buf_addr) == 0x08U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, buf_addr_msb) == 0x0cU);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, mcctl) == 0x10U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, stride_vsize) == 0x14U);
+BUILD_ASSERT(offsetof(struct xlnx_sg_bd, app) == 0x20U);
 BUILD_ASSERT(offsetof(struct xlnx_sg_bd, control) == 0x18U);
 BUILD_ASSERT(offsetof(struct xlnx_sg_bd, status) == 0x1cU);
 
@@ -157,6 +163,10 @@ struct xlnx_sg_error_snapshot {
 	uint32_t arm_control, arm_status;
 	bool arm_valid;
 	struct xlnx_sg_bd first;
+	uint32_t bd_count;
+	uint32_t bd_words[4][16];
+	bool payload_valid;
+	uint32_t payload[16];
 };
 
 struct dma_xlnx_sg_chan {
@@ -188,6 +198,8 @@ struct dma_xlnx_sg_chan {
 	struct k_work error_work;
 	struct k_spinlock error_lock;
 	struct xlnx_sg_error_snapshot error_snapshot;
+	/* Keep large worker dumps off the system workqueue stack. */
+	struct xlnx_sg_error_snapshot error_report;
 	uint32_t head_written, tail_written;
 	uint32_t arm_control, arm_status;
 	bool arm_valid;
@@ -573,29 +585,50 @@ static void dma_xlnx_sg_error_work(struct k_work *work)
 	struct dma_xlnx_sg_chan *ch =
 		CONTAINER_OF(work, struct dma_xlnx_sg_chan, error_work);
 	k_spinlock_key_t key = k_spin_lock(&ch->error_lock);
-	struct xlnx_sg_error_snapshot snap = ch->error_snapshot;
+	struct xlnx_sg_error_snapshot *snap = &ch->error_report;
+
+	*snap = ch->error_snapshot;
 
 	k_spin_unlock(&ch->error_lock, key);
-	uintptr_t pa = snap.bd_va;
+	uintptr_t pa = snap->bd_va;
 	int mapped = 0;
 
 #ifdef CONFIG_MMU
-	mapped = arch_page_phys_get((void *)snap.bd_va, &pa);
+	mapped = arch_page_phys_get((void *)snap->bd_va, &pa);
 #endif
-	log_dma_errors(snap.channel, snap.sr);
+	log_dma_errors(snap->channel, snap->sr);
 	LOG_ERR("SGdiag arm_valid=%u arm_ctrl=%08x arm_status=%08x",
-		snap.arm_valid, snap.arm_control, snap.arm_status);
+		snap->arm_valid, snap->arm_control, snap->arm_status);
 	LOG_ERR("SGdiag ch=%u sr=%08x cur=%08x tail=%08x",
-		snap.channel, snap.sr, snap.cur, snap.tail);
+		snap->channel, snap->sr, snap->cur, snap->tail);
 	LOG_ERR("SGdiag head_written=%08x tail_written=%08x",
-		snap.head_written, snap.tail_written);
+		snap->head_written, snap->tail_written);
 	LOG_ERR("SGdiag bd0_va=%08x bd0_pa=%08x map_rc=%d",
-		(uint32_t)snap.bd_va, (uint32_t)pa, mapped);
+		(uint32_t)snap->bd_va, (uint32_t)pa, mapped);
 	LOG_ERR("SGdiag bd0 status=%08x next=%08x:%08x buf=%08x:%08x ctrl=%08x",
-		snap.first.status, snap.first.next_desc_msb,
-		snap.first.next_desc,
-		snap.first.buf_addr_msb, snap.first.buf_addr,
-		snap.first.control);
+		snap->first.status, snap->first.next_desc_msb,
+		snap->first.next_desc,
+		snap->first.buf_addr_msb, snap->first.buf_addr,
+		snap->first.control);
+	for (uint32_t i = 0; i < snap->bd_count; i++) {
+		for (uint32_t j = 0; j < 16U; j += 4U) {
+			LOG_ERR("SGdiag bd%u +%02x: %08x %08x %08x %08x",
+				i, j * 4U, snap->bd_words[i][j],
+				snap->bd_words[i][j + 1U],
+				snap->bd_words[i][j + 2U],
+				snap->bd_words[i][j + 3U]);
+		}
+	}
+	LOG_ERR("SGdiag rx_payload valid=%u addr=%08x words=%u",
+		snap->payload_valid, snap->first.buf_addr,
+		snap->payload_valid ? 16U : 0U);
+	if (snap->payload_valid) {
+		for (uint32_t j = 0; j < 16U; j += 4U) {
+			LOG_ERR("SGdiag rx +%02x: %08x %08x %08x %08x",
+				j * 4U, snap->payload[j], snap->payload[j + 1U],
+				snap->payload[j + 2U], snap->payload[j + 3U]);
+		}
+	}
 }
 
 static void latch_dma_error(const struct device *dev, uint32_t channel,
@@ -619,9 +652,31 @@ static void latch_dma_error(const struct device *dev, uint32_t channel,
 		.arm_control = ch->arm_control, .arm_status = ch->arm_status,
 		.arm_valid = ch->arm_valid,
 	};
-	if (ch->bds != NULL) {
-		cache_invd(ch->bds, sizeof(*ch->bds));
-		ch->error_snapshot.first = ch->bds[0];
+	struct xlnx_sg_error_snapshot *snap = &ch->error_snapshot;
+	uint32_t count = ch->active_bds ? ch->active_bds : ch->num_bds;
+
+	if (ch->bds != NULL && count > 0U && count <= ch->num_bds) {
+		snap->bd_count = MIN(count, ARRAY_SIZE(snap->bd_words));
+		cache_invd(ch->bds, snap->bd_count * sizeof(*ch->bds));
+		snap->first = ch->bds[0];
+		memcpy(snap->bd_words, ch->bds,
+		       snap->bd_count * sizeof(*ch->bds));
+		uintptr_t addr = snap->first.buf_addr;
+		uintptr_t base = buf_phys(dev, CH_RX);
+		size_t size = buf_size(dev, CH_RX);
+
+		/* Validate a potentially corrupted DMA buffer pointer. */
+		if (channel == CH_RX && snap->first.buf_addr_msb == 0U &&
+		    (addr & 3U) == 0U && addr >= base &&
+		    size >= sizeof(snap->payload) &&
+		    addr - base <= size - sizeof(snap->payload)) {
+			uintptr_t va = buf_virt(dev, CH_RX) + (addr - base);
+			void *src = (void *)va;
+
+			cache_invd(src, sizeof(snap->payload));
+			memcpy(snap->payload, src, sizeof(snap->payload));
+			snap->payload_valid = true;
+		}
 	}
 	k_spin_unlock(&ch->error_lock, key);
 	(void)k_work_submit(&ch->error_work);
