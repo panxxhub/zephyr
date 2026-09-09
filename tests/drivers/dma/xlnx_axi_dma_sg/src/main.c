@@ -41,6 +41,8 @@ static void test_write32(uint32_t value, mem_addr_t addr)
 			regs[0x30U / 4U] = 0;
 			regs[0x34U / 4U] = BIT(0) | BIT(3);
 		}
+	} else if (addr == 0x30U && (value & BIT(0)) != 0U) {
+		regs[0x34U / 4U] = BIT(3); /* Armed, waiting for stream data. */
 	}
 }
 
@@ -63,6 +65,49 @@ static const struct dma_xlnx_sg_cfg config = {
 	.sg_len_mask = 0x3fff,
 };
 static const struct device dev = {.data = &data, .config = &config};
+static unsigned int callbacks;
+static int callback_status;
+
+static void completed(const struct device *device, void *user,
+		      uint32_t channel, int status)
+{
+	ARG_UNUSED(device);
+	ARG_UNUSED(user);
+	ARG_UNUSED(channel);
+	callbacks++;
+	callback_status = status;
+}
+
+/* PG021 tail-pointer model: consume one packet per BD, including tail,
+ * then pause without fetching its next pointer. This is not an AXI RTL
+ * simulation; it checks the actual driver's submitted descriptor graph.
+ */
+static int feed_finite_packets(void)
+{
+	uintptr_t addr = regs[0x38U / 4U];
+	uintptr_t tail = regs[0x40U / 4U];
+
+	for (unsigned int i = 0; i <= ARRAY_SIZE(bds); i++) {
+		if (addr < (uintptr_t)bds || addr >= (uintptr_t)(bds + 8) ||
+		    (addr & 63U) != 0U) {
+			return -EFAULT;
+		}
+		struct xlnx_sg_bd *bd = (struct xlnx_sg_bd *)addr;
+
+		if ((bd->status & BIT(31)) != 0U) {
+			return -ESTALE;
+		}
+		bd->status = BIT(31) | (bd->control & config.sg_len_mask);
+		regs[0x38U / 4U] = addr;
+		if (addr == tail) {
+			regs[0x34U / 4U] = DMASR_IDLE | DMASR_IOC_IRQ;
+			dma_xlnx_sg_rx_isr(&dev);
+			return i + 1;
+		}
+		addr = bd->next_desc;
+	}
+	return -ELOOP;
+}
 
 static int configure_rx(void)
 {
@@ -91,6 +136,8 @@ static void before(void *fixture)
 	data.ch[CH_RX].num_bds = ARRAY_SIZE(bds);
 	resets = 0;
 	reset_stuck = false;
+	callbacks = 0;
+	callback_status = 0;
 }
 
 ZTEST(xlnx_finite_rx, test_halted_sg_error_is_reset_before_reusing_descriptors)
@@ -137,3 +184,34 @@ ZTEST(xlnx_finite_rx, test_finite_ring_geometry_and_hardware_irq_threshold)
 }
 
 ZTEST_SUITE(xlnx_finite_rx, NULL, NULL, before, NULL, NULL);
+
+ZTEST(xlnx_finite_rx, test_first_arm_completes_at_tail)
+{
+	struct dma_status status;
+
+	regs[0x34U / 4U] = BIT(0) | BIT(3);
+	zassert_ok(configure_rx());
+	data.ch[CH_RX].callback = completed;
+	zassert_ok(dma_xlnx_sg_start(&dev, CH_RX));
+	zassert_ok(dma_xlnx_sg_get_status(&dev, CH_RX, &status));
+	zassert_true(status.busy);
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&dev), 0);
+	zassert_equal(callbacks, 0);
+	zassert_equal(feed_finite_packets(), 8);
+	zassert_equal(callbacks, 1);
+	zassert_equal(callback_status, DMA_STATUS_COMPLETE);
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&dev), 4096);
+	/* A subsequent fetch of tail.next would encounter completed BD0;
+	 * hardware must pause at tail before following that ring link.
+	 */
+	zassert_equal(bds[7].next_desc, (uint32_t)(uintptr_t)&bds[0]);
+}
+
+ZTEST(xlnx_finite_rx, test_bad_tail_model_detects_refetch_of_completed_head)
+{
+	regs[0x34U / 4U] = BIT(0) | BIT(3);
+	zassert_ok(configure_rx());
+	zassert_ok(dma_xlnx_sg_start(&dev, CH_RX));
+	regs[0x40U / 4U] = (uint32_t)(uintptr_t)(bds + 8);
+	zassert_equal(feed_finite_packets(), -ESTALE);
+}
