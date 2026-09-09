@@ -20,6 +20,13 @@ static uint32_t regs[32];
 static unsigned int resets;
 static bool reset_stuck;
 
+static int test_cache_range(void *addr, size_t size)
+{
+	ARG_UNUSED(addr);
+	ARG_UNUSED(size);
+	return 0;
+}
+
 static uint32_t test_read32(mem_addr_t addr)
 {
 	return regs[addr / 4U];
@@ -44,8 +51,8 @@ static void test_write32(uint32_t value, mem_addr_t addr)
 #undef DEVICE_MMIO_NAMED_GET
 #define DEVICE_MMIO_NAMED_GET(dev, name) 0U
 /* Exercise production ring/state logic without hardware or cache access. */
-#define sys_cache_data_flush_range(addr, len) 0
-#define sys_cache_data_invd_range(addr, len) 0
+#define sys_cache_data_flush_range test_cache_range
+#define sys_cache_data_invd_range test_cache_range
 #include "../../../../../drivers/dma/dma_xlnx_axi_dma_sg.c"
 
 static struct xlnx_sg_bd bds[8];
@@ -73,6 +80,10 @@ static int configure_rx(void)
 static void before(void *fixture)
 {
 	ARG_UNUSED(fixture);
+	/* Normally referenced by DT device/IRQ instantiation, absent here. */
+	(void)dma_xlnx_sg_init;
+	(void)dma_xlnx_sg_rx_isr;
+	(void)dma_xlnx_sg_tx_isr;
 	memset(&data, 0, sizeof(data));
 	memset(regs, 0, sizeof(regs));
 	memset(bds, 0xff, sizeof(bds));
