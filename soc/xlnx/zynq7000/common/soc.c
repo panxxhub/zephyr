@@ -157,9 +157,9 @@ void soc_early_init_hook(void)
 void soc_per_core_init_hook(void)
 {
 	if ((__get_ACTLR() & ACTLR_SMP_Msk) == 0U) {
-		arch_dcache_disable();
+		sys_cache_data_disable();
 		zynq_enable_smp_mode();
-		arch_dcache_enable();
+		sys_cache_data_enable();
 	}
 }
 #endif /* CONFIG_SMP */
