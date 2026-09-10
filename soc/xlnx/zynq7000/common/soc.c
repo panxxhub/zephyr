@@ -162,6 +162,19 @@ void soc_per_core_init_hook(void)
 		zynq_enable_smp_mode();
 		sys_cache_data_enable();
 	}
+
+	/*
+	 * Program-flow prediction (SCTLR.Z) resets to off and nothing in the
+	 * boot path turns it on, so every taken branch flushes the pipeline:
+	 * silicon 2026-09-10 measured 14 CPU cycles per load in a cache-hit
+	 * loop and 68 us for a 2 KiB memset on both cores.
+	 */
+	uint32_t sctlr = __get_SCTLR();
+
+	if ((sctlr & SCTLR_Z_Msk) == 0U) {
+		__set_SCTLR(sctlr | SCTLR_Z_Msk);
+		barrier_isync_fence_full();
+	}
 }
 #endif /* CONFIG_SMP */
 
