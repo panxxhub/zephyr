@@ -145,6 +145,25 @@ void soc_early_init_hook(void)
 #endif
 }
 
+#ifdef CONFIG_SMP
+/*
+ * The secondary core reaches this hook with the MMU and L1 caches already on
+ * (arch_secondary_cpu_init) but ACTLR.SMP still clear: soc_reset_hook only
+ * runs on the boot path of the primary core. With SMP clear a Cortex-A9
+ * treats every Shareable Normal access as non-cacheable, so the whole kernel
+ * RAM is uncached for that core (silicon 2026-09-10: 25 CPU cycles per byte
+ * for a memset on CPU 1). Switch the data cache off, set SMP, switch it on.
+ */
+void soc_per_core_init_hook(void)
+{
+	if ((__get_ACTLR() & ACTLR_SMP_Msk) == 0U) {
+		arch_dcache_disable();
+		zynq_enable_smp_mode();
+		arch_dcache_enable();
+	}
+}
+#endif /* CONFIG_SMP */
+
 /* Platform-specific early initialization */
 
 void soc_reset_hook(void)

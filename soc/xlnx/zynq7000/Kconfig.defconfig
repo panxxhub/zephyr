@@ -26,6 +26,9 @@ config SOC_RESET_HOOK
 config SOC_EARLY_INIT_HOOK
 	default y
 
+config SOC_PER_CORE_INIT_HOOK
+	default y if SMP
+
 if I2C_CADENCE
 
 config I2C_CADENCE_BROKEN_HOLD_BIT
