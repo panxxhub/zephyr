@@ -7,4 +7,20 @@ if SOC_FAMILY_XILINX_ZYNQ7000
 
 rsource "*/Kconfig"
 
+config SOC_XLNX_ZYNQ7000_L2_CACHE
+	bool "PL310 level-2 cache"
+	depends on ARCH_CACHE && DCACHE && CACHE_MANAGEMENT
+	select ARM_OUTER_CACHE
+	default y
+	help
+	  Enable the 512 KiB ARM PL310 outer cache in front of the DDR
+	  controller.  The FSBL hands the core over with it disabled, so
+	  without this every L1 miss pays the full DDR line-fill latency.
+
+	  The controller is brought up on the primary core once the MMU and
+	  the L1 caches are on, and the sys_cache_data_* operations then
+	  maintain both cache levels.  PL bus masters on the AXI HP ports do
+	  not go through it: a buffer they share with the CPU needs the same
+	  explicit maintenance the L1 already required.
+
 endif # SOC_FAMILY_XILINX_ZYNQ7000

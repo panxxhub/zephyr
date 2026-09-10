@@ -16,6 +16,7 @@
 #include <zephyr/cache.h>
 #include <cmsis_core.h>
 #include <zephyr/sys/barrier.h>
+#include <zephyr/arch/arm/cortex_a_r/outer_cache.h>
 
 /* Cache Type Register */
 #define	CTR_DMINLINE_SHIFT	16
@@ -59,8 +60,12 @@ void arch_dcache_enable(void)
 		return;
 	}
 
-	/* Cache not enabled - safe to invalidate (no dirty lines) */
-	arch_dcache_invd_all();
+	/*
+	 * Cache not enabled - safe to invalidate (no dirty lines).  L1 only:
+	 * the outer cache is shared between the cores and stays untouched when
+	 * one core switches its own L1 on or off.
+	 */
+	L1C_InvalidateDCacheAll();
 
 	val |= SCTLR_C_Msk;
 	barrier_dsync_fence_full();
@@ -83,13 +88,17 @@ void arch_dcache_disable(void)
 
 int arch_dcache_flush_all(void)
 {
+	/* Clean: inner first, then outer, so the outer level sees the data. */
 	L1C_CleanDCacheAll();
+	outer_cache_clean_all();
 
 	return 0;
 }
 
 int arch_dcache_invd_all(void)
 {
+	/* Invalidate: outer first, then inner. */
+	outer_cache_invd_all();
 	L1C_InvalidateDCacheAll();
 
 	return 0;
@@ -98,6 +107,7 @@ int arch_dcache_invd_all(void)
 int arch_dcache_flush_and_invd_all(void)
 {
 	L1C_CleanInvalidateDCacheAll();
+	outer_cache_flush_and_invd_all();
 
 	return 0;
 }
@@ -117,6 +127,8 @@ int arch_dcache_flush_range(void *start_addr, size_t size)
 		addr += line_size;
 	}
 
+	outer_cache_clean_range(start_addr, size);
+
 	return 0;
 }
 
@@ -127,6 +139,11 @@ int arch_dcache_invd_range(void *start_addr, size_t size)
 	uintptr_t end_addr = addr + size;
 
 	line_size = arch_dcache_line_size_get();
+
+	/* Invalidate: outer first, then inner, so that a line the outer level
+	 * drops cannot be refilled from a stale inner copy.
+	 */
+	outer_cache_invd_range(start_addr, size);
 
 	/*
 	 * Clean and invalidate the partial cache lines at both ends of the
@@ -163,14 +180,28 @@ int arch_dcache_flush_and_invd_range(void *start_addr, size_t size)
 	size_t line_size;
 	uintptr_t addr = (uintptr_t)start_addr;
 	uintptr_t end_addr = addr + size;
+	uintptr_t start;
 
 	/* Align address to line size */
 	line_size = arch_dcache_line_size_get();
 	addr &= ~(line_size - 1);
+	start = addr;
 
+	/* Inner clean, so every byte of a partial line at either end reaches
+	 * the outer level before it is dropped.
+	 */
 	while (addr < end_addr) {
-		L1C_CleanInvalidateDCacheMVA((void *)addr);
+		L1C_CleanDCacheMVA((void *)addr);
 		addr += line_size;
+	}
+
+	outer_cache_flush_and_invd_range(start_addr, size);
+
+	/* Inner invalidate.  The clean above already pushed the partial-line
+	 * edges out, so a plain invalidate loses nothing here.
+	 */
+	for (addr = start; addr < end_addr; addr += line_size) {
+		L1C_InvalidateDCacheMVA((void *)addr);
 	}
 
 	return 0;

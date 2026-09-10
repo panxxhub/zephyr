@@ -26,6 +26,9 @@
 #define SLCR_UNLOCK_KEY 0xdf0d
 #define SLCR_PSS_RST_CTRL 0x0200
 #define SLCR_PSS_RST_CTRL_SOFT_RST BIT(0)
+#define SLCR_L2C_RAM    0x0A1C
+/* Xilinx boot.S value, CR #697094 */
+#define SLCR_L2C_RAM_CONFIG 0x00020202
 
 /* Zynq-7000 MPCore SCU */
 #define ZYNQ_SCU_BASE		0xF8F00000U
@@ -47,6 +50,11 @@ static const struct arm_mmu_region mmu_regions[] = {
 	MMU_REGION_FLAT_ENTRY("mpcore",
 			      0xF8F00000,
 			      0x2000,
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+	/* The mpcore entry above ends exactly at the PL310 register window. */
+	MMU_REGION_FLAT_ENTRY("l2cc",
+			      ZYNQ_PL310_BASE,
+			      0x1000,
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
 	MMU_REGION_FLAT_ENTRY("ocm",
 			      DT_REG_ADDR(DT_CHOSEN(zephyr_ocm)),
@@ -140,6 +148,17 @@ static void zynq_enable_smp_mode(void)
  */
 void soc_early_init_hook(void)
 {
+#ifdef CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE
+	/*
+	 * The MMU and both L1 caches are on by now (z_arm_mmu_init) and the
+	 * secondary core has not been released yet (z_smp_init runs much
+	 * later), so this is the one place where the outer cache can be
+	 * brought up with the system quiescent and every later access, on
+	 * either core, already covered by it.
+	 */
+	zynq_pl310_init(ZYNQ_PL310_BASE);
+#endif
+
 #if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm))
 	memcpy(&__ocm_data_start, &__ocm_data_load_start,
 	       __ocm_data_end - __ocm_data_start);
@@ -228,6 +247,15 @@ void soc_reset_hook(void)
 
 	/* Unlock System Level Control Registers (SLCR) */
 	sys_write32(SLCR_UNLOCK_KEY, addr + SLCR_UNLOCK);
+
+#ifdef CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE
+	/*
+	 * L2 cache RAM timing.  Written here, where the SLCR is still
+	 * reachable by physical address with the MMU off, and before the
+	 * controller is enabled in soc_early_init_hook().
+	 */
+	sys_write32(SLCR_L2C_RAM_CONFIG, addr + SLCR_L2C_RAM);
+#endif
 #endif
 }
 
@@ -245,6 +273,10 @@ void sys_arch_reboot(int type)
 
 	device_map(&slcr, DT_REG_ADDR(DT_NODELABEL(slcr)), 0x1000, K_MEM_CACHE_NONE);
 	(void)irq_lock();
+	/* The reset discards whatever the caches still hold, so anything a
+	 * caller wrote for the next boot to read has to be in memory first.
+	 */
+	sys_cache_data_flush_all();
 	sys_write32(SLCR_UNLOCK_KEY, slcr + SLCR_UNLOCK);
 	barrier_dsync_fence_full();
 	sys_write32(SLCR_PSS_RST_CTRL_SOFT_RST, slcr + SLCR_PSS_RST_CTRL);

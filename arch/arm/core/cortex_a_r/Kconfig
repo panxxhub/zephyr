@@ -155,6 +155,15 @@ config DCACHE_LINE_SIZE
 config ICACHE_LINE_SIZE
 	default 32
 
+config ARM_OUTER_CACHE
+	bool
+	depends on ARCH_CACHE && DCACHE
+	help
+	  Selected by a SoC that sits behind an external, physically addressed
+	  level-2 cache controller.  The SoC implements the six operations in
+	  <zephyr/arch/arm/cortex_a_r/outer_cache.h>; the arch cache code calls
+	  them so that one sys_cache_data_* call maintains both cache levels.
+
 endif # CPU_AARCH32_CORTEX_A
 
 config CPU_CORTEX_R4

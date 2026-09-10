@@ -5,6 +5,7 @@
 #
 
 zephyr_sources(common/soc.c)
+zephyr_sources_ifdef(CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE common/cache_pl310.c)
 zephyr_include_directories(common)
 
 set(SOC_LINKER_SCRIPT ${ZEPHYR_BASE}/include/zephyr/arch/arm/cortex_a_r/scripts/linker.ld CACHE INTERNAL "")

@@ -102,6 +102,15 @@ static void zynq_release_secondary_cpu(void)
 {
 	uint32_t sctlr;
 
+	/*
+	 * The secondary core runs from reset until soc_per_core_init_hook()
+	 * with ACTLR.SMP clear, which makes every Shareable Normal access
+	 * non-cacheable, and the MMU goes off for a moment below.  Neither
+	 * path looks in an outer cache, so leave nothing behind in one: clean
+	 * and invalidate both levels before the core is let go.
+	 */
+	sys_cache_data_flush_and_invd_all();
+
 	/* SLCR (0xF800_0000) is not mapped by the MMU, so we must
 	 * temporarily disable the MMU to access it via physical address.
 	 * This works because DDR uses identity mapping (VA == PA).

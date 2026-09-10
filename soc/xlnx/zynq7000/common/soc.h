@@ -15,6 +15,16 @@
 
 #define __CORTEX_A 9U
 
+#include <stdint.h>
+
+/* ARM PL310 (L2C-310) outer cache controller register window. */
+#define ZYNQ_PL310_BASE 0xF8F02000U
+
+#ifdef CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE
+extern uintptr_t zynq_pl310_base;
+void zynq_pl310_init(uintptr_t base);
+#endif
+
 #endif /* !_ASMLANGUAGE */
 
 #endif /* _SOC__H_ */
