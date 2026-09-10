@@ -20,4 +20,5 @@ zephyr_library_sources_ifdef(CONFIG_CACHE_NXP_SYSCON_LPCAC	cache_nxp_syscon_lpca
 zephyr_library_sources_ifdef(CONFIG_CACHE_NXP_XCACHE cache_nxp_xcache.c)
 zephyr_library_sources_ifdef(CONFIG_CACHE_SILABS_SIWX91X cache_siwx91x.c)
 zephyr_library_sources_ifdef(CONFIG_CACHE_STM32 cache_stm32.c)
+zephyr_library_sources_ifdef(CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE cache_xlnx_zynq7000_pl310.c)
 # zephyr-keep-sorted-stop

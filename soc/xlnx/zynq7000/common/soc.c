@@ -4,6 +4,8 @@
  */
 
 #include <zephyr/cache.h>
+#include <zephyr/arch/cache.h>
+#include <zephyr/drivers/cache/xlnx_zynq7000_pl310.h>
 #include <string.h>
 
 #include <zephyr/arch/cpu.h>
@@ -46,8 +48,14 @@ static const struct arm_mmu_region mmu_regions[] = {
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_X),
 	MMU_REGION_FLAT_ENTRY("mpcore",
 			      0xF8F00000,
-			      0x2000,
+			      0x3000,
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+#ifdef CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE
+	MMU_REGION_FLAT_ENTRY("slcr",
+			      0xF8000000,
+			      0x1000,
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+#endif
 	MMU_REGION_FLAT_ENTRY("ocm",
 			      DT_REG_ADDR(DT_CHOSEN(zephyr_ocm)),
 			      DT_REG_SIZE(DT_CHOSEN(zephyr_ocm)),
@@ -73,8 +81,8 @@ DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 	 * per word (measured 130 ns per 4 bytes, 265 us for a 2000-byte
 	 * window).  The driver invalidates each window before handing it to the
 	 * consumer.  Only the inner (L1) level is cacheable, because the cache
-	 * API on this SoC maintains L1 only; the outer level (PL310) is left
-	 * out of the picture rather than depending on it staying disabled.
+	 * receive window needs no outer allocation; PL310 remains bypassed
+	 * for this region even when the shared L2 cache is enabled.
 	 * Nothing in the system writes into the RX region, so no line in it is
 	 * ever dirty — that is what makes an invalidate of a window whose end
 	 * shares a cache line with the next window safe.
@@ -140,6 +148,9 @@ static void zynq_enable_smp_mode(void)
  */
 void soc_early_init_hook(void)
 {
+	if (IS_ENABLED(CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE)) {
+		zynq_pl310_init(MPIDR_TO_CORE(GET_MPIDR()));
+	}
 #if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm))
 	memcpy(&__ocm_data_start, &__ocm_data_load_start,
 	       __ocm_data_end - __ocm_data_start);
@@ -158,9 +169,14 @@ void soc_early_init_hook(void)
 void soc_per_core_init_hook(void)
 {
 	if ((__get_ACTLR() & ACTLR_SMP_Msk) == 0U) {
-		sys_cache_data_disable();
+		/* This transition is local to this CPU; never operate on shared L2 here. */
+		if (IS_ENABLED(CONFIG_CACHE_MANAGEMENT)) {
+			arch_dcache_disable();
+		}
 		zynq_enable_smp_mode();
-		sys_cache_data_enable();
+		if (IS_ENABLED(CONFIG_CACHE_MANAGEMENT)) {
+			arch_dcache_enable();
+		}
 	}
 
 	/*
@@ -231,6 +247,23 @@ void soc_reset_hook(void)
 #endif
 }
 
+#ifdef CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE
+int zynq_pl310_virt_to_phys(uintptr_t va, uintptr_t *pa)
+{
+	uint32_t par;
+
+	/* ATS1CPR: privileged stage-1 read translation. IRQs are locked by the caller. */
+	__asm__ volatile("mcr p15, 0, %0, c7, c8, 0" : : "r" (va) : "memory");
+	barrier_isync_fence_full();
+	__asm__ volatile("mrc p15, 0, %0, c7, c4, 0" : "=r" (par));
+	if ((par & 1U) != 0U) {
+		return -EFAULT;
+	}
+	*pa = (par & 0xfffff000U) | (va & 0xfffU);
+	return 0;
+}
+#endif
+
 #if defined(CONFIG_REBOOT) && DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(slcr))
 /* PS-only software reset (UG585 PSS_RST_CTRL.SOFT_RST): reruns BootROM, so a
  * QSPI-booted image comes back through FSBL; a JTAG-loaded image is gone.
@@ -245,6 +278,10 @@ void sys_arch_reboot(int type)
 
 	device_map(&slcr, DT_REG_ADDR(DT_NODELABEL(slcr)), 0x1000, K_MEM_CACHE_NONE);
 	(void)irq_lock();
+	if (IS_ENABLED(CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE)) {
+		/* Generic reboot currently disables only CONFIG_ARCH_CACHE controllers. */
+		sys_cache_data_disable();
+	}
 	sys_write32(SLCR_UNLOCK_KEY, slcr + SLCR_UNLOCK);
 	barrier_dsync_fence_full();
 	sys_write32(SLCR_PSS_RST_CTRL_SOFT_RST, slcr + SLCR_PSS_RST_CTRL);
