@@ -28,8 +28,9 @@ struct dma_xlnx_sg_app_fields {
  *
  * Called from system workqueue context. The driver owns SG descriptor
  * lifecycle, IRQ masking/re-enable, and ring re-arm policy. @p buf points into
- * the driver's RX buffer region and is valid only for the duration of the
- * callback; copy it if the data must outlive the call. @p size is the
+ * the driver's RX buffer region, has already been cache-invalidated, and is
+ * valid only for the duration of the callback; copy it if the data must
+ * outlive the call. Do not write into it - see dma_xlnx_sg_get_buffer(). @p size is the
  * contiguous completed window span in bytes (`bd_bytes * irq_threshold`).
  */
 typedef void (*dma_xlnx_sg_rx_stream_cb_t)(const struct device *dev, void *user_data, uint8_t *buf,
@@ -141,6 +142,13 @@ uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev);
  *
  * Returns both the physical address (for hardware/BD programming) and
  * the MMU-mapped CPU-accessible address.
+ *
+ * The RX region is mapped Normal cacheable. The driver invalidates the data it
+ * reports as received - a stream window before its callback, a finite transfer
+ * before its completion callback - so a consumer that reads only that data
+ * needs no cache maintenance. Reading elsewhere in the region, or writing into
+ * it at all, is the caller's own problem: the driver relies on the RX region
+ * never holding a dirty line.
  *
  * @param dev      DMA device.
  * @param channel  0 = TX, 1 = RX.

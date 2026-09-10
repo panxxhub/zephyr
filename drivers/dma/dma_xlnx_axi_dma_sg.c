@@ -860,11 +860,23 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 						      : ch->num_bds;
 			const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
 
+			uintptr_t virt_base = buf_virt(dev, CH_RX);
+
 			for (uint32_t i = 0; i < ring_count; i++) {
 				cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
-				if (ch->bds[i].status & BD_STS_CMPLT) {
-					total_bytes += ch->bds[i].status & len_mask;
+				if ((ch->bds[i].status & BD_STS_CMPLT) == 0U) {
+					continue;
 				}
+				uint32_t bytes = ch->bds[i].status & len_mask;
+
+				total_bytes += bytes;
+				/* Same reason as the stream window: the RX
+				 * region is cacheable, so drop the CPU's view
+				 * of what the engine just wrote.
+				 */
+				cache_invd((void *)(virt_base +
+						    (uintptr_t)i * ch->bd_buf_bytes),
+					   bytes);
 			}
 			ch->last_rx_bytes = total_bytes;
 
@@ -1323,14 +1335,29 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 		return -EINVAL;
 	}
 
+	/*
+	 * The RX region is mapped Normal cacheable, so drop any lines the CPU
+	 * holds for this window before the consumer reads it.  One call for the
+	 * whole window: a window never wraps the ring (num_bds is a multiple of
+	 * irq_threshold), so its BDs are contiguous in the buffer.
+	 *
+	 * bd_buf_bytes need not be a multiple of the cache line size, so the
+	 * first and last line of a window are shared with its neighbours.  That
+	 * is safe only because nothing writes into the RX region: no line in it
+	 * is ever dirty, so the clean-and-invalidate the cache API performs on
+	 * a partial edge line writes nothing back over the engine's data.
+	 * A consumer that needs to write into an RX window must either use a
+	 * bd_bytes that is a multiple of the line size or clean the window
+	 * before the driver hands the BDs back to the engine.
+	 */
+	cache_invd(window_buf, window_bytes);
+
 	for (uint32_t i = 0; i < window_size; i++) {
 		struct xlnx_sg_bd *bd = &ch->bds[idx];
-		uint8_t *data_buf = (uint8_t *)(virt_base + (uintptr_t)idx * ch->bd_buf_bytes);
 		uint32_t byte_count;
 
 		cache_invd(bd, sizeof(*bd));
 		byte_count = bd->status & DEV_CFG(dev)->sg_len_mask;
-		cache_invd(data_buf, ch->bd_buf_bytes);
 
 		ch->last_rx_bytes = byte_count;
 		for (int a = 0; a < 5; a++) {

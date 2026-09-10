@@ -63,6 +63,20 @@ DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 	 * This avoids consuming one L2 page table per MiB, which would exhaust
 	 * CONFIG_ARM_MMU_NUM_L2_TABLES for large (>25 MiB) buffers.
 	 * Addresses and sizes come from the DTS axi_dma0 node reg-names.
+	 *
+	 * TX stays strongly ordered: the CPU writes it and the engine reads it,
+	 * so the stores must reach DDR with no cache maintenance at all.
+	 *
+	 * RX is Normal, inner write-back: the consumer copies whole windows out
+	 * of it, and a strongly ordered load is a single uncached DDR access
+	 * per word (measured 130 ns per 4 bytes, 265 us for a 2000-byte
+	 * window).  The driver invalidates each window before handing it to the
+	 * consumer.  Only the inner (L1) level is cacheable, because the cache
+	 * API on this SoC maintains L1 only; the outer level (PL310) is left
+	 * out of the picture rather than depending on it staying disabled.
+	 * Nothing in the system writes into the RX region, so no line in it is
+	 * ever dirty — that is what makes an invalidate of a window whose end
+	 * shares a cache line with the next window safe.
 	 */
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(axi_dma0))
 	MMU_REGION_FLAT_ENTRY("dma_tx_buf",
@@ -73,8 +87,8 @@ DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 	MMU_REGION_FLAT_ENTRY("dma_rx_buf",
 			      DT_REG_ADDR_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
 			      DT_REG_SIZE_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
-			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W |
-				      MATTR_MAY_MAP_L1_SECTION),
+			      MT_NORMAL | MATTR_SHARED | MATTR_CACHE_INNER_WB_nWA |
+				      MPERM_R | MPERM_W | MATTR_MAY_MAP_L1_SECTION),
 #endif
 
 };

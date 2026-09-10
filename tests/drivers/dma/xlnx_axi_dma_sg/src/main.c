@@ -27,6 +27,36 @@ static int test_cache_range(void *addr, size_t size)
 	return 0;
 }
 
+/* The RX buffer region is Normal cacheable memory on the target, so the
+ * ranges the driver invalidates are part of its contract.  native_sim has no
+ * MMU memory types and no caches: record the calls and check the ranges.
+ */
+static struct {
+	uintptr_t addr;
+	size_t size;
+} invd_log[16];
+static unsigned int invd_count;
+
+static int test_cache_invd(void *addr, size_t size)
+{
+	if (invd_count < ARRAY_SIZE(invd_log)) {
+		invd_log[invd_count].addr = (uintptr_t)addr;
+		invd_log[invd_count].size = size;
+	}
+	invd_count++;
+	return 0;
+}
+
+static bool invd_logged(uintptr_t addr, size_t size)
+{
+	for (unsigned int i = 0; i < MIN(invd_count, ARRAY_SIZE(invd_log)); i++) {
+		if (invd_log[i].addr == addr && invd_log[i].size == size) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static uint32_t test_read32(mem_addr_t addr)
 {
 	return regs[addr / 4U];
@@ -66,7 +96,7 @@ static void test_write32(uint32_t value, mem_addr_t addr)
 #define DEVICE_MMIO_NAMED_GET(dev, name) 0U
 /* Exercise production ring/state logic without hardware or cache access. */
 #define sys_cache_data_flush_range test_cache_range
-#define sys_cache_data_invd_range test_cache_range
+#define sys_cache_data_invd_range  test_cache_invd
 #include "../../../../../drivers/dma/dma_xlnx_axi_dma_sg.c"
 
 static struct xlnx_sg_bd bds[8];
@@ -375,6 +405,7 @@ static void engine_tail_write(uint32_t value)
 }
 
 static unsigned int stream_windows;
+static unsigned int stream_windows_stale;
 static uint32_t stream_window_size;
 static uint32_t stream_first_stamp;
 static unsigned int stream_errors;
@@ -396,6 +427,10 @@ static void stream_window(const struct device *device, void *user, uint8_t *buf,
 	stream_windows++;
 	stream_window_size = size;
 	stream_first_stamp = *(uint32_t *)buf;
+	if (!invd_logged((uintptr_t)buf, size)) {
+		stream_windows_stale++;
+	}
+	invd_count = 0;
 }
 
 static void stream_error(const struct device *device, void *user, uint32_t dmasr)
@@ -480,7 +515,9 @@ static void stream_before(void *fixture)
 	k_work_init(&stream_data.ch[CH_RX].rx_stream_work,
 		    dma_xlnx_sg_rx_stream_work_handler);
 	stream_windows = 0;
+	stream_windows_stale = 0;
 	stream_window_size = 0;
+	invd_count = 0;
 	stream_first_stamp = 0;
 	stream_errors = 0;
 	stream_error_sr = 0;
@@ -531,6 +568,8 @@ ZTEST(xlnx_rx_stream, test_threshold_one_survives_a_reframed_packet)
 	zassert_equal(stream_errors, 0);
 	/* 200 packets, one of which spans two BDs; one window per BD. */
 	zassert_equal(stream_windows, 201U);
+	zassert_equal(stream_windows_stale, 0U,
+		      "every window must be invalidated before delivery");
 	zassert_equal(stream_window_size, STREAM_BD_BYTES);
 	zassert_equal(stream_first_stamp, 0xbd000000U + 200U,
 		      "window must expose the BD the engine just filled");
@@ -593,6 +632,8 @@ ZTEST(xlnx_rx_stream, test_threshold_eight_window_delivery_is_unchanged)
 	}
 	zassert_equal(stream_windows, 25U, "one window per 8 BDs");
 	zassert_equal(stream_window_size, 8U * STREAM_BD_BYTES);
+	zassert_equal(stream_windows_stale, 0U,
+		      "the whole 16000-byte window is invalidated, not one BD");
 	zassert_equal(stream_first_stamp, 0xbd000000U + 192U);
 	zassert_false(eng.overrun);
 	zassert_equal(stream_errors, 0);
