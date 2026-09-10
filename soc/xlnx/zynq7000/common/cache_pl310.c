@@ -66,6 +66,19 @@
 
 #define PL310_LINE_SIZE        32U
 
+/*
+ * Poll bound for a background by-way operation.  The longest such operation
+ * is a clean of 512 KiB of dirty lines, roughly a millisecond of DDR write
+ * back; every iteration below is a strongly ordered read of the controller,
+ * tens of cycles each, so this bound is about two orders of magnitude of
+ * headroom -- giving up early would silently drop dirty data, so the margin
+ * leans that way.  It is a count and not a clock reading on purpose: the
+ * reboot path runs with interrupts locked and the system timer already
+ * stopped, and a reset must never be lost to a cache operation that will
+ * not finish.
+ */
+#define PL310_WAY_OP_POLL_MAX  1000000U
+
 /* Base of the controller's register window.  A test points this at a fake. */
 uintptr_t zynq_pl310_base = ZYNQ_PL310_BASE;
 
@@ -80,16 +93,22 @@ static ALWAYS_INLINE void pl310_write(uint32_t off, uint32_t val)
 }
 
 /*
- * The cache sync register reads back non-zero while the controller still has
- * an operation or a buffered write outstanding; this is the completion check
- * the Xilinx boot code uses, both after a background by-way operation and as
- * the explicit drain that erratum 769419 asks for.
+ * Drain the store buffer.  This is the explicit sync erratum 769419 asks for
+ * after every maintenance operation.  It must not be issued while a
+ * background by-way operation is still running -- the controller stalls the
+ * write until that operation retires -- so every caller waits for the way
+ * register first.
  */
 static void pl310_sync(void)
 {
 	pl310_write(PL310_CACHE_SYNC, 0U);
-	while (pl310_read(PL310_CACHE_SYNC) != 0U) {
+
+	for (uint32_t i = 0U; i < PL310_WAY_OP_POLL_MAX; i++) {
+		if (pl310_read(PL310_CACHE_SYNC) == 0U) {
+			break;
+		}
 	}
+
 	barrier_dsync_fence_full();
 }
 
@@ -128,12 +147,32 @@ static void pl310_op_range(uint32_t reg, uintptr_t start, uintptr_t end)
 	}
 }
 
+/*
+ * A by-way operation is a background operation: the controller clears the bit
+ * of every way as that way retires, and the operation is complete when the
+ * register itself reads zero.  The cache sync register is not that indicator
+ * -- it can read zero while the background operation is still in flight, and
+ * writing it in that window stalls -- so poll the way register, and give up
+ * after a bounded number of tries rather than spin forever.
+ */
+static bool pl310_wait_way(uint32_t reg)
+{
+	for (uint32_t i = 0U; i < PL310_WAY_OP_POLL_MAX; i++) {
+		if ((pl310_read(reg) & PL310_WAY_MASK) == 0U) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static void pl310_op_way(uint32_t reg)
 {
 	pl310_write(reg, PL310_WAY_MASK);
-	while (pl310_read(PL310_CACHE_SYNC) != 0U) {
+
+	if (pl310_wait_way(reg)) {
+		pl310_sync();
 	}
-	pl310_sync();
 }
 
 void outer_cache_clean_range(void *addr, size_t size)
@@ -220,8 +259,7 @@ void zynq_pl310_init(uintptr_t base)
 	pl310_write(PL310_DATA_RAM_CTRL, PL310_DATA_RAM_INIT);
 
 	pl310_write(PL310_INV_WAY, PL310_WAY_MASK);
-	while (pl310_read(PL310_CACHE_SYNC) != 0U) {
-	}
+	(void)pl310_wait_way(PL310_INV_WAY);
 
 	pl310_write(PL310_INT_CLEAR, pl310_read(PL310_INT_RAW_STATUS));
 

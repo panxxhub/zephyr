@@ -83,6 +83,73 @@ ZTEST(pl310_outer_cache, test_init_sequence)
 	teardown(NULL);
 }
 
+/*
+ * A by-way operation is complete when the way register itself reads zero.
+ * The fake keeps the cache sync register at zero throughout, so a driver that
+ * took that register for the completion indicator would return before the
+ * way register was ever cleared -- and would then write the sync register
+ * while the operation was still running, which the controller stalls.  A
+ * timer clears the way register from interrupt context part way through the
+ * poll; the operation must not have returned before that happened.
+ */
+static struct k_timer clear_way_timer;
+static volatile bool way_cleared;
+
+static void clear_way(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	memset(&fake[PL310_CLEAN_WAY], 0, sizeof(uint32_t));
+	way_cleared = true;
+}
+
+ZTEST(pl310_outer_cache, test_way_op_completes_via_way_register)
+{
+	use_fake();
+
+	way_cleared = false;
+	k_timer_init(&clear_way_timer, clear_way, NULL);
+	k_timer_start(&clear_way_timer, K_MSEC(2), K_NO_WAIT);
+
+	outer_cache_clean_all();
+
+	zassert_true(way_cleared, "returned before the way register was cleared");
+
+	k_timer_stop(&clear_way_timer);
+	teardown(NULL);
+}
+
+/*
+ * A way register that never clears must not trap the caller.  sys_reboot()
+ * reaches the outer cache with interrupts locked and the system timer
+ * stopped, so a reset would be lost forever behind an unbounded poll.
+ */
+ZTEST(pl310_outer_cache, test_way_op_poll_is_bounded)
+{
+	uint32_t poison = 0xDEADU;
+	int64_t start;
+	int64_t elapsed;
+
+	use_fake();
+	/* A cache sync only ever writes zero here, so a value that survives
+	 * proves no sync was issued into a controller still claiming to be
+	 * busy -- that write is what the controller stalls on.
+	 */
+	memcpy(&fake[PL310_CACHE_SYNC], &poison, sizeof(poison));
+
+	start = k_uptime_get();
+	outer_cache_flush_and_invd_all();
+	elapsed = k_uptime_get() - start;
+
+	zassert_equal(reg(PL310_CLEAN_INV_WAY), 0x0000FFFFU,
+		      "way register was left as the hardware would report it");
+	zassert_equal(reg(PL310_CACHE_SYNC), poison,
+		      "no cache sync issued after the poll gave up");
+	printk("bounded poll gave up after %lld ms\n", (long long)elapsed);
+	zassert_true(elapsed < 5000, "poll bound is too loose to be a fail-safe");
+
+	teardown(NULL);
+}
+
 ZTEST(pl310_outer_cache, test_way_operations)
 {
 	use_fake();

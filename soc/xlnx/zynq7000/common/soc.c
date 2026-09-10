@@ -13,7 +13,6 @@
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
-#include <zephyr/sys/device_mmio.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/irq.h>
 
@@ -56,6 +55,19 @@ static const struct arm_mmu_region mmu_regions[] = {
 			      ZYNQ_PL310_BASE,
 			      0x1000,
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(slcr))
+	/*
+	 * The SLCR carries the reset control, and sys_arch_reboot() reaches it
+	 * with the data cache already off.  A device_map() there would write
+	 * page table entries non-cacheably while the table walker reads them
+	 * through the outer cache (TTBR0 is outer write-back), so the mapping
+	 * has to exist up front.
+	 */
+	MMU_REGION_FLAT_ENTRY("slcr",
+			      DT_REG_ADDR(DT_NODELABEL(slcr)),
+			      DT_REG_SIZE(DT_NODELABEL(slcr)),
+			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
+#endif
 	MMU_REGION_FLAT_ENTRY("ocm",
 			      DT_REG_ADDR(DT_CHOSEN(zephyr_ocm)),
 			      DT_REG_SIZE(DT_CHOSEN(zephyr_ocm)),
@@ -267,14 +279,17 @@ void soc_reset_hook(void)
  */
 void sys_arch_reboot(int type)
 {
-	mm_reg_t slcr;
+	const mm_reg_t slcr = (mm_reg_t)DT_REG_ADDR(DT_NODELABEL(slcr));
 
 	ARG_UNUSED(type);
 
-	device_map(&slcr, DT_REG_ADDR(DT_NODELABEL(slcr)), 0x1000, K_MEM_CACHE_NONE);
 	(void)irq_lock();
-	/* The reset discards whatever the caches still hold, so anything a
-	 * caller wrote for the next boot to read has to be in memory first.
+	/*
+	 * sys_reboot() has already cleaned and invalidated this core's L1 and
+	 * switched it off, so everything that has to survive is now sitting in
+	 * the outer cache; drain it before the reset discards it.  Nothing
+	 * between that L1 clean and this point may write memory the next boot
+	 * reads, which is why the SLCR is mapped statically rather than here.
 	 */
 	sys_cache_data_flush_all();
 	sys_write32(SLCR_UNLOCK_KEY, slcr + SLCR_UNLOCK);
