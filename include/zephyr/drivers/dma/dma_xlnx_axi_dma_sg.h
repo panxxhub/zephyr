@@ -1,3 +1,4 @@
+/* SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors */
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
  * Xilinx AXI DMA SG driver — device-specific extensions.
@@ -74,6 +75,26 @@ struct dma_xlnx_sg_rx_stream_stats {
 	uint32_t bds_produced; /**< BDs harvested by the ISR */
 	uint32_t bds_consumed; /**< BDs released by the window consumer */
 };
+
+/**
+ * @brief Reserve RX descriptors and storage for a finite session.
+ *
+ * Reserve before configuring the sampler or DMA. Keep the reservation through
+ * setup, transfer completion and retained-buffer download; stop the transfer
+ * before releasing it. Continuous stream start uses the same atomic owner.
+ *
+ * @param dev DMA device.
+ * @retval 0 RX reserved.
+ * @retval -EBUSY RX is reserved by another finite session or stream.
+ * @retval -EIO A stopped mid-burst transfer could not be reset.
+ */
+int dma_xlnx_sg_reserve_rx(const struct device *dev);
+
+/**
+ * @brief Release a finite RX reservation after transfer and buffer use end.
+ * @param dev DMA device.
+ */
+void dma_xlnx_sg_release_rx(const struct device *dev);
 
 /**
  * @brief Start a continuous RX stream.

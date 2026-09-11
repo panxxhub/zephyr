@@ -1,3 +1,4 @@
+/* SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors */
 /* SPDX-License-Identifier: Apache-2.0 */
 /*
  * Xilinx AXI DMA scatter-gather driver for Zephyr RTOS.
@@ -190,6 +191,8 @@ struct dma_xlnx_sg_chan {
 	uint32_t tx_src_addr;      /* one-shot TX: caller's source address (0 = use DT region) */
 	uint32_t tx_xfer_size;     /* one-shot TX: transfer size in bytes */
 	atomic_t rx_windows_ready; /* completed stream windows waiting for the worker */
+	/* 0: free, 1: finite reservation, 2: stream */
+	atomic_t rx_owner;
 	bool rx_stream_active;
 	dma_xlnx_sg_rx_stream_cb_t rx_stream_callback;
 	dma_xlnx_sg_rx_stream_err_cb_t rx_stream_error_callback;
@@ -936,6 +939,11 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 
 	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
 
+	/* An armed stream owns descriptors even while S2MM is idle. */
+	if (channel == CH_RX && atomic_get(&ch->rx_owner) == 2) {
+		return -EBUSY;
+	}
+
 	/* Store callback */
 	ch->callback = dma_cfg->dma_callback;
 	ch->user_data = dma_cfg->user_data;
@@ -1426,6 +1434,35 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 	}
 }
 
+int dma_xlnx_sg_reserve_rx(const struct device *dev)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+
+	int ret = atomic_cas(&data->ch[CH_RX].rx_owner, 0, 1) ? 0 : -EBUSY;
+
+	if (ret != 0) {
+		return ret;
+	}
+	/* A stopped mid-burst stream may still await TLAST. Recover while
+	 * holding the owner, before the finite client's hardware busy check.
+	 */
+	if (!(chan_read(dev, CH_RX, REG_DMACR) & DMACR_RS) &&
+	    !(chan_read(dev, CH_RX, REG_DMASR) & DMASR_HALTED)) {
+		ret = do_soft_reset(dev, CH_RX);
+		if (ret != 0) {
+			atomic_clear(&data->ch[CH_RX].rx_owner);
+		}
+	}
+	return ret;
+}
+
+void dma_xlnx_sg_release_rx(const struct device *dev)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+
+	(void)atomic_cas(&data->ch[CH_RX].rx_owner, 1, 0);
+}
+
 int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 				const struct dma_xlnx_sg_rx_stream_cfg *cfg)
 {
@@ -1447,7 +1484,7 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 		return -EINVAL;
 	}
 
-	if (ch->rx_stream_active) {
+	if (!atomic_cas(&ch->rx_owner, 0, 2)) {
 		return -EBUSY;
 	}
 
@@ -1459,6 +1496,7 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 		ch->rx_stream_callback = NULL;
 		ch->rx_stream_error_callback = NULL;
 		ch->rx_stream_user_data = NULL;
+		atomic_clear(&ch->rx_owner);
 		return ret;
 	}
 
@@ -1483,6 +1521,7 @@ void dma_xlnx_sg_stop_rx_stream(const struct device *dev)
 
 	(void)dma_xlnx_sg_stop(dev, CH_RX);
 	(void)k_work_cancel_sync(&ch->rx_stream_work, &ch->rx_stream_work_sync);
+	atomic_clear(&ch->rx_owner);
 }
 
 int dma_xlnx_sg_rx_stream_status(const struct device *dev,
