@@ -34,6 +34,7 @@ STUB = r'''
 #define DMACR_RS             1
 #define DMASR_HALTED         1
 #define LOG_ERR(...)
+#define IS_ALIGNED(n,a) (((n) % (a)) == 0)
 typedef int atomic_t;
 static bool atomic_cas(atomic_t *p, int old, int next)
 {
@@ -59,7 +60,8 @@ struct dma_config {
 	int cyclic;
 };
 struct dma_xlnx_sg_rx_stream_cfg {
-	unsigned bd_bytes, irq_threshold;
+	unsigned bd_bytes, irq_threshold, num_bds, stride, num_slots;
+	uintptr_t base_phys;
 	void *callback;
 };
 struct dma_xlnx_sg_chan {
@@ -98,18 +100,19 @@ static size_t buf_size(const struct device *d, int c)
 	return 8192;
 }
 static void dma_xlnx_sg_prepare_rx_stream(const struct device *d,
-					  const struct dma_xlnx_sg_rx_stream_cfg *c)
+	const struct dma_xlnx_sg_rx_stream_cfg *c)
 {
 	struct dma_xlnx_sg_data *s = d->data;
 	assert(s->ch[1].rx_owner == 2);
 	prepares++;
 	s->ch[1].rx_stream_callback = c->callback;
 }
-static int dma_xlnx_sg_reconfigure_rx(const struct device *d, unsigned b, unsigned t)
+static int dma_xlnx_sg_reconfigure_rx(const struct device *d, unsigned b, unsigned t, unsigned n)
 {
 	(void)d;
 	(void)b;
 	(void)t;
+	(void)n;
 	return start_error;
 }
 static int dma_xlnx_sg_stop(const struct device *d, int c)

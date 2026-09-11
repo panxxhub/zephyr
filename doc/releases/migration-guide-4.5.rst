@@ -457,6 +457,19 @@ Display
 DMA
 ===
 
+* The Xilinx AXI DMA SG extension callback ``dma_xlnx_sg_rx_stream_cb_t`` now
+  takes a final ``uint32_t first_bd`` argument identifying the first completed
+  descriptor in the window. Update callback signatures, even when unused.
+  A nonzero ``dma_xlnx_sg_rx_stream_cfg.base_phys`` selects caller-owned,
+  CPU-invisible destinations spaced by ``stride``; these callbacks receive
+  NULL instead of a CPU buffer. Zero-initialized placement fields preserve
+  the existing DT RX-buffer behavior. The optional ``num_bds`` field selects
+  a ring subset without reducing the pool available for finite captures;
+  zero uses the full allocated pool. ``num_slots`` optionally repeats a smaller
+  set of explicit destinations, independently of descriptor runway. With
+  ``num_slots`` nonzero, BD i writes slot ``i % num_slots``; delayed callbacks
+  preserve descriptor identity but do not retain overwritten payloads.
+
 * :dtcompatible:`silabs,siwx91x-dma` has been renamed :dtcompatible:`silabs,udma`. The Kconfig
   options have also been renamed to align with this new name (``DMA_SILABS_SIWX91X`` in
   ``DMA_SILABS_SIWX91X_UDMA`` and ``DMA_SILABS_SIWX91X_SG_BUFFER_COUNT`` in
