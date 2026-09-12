@@ -102,8 +102,18 @@ static void zynq_release_secondary_cpu(void)
 {
 	uint32_t sctlr;
 
-	/* SLCR (0xF800_0000) is not mapped by the MMU, so we must
-	 * temporarily disable the MMU to access it via physical address.
+	/*
+	 * The MMU-off accesses below and the secondary's initial uncached
+	 * accesses must see memory after both cache levels have been drained.
+	 */
+	if (IS_ENABLED(CONFIG_CACHE_MANAGEMENT)) {
+		if (sys_cache_data_flush_and_invd_all() != 0) {
+			k_panic();
+		}
+	}
+
+	/* The spin table is accessed with the MMU off, through its physical
+	 * address. Temporarily disable the MMU for the release sequence.
 	 * This works because DDR uses identity mapping (VA == PA).
 	 */
 	__asm__ volatile("mrc p15, 0, %0, c1, c0, 0" : "=r"(sctlr));

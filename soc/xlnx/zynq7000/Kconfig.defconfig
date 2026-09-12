@@ -7,6 +7,10 @@ if SOC_FAMILY_XILINX_ZYNQ7000
 
 rsource "*/Kconfig.defconfig"
 
+choice CACHE_TYPE
+	default EXTERNAL_CACHE if SOC_XLNX_ZYNQ7000_L2_CACHE
+endchoice
+
 config NUM_IRQS
 	# must be >= the highest interrupt number used
 	default 96

@@ -14,6 +14,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/cache.h>
+#include <zephyr/arch/cache.h>
 #include <cmsis_core.h>
 #include <zephyr/sys/barrier.h>
 
