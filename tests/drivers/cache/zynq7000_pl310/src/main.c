@@ -24,6 +24,9 @@ static uintptr_t busy_register;
 static uint32_t busy_value;
 static uint32_t busy_reads;
 static bool bad_translation;
+static bool model_stack;
+static uint32_t stack_l1;
+static uint32_t stack_memory;
 
 static void check_reboot_sequence(void);
 
@@ -50,6 +53,10 @@ static void fake_write32(uint32_t value, mem_addr_t address)
 	/* A second command before a background way/sync completes would cause SLVERR. */
 	zassert_equal(busy_reads, 0U);
 	record('W', address, value);
+	if (model_stack && address == 0xf8f027fcU) {
+		/* Model a callee saving registers on the stack during the L2 operation. */
+		stack_l1 = 0xfeed1234U;
+	}
 	if (address == 0xf8000200U) {
 		check_reboot_sequence();
 		ztest_test_pass();
@@ -92,14 +99,23 @@ static void fake_disable(void)
 }
 static int fake_clean_all(void)
 {
+	stack_memory = stack_l1;
 	record('C', 0U, 0U);
 	return 0;
 }
 static int fake_invalidate_all(void)
 {
+	stack_l1 = stack_memory;
 	record('I', 0U, 0U);
 	return 0;
 }
+static int fake_clean_invalidate_all(void)
+{
+	stack_memory = stack_l1;
+	record('F', 0U, 0U);
+	return 0;
+}
+
 static int fake_clean(void *address, size_t size)
 {
 	record('C', (uintptr_t)address, size);
@@ -118,6 +134,7 @@ static int fake_invalidate(void *address, size_t size)
 #define arch_dcache_disable fake_disable
 #define arch_dcache_flush_all fake_clean_all
 #define arch_dcache_invd_all fake_invalidate_all
+#define arch_dcache_flush_and_invd_all fake_clean_invalidate_all
 #define arch_dcache_flush_range fake_clean
 #define arch_dcache_invd_range fake_invalidate
 #include "../../../../../drivers/cache/cache_xlnx_zynq7000_pl310.c"
@@ -145,6 +162,9 @@ static void before(void *fixture)
 	busy_reads = 0U;
 	control = 1U;
 	bad_translation = false;
+	model_stack = false;
+	stack_l1 = 0U;
+	stack_memory = 0U;
 	pl310_enabled = true;
 }
 
@@ -306,9 +326,9 @@ ZTEST(pl310, test_all_operations_and_local_disable)
 	zassert_equal(operations[operation_count - 1U].kind, 'B');
 	operation_count = 0U;
 	zassert_ok(cache_data_flush_and_invd_all());
-	zassert_equal(operations[0].kind, 'C');
+	zassert_equal(operations[0].kind, 'F');
 	find_operation('W', 0xf8f027fcU, 0xffffU);
-	zassert_equal(operations[operation_count - 2U].kind, 'I');
+	zassert_equal(count_kind('I'), 0U);
 	zassert_equal(operations[operation_count - 1U].kind, 'B');
 	operation_count = 0U;
 	cache_data_disable();
@@ -320,6 +340,15 @@ ZTEST(pl310, test_all_operations_and_local_disable)
 	cache_data_enable();
 	zassert_equal(operation_count, 1U);
 	zassert_equal(operations[0].kind, 'E');
+}
+
+ZTEST(pl310, test_flush_invalidate_all_preserves_live_stack)
+{
+	model_stack = true;
+	stack_l1 = 0x12345678U;
+	stack_memory = 0U;
+	zassert_ok(cache_data_flush_and_invd_all());
+	zassert_equal(stack_l1, 0xfeed1234U, "L1 invalidate discarded a callee's stack write");
 }
 
 static void check_reboot_sequence(void)

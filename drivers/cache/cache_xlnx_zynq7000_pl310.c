@@ -187,14 +187,17 @@ static int cache_all(uint32_t op)
 	k_spinlock_key_t key = k_spin_lock(&pl310_lock);
 	int ret = 0;
 
-	if (op != PL310_INV_WAY) {
+	if (op == PL310_CINV_WAY) {
+		/* Later calls can dirty the stack; never discard L1 after the outer operation. */
+		ret = arch_dcache_flush_and_invd_all();
+	} else if (op == PL310_CLEAN_WAY) {
 		ret = arch_dcache_flush_all();
 	}
 	if (ret == 0 && pl310_enabled) {
 		barrier_dsync_fence_full();
 		pl310_way(op);
 	}
-	if (ret == 0 && op != PL310_CLEAN_WAY) {
+	if (ret == 0 && op == PL310_INV_WAY) {
 		ret = arch_dcache_invd_all();
 		barrier_dsync_fence_full();
 	}
