@@ -15,6 +15,14 @@
 void zynq_pl310_init(uint32_t cpu);
 
 /**
+ * @brief Drain local L1 and shared L2, then disable PL310 for system reset.
+ *
+ * Other CPUs and DMA producers must be quiescent. The caller must keep local
+ * interrupts locked and reset immediately; normal cache users must not resume.
+ */
+void zynq_pl310_shutdown(void);
+
+/**
  * @brief Translate a privileged read address using the current MMU tables.
  *
  * The caller must serialize ATS1CPR/PAR against local interrupts.

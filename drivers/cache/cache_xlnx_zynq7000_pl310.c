@@ -225,8 +225,17 @@ void cache_data_disable(void)
 	if (pl310_enabled) {
 		pl310_way(PL310_CLEAN_WAY);
 	}
-	/* Shared L2 stays enabled for other cores. Only boot initialization changes CTRL. */
+	/* Runtime local disable keeps shared L2 enabled for other cores. */
 	k_spin_unlock(&pl310_lock, key);
+}
+
+void zynq_pl310_shutdown(void)
+{
+	/* The caller has quiesced other cache users and will reset immediately. */
+	cache_data_disable();
+	sys_write32(0U, PL310_BASE + PL310_CTRL);
+	barrier_dsync_fence_full();
+	pl310_enabled = false;
 }
 
 void cache_data_enable(void)

@@ -25,6 +25,8 @@ static uint32_t busy_value;
 static uint32_t busy_reads;
 static bool bad_translation;
 
+static void check_reboot_sequence(void);
+
 static void record(char kind, uintptr_t address, size_t value)
 {
 	zassert_true(operation_count < ARRAY_SIZE(operations));
@@ -48,6 +50,10 @@ static void fake_write32(uint32_t value, mem_addr_t address)
 	/* A second command before a background way/sync completes would cause SLVERR. */
 	zassert_equal(busy_reads, 0U);
 	record('W', address, value);
+	if (address == 0xf8000200U) {
+		check_reboot_sequence();
+		ztest_test_pass();
+	}
 	if (address == 0xf8f02100U) {
 		control = value;
 	}
@@ -80,6 +86,8 @@ static void fake_enable(void)
 }
 static void fake_disable(void)
 {
+	/* arch_dcache_disable() cleans L1 before clearing SCTLR.C. */
+	record('C', 0U, 0U);
 	record('D', 0U, 0U);
 }
 static int fake_clean_all(void)
@@ -113,6 +121,21 @@ static int fake_invalidate(void *address, size_t size)
 #define arch_dcache_flush_range fake_clean
 #define arch_dcache_invd_range fake_invalidate
 #include "../../../../../drivers/cache/cache_xlnx_zynq7000_pl310.c"
+
+/* The real reset hook uses the fake controller and reset register. */
+static unsigned int fake_irq_lock(void)
+{
+	return 0U;
+}
+
+#undef SLCR_UNLOCK
+#define CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE 1
+#undef irq_lock
+#define irq_lock fake_irq_lock
+#define sys_arch_reboot test_sys_arch_reboot
+#include "../../../../../soc/xlnx/zynq7000/common/reboot.c"
+#undef sys_arch_reboot
+#undef irq_lock
 
 static void before(void *fixture)
 {
@@ -197,7 +220,8 @@ ZTEST(pl310, test_enabled_bootloader_cache_is_cleaned_before_disable)
 {
 	pl310_enabled = false;
 	zynq_pl310_init(0U);
-	zassert_equal(operations[0].kind, 'D');
+	zassert_equal(operations[0].kind, 'C');
+	zassert_equal(operations[1].kind, 'D');
 	zassert_equal(operations[operation_count - 1U].kind, 'E');
 	zassert_true(find_operation('W', 0xf8f027fcU, 0xffffU) <
 		     find_operation('W', 0xf8f02100U, 0U));
@@ -288,13 +312,46 @@ ZTEST(pl310, test_all_operations_and_local_disable)
 	zassert_equal(operations[operation_count - 1U].kind, 'B');
 	operation_count = 0U;
 	cache_data_disable();
-	zassert_equal(operations[0].kind, 'D');
+	zassert_equal(operations[0].kind, 'C');
+	zassert_equal(operations[1].kind, 'D');
 	find_operation('W', 0xf8f027bcU, 0xffffU);
 	zassert_equal(control, 1U);
 	operation_count = 0U;
 	cache_data_enable();
 	zassert_equal(operation_count, 1U);
 	zassert_equal(operations[0].kind, 'E');
+}
+
+static void check_reboot_sequence(void)
+{
+	const struct operation expected[] = {
+		{'C', 0U, 0U},
+		{'D', 0U, 0U},
+		{'W', 0xf8f027bcU, 0xffffU},
+		{'W', 0xf8f02730U, 0U},
+		{'B', 0U, 0U},
+		{'W', 0xf8f02100U, 0U},
+		{'B', 0U, 0U},
+		{'W', 0xf8000008U, 0xdf0dU},
+		{'B', 0U, 0U},
+		{'W', 0xf8000200U, 1U},
+	};
+
+	zassert_equal(operation_count, ARRAY_SIZE(expected));
+	for (size_t i = 0U; i < ARRAY_SIZE(expected); i++) {
+		zassert_equal(operations[i].kind, expected[i].kind, "Operation %zu", i);
+		zassert_equal(operations[i].address, expected[i].address, "Address %zu", i);
+		zassert_equal(operations[i].value, expected[i].value, "Value %zu", i);
+	}
+	zassert_equal(busy_reads, 0U);
+	zassert_equal(control, 0U);
+	zassert_false(pl310_enabled);
+}
+
+ZTEST(pl310, test_reboot_cleans_and_disables_before_reset)
+{
+	test_sys_arch_reboot(SYS_REBOOT_COLD);
+	zassert_unreachable("Reset hook returned without issuing the reset write");
 }
 
 ZTEST_SUITE(pl310, NULL, NULL, before, NULL, NULL);

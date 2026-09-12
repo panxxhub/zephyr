@@ -15,8 +15,6 @@
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
-#include <zephyr/sys/device_mmio.h>
-#include <zephyr/sys/reboot.h>
 #include <zephyr/irq.h>
 
 #include <cmsis_core.h>
@@ -26,8 +24,6 @@
 /* System Level Control Registers (SLCR) */
 #define SLCR_UNLOCK     0x0008
 #define SLCR_UNLOCK_KEY 0xdf0d
-#define SLCR_PSS_RST_CTRL 0x0200
-#define SLCR_PSS_RST_CTRL_SOFT_RST BIT(0)
 
 /* Zynq-7000 MPCore SCU */
 #define ZYNQ_SCU_BASE		0xF8F00000U
@@ -50,12 +46,11 @@ static const struct arm_mmu_region mmu_regions[] = {
 			      0xF8F00000,
 			      0x3000,
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
-#ifdef CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE
+	/* Reset must not create page tables after the caches have been drained. */
 	MMU_REGION_FLAT_ENTRY("slcr",
-			      0xF8000000,
-			      0x1000,
+			      DT_REG_ADDR(DT_NODELABEL(slcr)),
+			      DT_REG_SIZE(DT_NODELABEL(slcr)),
 			      MT_STRONGLY_ORDERED | MPERM_R | MPERM_W),
-#endif
 	MMU_REGION_FLAT_ENTRY("ocm",
 			      DT_REG_ADDR(DT_CHOSEN(zephyr_ocm)),
 			      DT_REG_SIZE(DT_CHOSEN(zephyr_ocm)),
@@ -261,33 +256,5 @@ int zynq_pl310_virt_to_phys(uintptr_t va, uintptr_t *pa)
 	}
 	*pa = (par & 0xfffff000U) | (va & 0xfffU);
 	return 0;
-}
-#endif
-
-#if defined(CONFIG_REBOOT) && DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(slcr))
-/* PS-only software reset (UG585 PSS_RST_CTRL.SOFT_RST): reruns BootROM, so a
- * QSPI-booted image comes back through FSBL; a JTAG-loaded image is gone.
- * The MMU is on here, so map the SLCR page instead of using the physical
- * address the early init hook could still use.
- */
-void sys_arch_reboot(int type)
-{
-	mm_reg_t slcr;
-
-	ARG_UNUSED(type);
-
-	device_map(&slcr, DT_REG_ADDR(DT_NODELABEL(slcr)), 0x1000, K_MEM_CACHE_NONE);
-	(void)irq_lock();
-	if (IS_ENABLED(CONFIG_SOC_XLNX_ZYNQ7000_L2_CACHE)) {
-		/* Generic reboot currently disables only CONFIG_ARCH_CACHE controllers. */
-		sys_cache_data_disable();
-	}
-	sys_write32(SLCR_UNLOCK_KEY, slcr + SLCR_UNLOCK);
-	barrier_dsync_fence_full();
-	sys_write32(SLCR_PSS_RST_CTRL_SOFT_RST, slcr + SLCR_PSS_RST_CTRL);
-	barrier_dsync_fence_full();
-	for (;;) {
-		barrier_isync_fence_full();
-	}
 }
 #endif

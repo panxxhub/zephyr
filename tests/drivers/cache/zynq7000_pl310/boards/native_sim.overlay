@@ -1,0 +1,11 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	slcr: slcr@f8000000 {
+		compatible = "xlnx,zynq-slcr", "syscon";
+		reg = <0xf8000000 0x1000>;
+	};
+};
