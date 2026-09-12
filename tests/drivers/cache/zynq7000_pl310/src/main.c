@@ -25,6 +25,9 @@ static uint32_t busy_value;
 static uint32_t busy_reads;
 static bool bad_translation;
 static bool model_stack;
+static bool model_shutdown;
+static bool shutdown_lock_held;
+static bool shutdown_l1_disabled;
 static uint32_t stack_l1;
 static uint32_t stack_memory;
 
@@ -96,6 +99,7 @@ static void fake_disable(void)
 	/* arch_dcache_disable() cleans L1 before clearing SCTLR.C. */
 	record('C', 0U, 0U);
 	record('D', 0U, 0U);
+	shutdown_l1_disabled = model_shutdown;
 }
 static int fake_clean_all(void)
 {
@@ -127,6 +131,30 @@ static int fake_invalidate(void *address, size_t size)
 	return 0;
 }
 
+/* Terminal reset must not return to SMP lock operations with L1 disabled. */
+static k_spinlock_key_t checked_spin_lock(struct k_spinlock *lock)
+{
+	if (model_shutdown) {
+		zassert_false(shutdown_l1_disabled, "Lock acquired with L1 disabled");
+		zassert_false(shutdown_lock_held);
+		shutdown_lock_held = true;
+		return (k_spinlock_key_t){0};
+	}
+	return k_spin_lock(lock);
+}
+
+static void checked_spin_unlock(struct k_spinlock *lock, k_spinlock_key_t key)
+{
+	if (model_shutdown) {
+		zassert_false(shutdown_l1_disabled, "SMP lock release after L1 disable");
+		shutdown_lock_held = false;
+		return;
+	}
+	k_spin_unlock(lock, key);
+}
+
+#define k_spin_lock checked_spin_lock
+#define k_spin_unlock checked_spin_unlock
 #define sys_read32 fake_read32
 #define sys_write32 fake_write32
 #define barrier_dsync_fence_full fake_dsb
@@ -138,6 +166,9 @@ static int fake_invalidate(void *address, size_t size)
 #define arch_dcache_flush_range fake_clean
 #define arch_dcache_invd_range fake_invalidate
 #include "../../../../../drivers/cache/cache_xlnx_zynq7000_pl310.c"
+
+#undef k_spin_lock
+#undef k_spin_unlock
 
 /* The real reset hook uses the fake controller and reset register. */
 static unsigned int fake_irq_lock(void)
@@ -163,6 +194,9 @@ static void before(void *fixture)
 	control = 1U;
 	bad_translation = false;
 	model_stack = false;
+	model_shutdown = false;
+	shutdown_lock_held = false;
+	shutdown_l1_disabled = false;
 	stack_l1 = 0U;
 	stack_memory = 0U;
 	pl310_enabled = true;
@@ -356,7 +390,7 @@ static void check_reboot_sequence(void)
 	const struct operation expected[] = {
 		{'C', 0U, 0U},
 		{'D', 0U, 0U},
-		{'W', 0xf8f027bcU, 0xffffU},
+		{'W', 0xf8f027fcU, 0xffffU},
 		{'W', 0xf8f02730U, 0U},
 		{'B', 0U, 0U},
 		{'W', 0xf8f02100U, 0U},
@@ -374,11 +408,12 @@ static void check_reboot_sequence(void)
 	}
 	zassert_equal(busy_reads, 0U);
 	zassert_equal(control, 0U);
-	zassert_false(pl310_enabled);
+	zassert_true(shutdown_lock_held);
 }
 
 ZTEST(pl310, test_reboot_cleans_and_disables_before_reset)
 {
+	model_shutdown = true;
 	test_sys_arch_reboot(SYS_REBOOT_COLD);
 	zassert_unreachable("Reset hook returned without issuing the reset write");
 }

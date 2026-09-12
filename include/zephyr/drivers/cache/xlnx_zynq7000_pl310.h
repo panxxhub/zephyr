@@ -15,10 +15,11 @@
 void zynq_pl310_init(uint32_t cpu);
 
 /**
- * @brief Drain local L1 and shared L2, then disable PL310 for system reset.
+ * @brief Drain local L1, clean and invalidate shared L2, then disable PL310 for reset.
  *
  * Other CPUs and DMA producers must be quiescent. The caller must keep local
  * interrupts locked and reset immediately; normal cache users must not resume.
+ * Local L1 must be enabled on entry for the controller lock's exclusive accesses.
  */
 void zynq_pl310_shutdown(void);
 

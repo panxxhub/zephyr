@@ -234,11 +234,17 @@ void cache_data_disable(void)
 
 void zynq_pl310_shutdown(void)
 {
-	/* The caller has quiesced other cache users and will reset immediately. */
-	cache_data_disable();
+	/*
+	 * SMP unlock uses LDREX/STREX. With SCTLR.C clear, exclusives on shared
+	 * non-cacheable memory can retry forever. Acquire with L1 enabled and
+	 * retain ownership through reset; do not add an unlock after shutdown.
+	 */
+	(void)k_spin_lock(&pl310_lock);
+	arch_dcache_disable();
+	/* PL310 TRM 3.3.10: clean and invalidate all ways before disabling. */
+	pl310_way(PL310_CINV_WAY);
 	sys_write32(0U, PL310_BASE + PL310_CTRL);
 	barrier_dsync_fence_full();
-	pl310_enabled = false;
 }
 
 void cache_data_enable(void)
