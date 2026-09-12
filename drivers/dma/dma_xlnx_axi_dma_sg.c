@@ -181,8 +181,6 @@ struct dma_xlnx_sg_chan {
 	bool error;  /* sticky error flag */
 	uint16_t irq_threshold;    /* software window size in BDs */
 	uint8_t hw_irq_threshold;  /* hardware threshold (max 255) written to DMACR */
-	uint16_t irq_coalesce_target; /* hw IRQs per software window */
-	uint16_t irq_coalesce_count;  /* current hw IRQ accumulator */
 	uint8_t irq_timeout;
 	struct dma_xlnx_sg_app_fields tx_app; /* APP fields for next TX SOF */
 	struct dma_xlnx_sg_app_fields rx_app; /* APP fields from last completed RX */
@@ -194,7 +192,21 @@ struct dma_xlnx_sg_chan {
 	atomic_t rx_windows_ready; /* completed stream windows waiting for the worker */
 	bool rx_stream_active;
 	dma_xlnx_sg_rx_stream_cb_t rx_stream_callback;
+	dma_xlnx_sg_rx_stream_err_cb_t rx_stream_error_callback;
 	void *rx_stream_user_data;
+	/* Streaming RX runway accounting.  Monotonic BD counters, compared with
+	 * the wrap-safe (int32_t)(a - b) form so 32-bit rollover is harmless.
+	 */
+	uint32_t rx_lead_bds;      /* BDs of runway kept ahead of the producer */
+	uint32_t rx_produced_bds;  /* BDs harvested by the ISR */
+	atomic_t rx_consumed_bds;  /* BDs released by consume_rx_window() */
+	uint32_t rx_tail_bds;      /* BDs handed to the engine (TAILDESC + 1) */
+	uint32_t rx_accum_bds;     /* harvested BDs not yet formed into a window */
+	uint32_t rx_overrun_count; /* times a lagging consumer capped the runway */
+	uint32_t rx_error_count;
+	uint32_t rx_error_sr;      /* DMASR at the most recent error IRQ */
+	atomic_t rx_error_pending; /* error awaiting delivery to the stream consumer */
+	struct k_spinlock rx_tail_lock;
 	struct k_work error_work;
 	struct k_spinlock error_lock;
 	struct xlnx_sg_error_snapshot error_snapshot;
@@ -492,6 +504,46 @@ static uint32_t build_dmacr(const struct dma_xlnx_sg_chan *ch)
 }
 
 /* --------------------------------------------------------------------------
+ * Streaming RX runway
+ *
+ * TAILDESC is the last BD the S2MM engine may consume before it stops.  It is
+ * kept a fixed lead ahead of the producer so the engine always has room for a
+ * packet that spans several BDs; a packet that runs out of descriptors raises
+ * DMAIntErr and halts the channel.  The lead is capped so the engine can never
+ * reach a BD whose window the consumer has not released yet.
+ * -------------------------------------------------------------------------- */
+static uint32_t rx_stream_lead_bds(const struct dma_xlnx_sg_chan *ch)
+{
+	uint32_t lead = MAX(ch->num_bds / 2U, (uint32_t)ch->hw_irq_threshold);
+
+	return MIN(lead, ch->num_bds);
+}
+
+/* Call with rx_tail_lock held. */
+static void rx_stream_advance_tail(const struct device *dev)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
+	uint32_t desired = ch->rx_produced_bds + ch->rx_lead_bds;
+	uint32_t limit = (uint32_t)atomic_get(&ch->rx_consumed_bds) + ch->num_bds;
+
+	if ((int32_t)(desired - limit) > 0) {
+		/* The consumer is behind: stop short of its oldest unread BD. */
+		desired = limit;
+		ch->rx_overrun_count++;
+	}
+
+	if ((int32_t)(desired - ch->rx_tail_bds) <= 0) {
+		return;
+	}
+
+	ch->rx_tail_bds = desired;
+	ch->tail_idx = (desired - 1U) % ch->num_bds;
+	barrier_dmem_fence_full();
+	chan_write(dev, CH_RX, REG_TAILDESC, (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
+}
+
+/* --------------------------------------------------------------------------
  * Start a channel: write CURDESC, DMACR (with RS=1), then TAILDESC
  * -------------------------------------------------------------------------- */
 static void kick_channel(const struct device *dev, uint32_t channel)
@@ -515,14 +567,23 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 
 	if (ch->cyclic) {
 		/*
-		 * Ping-pong RX: non-cyclic in hardware (no CYC_BD_EN).
-		 * TAILDESC = first HW threshold boundary.
-		 * DMA processes those BDs, goes IDLE, IOC fires.
-		 * ISR advances TAILDESC by hw_irq_threshold each time.
+		 * Streaming RX: non-cyclic in hardware (no CYC_BD_EN).
+		 * TAILDESC starts a full lead ahead of BD 0 so the engine
+		 * runs continuously; the ISR pushes it forward as BDs are
+		 * harvested and the consumer releases them.
 		 */
-		ch->tail_idx = ch->hw_irq_threshold - 1;
-		chan_write(dev, channel, REG_TAILDESC,
-			   (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
+		k_spinlock_key_t key = k_spin_lock(&ch->rx_tail_lock);
+
+		ch->producer_idx = 0;
+		ch->consumer_idx = 0;
+		ch->rx_produced_bds = 0;
+		ch->rx_tail_bds = 0;
+		ch->rx_accum_bds = 0;
+		ch->tail_idx = 0;
+		atomic_set(&ch->rx_consumed_bds, 0);
+		ch->rx_lead_bds = rx_stream_lead_bds(ch);
+		rx_stream_advance_tail(dev);
+		k_spin_unlock(&ch->rx_tail_lock, key);
 	} else {
 		/*
 		 * Non-cyclic: TAILDESC triggers processing up to this BD.
@@ -732,7 +793,17 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 	if (dmasr & DMASR_ALL_ERR) {
 		latch_dma_error(dev, CH_RX, dmasr);
 		ch->error = true;
+		ch->rx_error_sr = dmasr;
+		ch->rx_error_count++;
 		chan_write(dev, CH_RX, REG_DMASR, DMASR_ERR_IRQ);
+
+		/* The stream consumer has no dma_callback: hand the error to
+		 * its own path, otherwise a halted engine is silent.
+		 */
+		if (ch->rx_stream_active) {
+			atomic_set(&ch->rx_error_pending, 1);
+			(void)k_work_submit(&ch->rx_stream_work);
+		}
 	}
 
 	/* Completion or delay IRQ */
@@ -741,36 +812,41 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 
 		if (ch->rx_stream_active) {
 			/*
-			 * Ping-pong: clear CMPLT on the just-completed BDs,
-			 * then advance TAILDESC to resume DMA immediately.
-			 * Use hw_irq_threshold (what HW actually coalesced)
-			 * for the BD-level operations each HW IRQ.
+			 * Harvest every BD the engine has completed, not just
+			 * hw_irq_threshold of them: the engine now runs ahead
+			 * of the ISR, so one IOC may cover several thresholds
+			 * and a multi-BD packet does not land on a boundary.
+			 * Clearing CMPLT here makes the BD reusable; the tail
+			 * cap below is what keeps it out of the engine's reach
+			 * until its window has been consumed.
 			 */
-			uint32_t hw_thresh = ch->hw_irq_threshold;
+			k_spinlock_key_t key = k_spin_lock(&ch->rx_tail_lock);
 			uint32_t idx = ch->producer_idx;
+			uint32_t budget = ch->rx_tail_bds - ch->rx_produced_bds;
+			uint32_t harvested = 0;
 
-			for (uint32_t i = 0; i < hw_thresh; i++) {
+			while (harvested < budget) {
 				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
+				if ((ch->bds[idx].status & BD_STS_CMPLT) == 0U) {
+					break;
+				}
 				ch->bds[idx].control &= ~BD_STS_CMPLT;
 				ch->bds[idx].status &= ~BD_STS_CMPLT;
 				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
 				idx = (idx + 1) % ch->num_bds;
+				harvested++;
 			}
 			ch->producer_idx = idx;
+			ch->rx_produced_bds += harvested;
+			ch->rx_accum_bds += harvested;
 
-			/* Advance TAILDESC by hw_thresh BDs */
-			ch->tail_idx = (ch->tail_idx + hw_thresh) % ch->num_bds;
-			barrier_dmem_fence_full();
-			chan_write(dev, CH_RX, REG_TAILDESC,
-				   (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
+			/* Hand the freed BDs back to the engine. */
+			rx_stream_advance_tail(dev);
+			k_spin_unlock(&ch->rx_tail_lock, key);
 
-			/* Software coalescing: only notify work handler
-			 * when enough HW IRQs have accumulated to fill
-			 * one full software window (irq_threshold BDs).
-			 */
-			ch->irq_coalesce_count++;
-			if (ch->irq_coalesce_count >= ch->irq_coalesce_target) {
-				ch->irq_coalesce_count = 0;
+			/* One window per irq_threshold harvested BDs. */
+			while (ch->rx_accum_bds >= ch->irq_threshold) {
+				ch->rx_accum_bds -= ch->irq_threshold;
 				atomic_inc(&ch->rx_windows_ready);
 				(void)k_work_submit(&ch->rx_stream_work);
 			}
@@ -784,11 +860,23 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 						      : ch->num_bds;
 			const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
 
+			uintptr_t virt_base = buf_virt(dev, CH_RX);
+
 			for (uint32_t i = 0; i < ring_count; i++) {
 				cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
-				if (ch->bds[i].status & BD_STS_CMPLT) {
-					total_bytes += ch->bds[i].status & len_mask;
+				if ((ch->bds[i].status & BD_STS_CMPLT) == 0U) {
+					continue;
 				}
+				uint32_t bytes = ch->bds[i].status & len_mask;
+
+				total_bytes += bytes;
+				/* Same reason as the stream window: the RX
+				 * region is cacheable, so drop the CPU's view
+				 * of what the engine just wrote.
+				 */
+				cache_invd((void *)(virt_base +
+						    (uintptr_t)i * ch->bd_buf_bytes),
+					   bytes);
 			}
 			ch->last_rx_bytes = total_bytes;
 
@@ -1135,6 +1223,7 @@ static void dma_xlnx_sg_prepare_rx_stream(const struct device *dev,
 	ch->user_data = NULL;
 	ch->irq_timeout = 0U;
 	ch->rx_stream_callback = cfg->callback;
+	ch->rx_stream_error_callback = cfg->error_callback;
 	ch->rx_stream_user_data = cfg->user_data;
 }
 
@@ -1195,12 +1284,15 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 			hw >>= 1;
 		}
 		ch->hw_irq_threshold = hw;
-		ch->irq_coalesce_target = threshold / hw;
 	}
-	ch->irq_coalesce_count = 0;
 
 	ch->consumer_idx = 0;
 	ch->producer_idx = 0;
+	ch->rx_accum_bds = 0;
+	ch->rx_overrun_count = 0;
+	ch->rx_error_count = 0;
+	ch->rx_error_sr = 0;
+	atomic_set(&ch->rx_error_pending, 0);
 	atomic_set(&ch->rx_windows_ready, 0);
 	ch->error = false;
 
@@ -1243,14 +1335,29 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 		return -EINVAL;
 	}
 
+	/*
+	 * The RX region is mapped Normal cacheable, so drop any lines the CPU
+	 * holds for this window before the consumer reads it.  One call for the
+	 * whole window: a window never wraps the ring (num_bds is a multiple of
+	 * irq_threshold), so its BDs are contiguous in the buffer.
+	 *
+	 * bd_buf_bytes need not be a multiple of the cache line size, so the
+	 * first and last line of a window are shared with its neighbours.  That
+	 * is safe only because nothing writes into the RX region: no line in it
+	 * is ever dirty, so the clean-and-invalidate the cache API performs on
+	 * a partial edge line writes nothing back over the engine's data.
+	 * A consumer that needs to write into an RX window must either use a
+	 * bd_bytes that is a multiple of the line size or clean the window
+	 * before the driver hands the BDs back to the engine.
+	 */
+	cache_invd(window_buf, window_bytes);
+
 	for (uint32_t i = 0; i < window_size; i++) {
 		struct xlnx_sg_bd *bd = &ch->bds[idx];
-		uint8_t *data_buf = (uint8_t *)(virt_base + (uintptr_t)idx * ch->bd_buf_bytes);
 		uint32_t byte_count;
 
 		cache_invd(bd, sizeof(*bd));
 		byte_count = bd->status & DEV_CFG(dev)->sg_len_mask;
-		cache_invd(data_buf, ch->bd_buf_bytes);
 
 		ch->last_rx_bytes = byte_count;
 		for (int a = 0; a < 5; a++) {
@@ -1278,9 +1385,9 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 	}
 
 	/*
-	 * Ping-pong: ISR already advanced TAILDESC and DMA is processing
-	 * the next half. We just consume all ready windows and deliver
-	 * them to the callback. No DMA reconfiguration needed.
+	 * The ISR keeps the engine running; this handler only reads out the
+	 * completed windows and, once a callback has returned, releases that
+	 * window's BDs back into the engine's runway.
 	 */
 	while (atomic_get(&ch->rx_windows_ready) > 0) {
 		uint8_t *buf = NULL;
@@ -1297,8 +1404,24 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 			ch->rx_stream_callback(dev, ch->rx_stream_user_data, buf, size);
 		}
 
+		/* Release only now: until the callback returns, the engine
+		 * must not be allowed to refill the BDs behind that buffer.
+		 */
+		atomic_add(&ch->rx_consumed_bds, (atomic_val_t)ch->irq_threshold);
+		k_spinlock_key_t key = k_spin_lock(&ch->rx_tail_lock);
+
+		rx_stream_advance_tail(dev);
+		k_spin_unlock(&ch->rx_tail_lock, key);
+
 		if (!ch->rx_stream_active) {
 			return;
+		}
+	}
+
+	if (atomic_cas(&ch->rx_error_pending, 1, 0)) {
+		if (ch->rx_stream_error_callback != NULL) {
+			ch->rx_stream_error_callback(dev, ch->rx_stream_user_data,
+						     ch->rx_error_sr);
 		}
 	}
 }
@@ -1334,6 +1457,7 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 	if (ret != 0) {
 		ch->rx_stream_active = false;
 		ch->rx_stream_callback = NULL;
+		ch->rx_stream_error_callback = NULL;
 		ch->rx_stream_user_data = NULL;
 		return ret;
 	}
@@ -1352,11 +1476,39 @@ void dma_xlnx_sg_stop_rx_stream(const struct device *dev)
 
 	ch->rx_stream_active = false;
 	ch->rx_stream_callback = NULL;
+	ch->rx_stream_error_callback = NULL;
 	ch->rx_stream_user_data = NULL;
 	atomic_set(&ch->rx_windows_ready, 0);
+	atomic_set(&ch->rx_error_pending, 0);
 
 	(void)dma_xlnx_sg_stop(dev, CH_RX);
 	(void)k_work_cancel_sync(&ch->rx_stream_work, &ch->rx_stream_work_sync);
+}
+
+int dma_xlnx_sg_rx_stream_status(const struct device *dev,
+				 struct dma_xlnx_sg_rx_stream_stats *stats)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
+
+	if (stats == NULL) {
+		return -EINVAL;
+	}
+
+	uint32_t dmasr = chan_read(dev, CH_RX, REG_DMASR);
+
+	*stats = (struct dma_xlnx_sg_rx_stream_stats){
+		.active = ch->rx_stream_active,
+		.halted = (dmasr & DMASR_HALTED) != 0U,
+		.dmasr = dmasr,
+		.last_error = ch->rx_error_sr,
+		.error_count = ch->rx_error_count,
+		.overrun_count = ch->rx_overrun_count,
+		.bds_produced = ch->rx_produced_bds,
+		.bds_consumed = (uint32_t)atomic_get(&ch->rx_consumed_bds),
+	};
+
+	return 0;
 }
 
 #ifdef CONFIG_DMA_XLNX_AXI_DMA_SG_APP_FIELDS

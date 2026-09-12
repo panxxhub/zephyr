@@ -6,5 +6,6 @@ tests:
       - dma
     platform_allow:
       - qemu_cortex_a9
+      - native_sim
     integration_platforms:
       - qemu_cortex_a9

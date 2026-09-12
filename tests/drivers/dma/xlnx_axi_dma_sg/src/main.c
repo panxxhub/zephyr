@@ -12,7 +12,7 @@
 #include <zephyr/cache.h>
 #include <zephyr/sys/device_mmio.h>
 
-#define CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_RX_BD 8
+#define CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_RX_BD 64
 #define CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_THRESHOLD 1
 #define CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT 16
 
@@ -27,14 +27,56 @@ static int test_cache_range(void *addr, size_t size)
 	return 0;
 }
 
+/* The RX buffer region is Normal cacheable memory on the target, so the
+ * ranges the driver invalidates are part of its contract.  native_sim has no
+ * MMU memory types and no caches: record the calls and check the ranges.
+ */
+static struct {
+	uintptr_t addr;
+	size_t size;
+} invd_log[16];
+static unsigned int invd_count;
+
+static int test_cache_invd(void *addr, size_t size)
+{
+	if (invd_count < ARRAY_SIZE(invd_log)) {
+		invd_log[invd_count].addr = (uintptr_t)addr;
+		invd_log[invd_count].size = size;
+	}
+	invd_count++;
+	return 0;
+}
+
+static bool invd_logged(uintptr_t addr, size_t size)
+{
+	for (unsigned int i = 0; i < MIN(invd_count, ARRAY_SIZE(invd_log)); i++) {
+		if (invd_log[i].addr == addr && invd_log[i].size == size) {
+			return true;
+		}
+	}
+	return false;
+}
+
 static uint32_t test_read32(mem_addr_t addr)
 {
 	return regs[addr / 4U];
 }
 
+static void engine_tail_write(uint32_t value);
+static void engine_curdesc_write(uint32_t value);
+
 static void test_write32(uint32_t value, mem_addr_t addr)
 {
+	if (addr == 0x04U || addr == 0x34U) {
+		regs[addr / 4U] &= ~value; /* DMASR is write-1-to-clear */
+		return;
+	}
 	regs[addr / 4U] = value;
+	if (addr == 0x38U) {
+		engine_curdesc_write(value);
+	} else if (addr == 0x40U) {
+		engine_tail_write(value);
+	}
 	if (addr == 0x30U && (value & BIT(2)) != 0U) {
 		resets++;
 		if (!reset_stuck) {
@@ -54,7 +96,7 @@ static void test_write32(uint32_t value, mem_addr_t addr)
 #define DEVICE_MMIO_NAMED_GET(dev, name) 0U
 /* Exercise production ring/state logic without hardware or cache access. */
 #define sys_cache_data_flush_range test_cache_range
-#define sys_cache_data_invd_range test_cache_range
+#define sys_cache_data_invd_range  test_cache_invd
 #include "../../../../../drivers/dma/dma_xlnx_axi_dma_sg.c"
 
 static struct xlnx_sg_bd bds[8];
@@ -306,4 +348,320 @@ ZTEST(xlnx_finite_rx, test_error_dump_rejects_out_of_range_payload)
 	(void)k_work_flush(&data.ch[CH_RX].error_work, &sync);
 	zassert_false(data.ch[CH_RX].error_snapshot.payload_valid);
 	zassert_equal(data.ch[CH_RX].error_snapshot.bd_count, 4U);
+}
+
+/* ==========================================================================
+ * Continuous RX stream: S2MM engine model
+ *
+ * PG021: the engine consumes descriptors from CURDESC up to and including
+ * TAILDESC.  Running out of descriptors between packets leaves it idle, and
+ * the stream back-pressures.  Running out inside a packet — before TLAST —
+ * raises DMAIntErr and halts the channel.
+ * ========================================================================== */
+#define STREAM_BDS      64U
+#define STREAM_BD_BYTES 2000U
+
+static struct xlnx_sg_bd stream_bds[STREAM_BDS];
+static uint8_t stream_buf[STREAM_BDS * STREAM_BD_BYTES];
+static const struct dma_xlnx_sg_cfg stream_config = {
+	.rx_buf_phys = (uintptr_t)stream_buf,
+	.rx_buf_size = sizeof(stream_buf),
+	.sg_len_mask = 0x3fff,
+};
+static struct dma_xlnx_sg_data stream_data;
+static const struct device stream_dev = {.data = &stream_data, .config = &stream_config};
+
+static struct {
+	uint32_t bds_written; /* BDs the engine has filled */
+	uint32_t tail_abs;    /* BDs handed to the engine by TAILDESC */
+	uint32_t completed;   /* BDs completed since the last IOC */
+	bool overrun;         /* wrote a BD whose window was not consumed */
+	bool halted;
+} eng;
+
+static void engine_curdesc_write(uint32_t value)
+{
+	ARG_UNUSED(value);
+	if (stream_data.ch[CH_RX].bds == stream_bds) {
+		eng.bds_written = 0;
+		eng.tail_abs = 0;
+		eng.completed = 0;
+	}
+}
+
+static void engine_tail_write(uint32_t value)
+{
+	struct dma_xlnx_sg_chan *ch = &stream_data.ch[CH_RX];
+	uintptr_t base = (uintptr_t)stream_bds;
+
+	if (ch->bds != stream_bds || value < base ||
+	    value >= base + sizeof(stream_bds)) {
+		return;
+	}
+	uint32_t idx = (uint32_t)((value - base) / sizeof(struct xlnx_sg_bd));
+	uint32_t last = (eng.tail_abs + STREAM_BDS - 1U) % STREAM_BDS;
+
+	eng.tail_abs += (idx + STREAM_BDS - last) % STREAM_BDS;
+}
+
+static unsigned int stream_windows;
+static unsigned int stream_windows_stale;
+static uint32_t stream_window_size;
+static uint32_t stream_first_stamp;
+static unsigned int stream_errors;
+static uint32_t stream_error_sr;
+
+/* Every BD carries the absolute index of the BD the engine wrote it into. */
+static void stream_stamp(uint32_t abs)
+{
+	uint32_t *p = (uint32_t *)&stream_buf[(abs % STREAM_BDS) * STREAM_BD_BYTES];
+
+	*p = 0xbd000000U + abs;
+}
+
+static void stream_window(const struct device *device, void *user, uint8_t *buf,
+			  uint32_t size)
+{
+	ARG_UNUSED(device);
+	ARG_UNUSED(user);
+	stream_windows++;
+	stream_window_size = size;
+	stream_first_stamp = *(uint32_t *)buf;
+	if (!invd_logged((uintptr_t)buf, size)) {
+		stream_windows_stale++;
+	}
+	invd_count = 0;
+}
+
+static void stream_error(const struct device *device, void *user, uint32_t dmasr)
+{
+	ARG_UNUSED(device);
+	ARG_UNUSED(user);
+	stream_errors++;
+	stream_error_sr = dmasr;
+}
+
+static void engine_ioc(void)
+{
+	regs[0x34U / 4U] = DMASR_IOC_IRQ;
+	dma_xlnx_sg_rx_isr(&stream_dev);
+}
+
+/* 0 on success, -EAGAIN when the engine is out of descriptors between
+ * packets, -EIO for a packet that outran TAILDESC (DMAIntErr).
+ */
+static int feed_stream_packet(uint32_t bytes)
+{
+	struct dma_xlnx_sg_chan *ch = &stream_data.ch[CH_RX];
+	uint32_t need = (bytes + STREAM_BD_BYTES - 1U) / STREAM_BD_BYTES;
+	uint32_t runway = eng.tail_abs - eng.bds_written;
+
+	if (runway == 0U) {
+		return -EAGAIN;
+	}
+	if (need > runway) {
+		eng.halted = true;
+		regs[0x34U / 4U] = DMASR_HALTED | DMASR_INTERR | DMASR_ERR_IRQ;
+		dma_xlnx_sg_rx_isr(&stream_dev);
+		return -EIO;
+	}
+
+	for (uint32_t i = 0; i < need; i++) {
+		uint32_t consumed = (uint32_t)atomic_get(&ch->rx_consumed_bds);
+
+		if ((int32_t)(eng.bds_written - consumed - STREAM_BDS) >= 0) {
+			eng.overrun = true;
+		}
+		uint32_t idx = eng.bds_written % STREAM_BDS;
+		uint32_t len = (i + 1U == need) ? (bytes - i * STREAM_BD_BYTES)
+						: STREAM_BD_BYTES;
+
+		stream_stamp(eng.bds_written);
+		stream_bds[idx].status = BIT(31) | len;
+		eng.bds_written++;
+		eng.completed++;
+		if (eng.completed >= ch->hw_irq_threshold) {
+			eng.completed = 0;
+			engine_ioc();
+		}
+	}
+	return 0;
+}
+
+static int start_stream(uint16_t threshold)
+{
+	const struct dma_xlnx_sg_rx_stream_cfg cfg = {
+		.bd_bytes = STREAM_BD_BYTES,
+		.irq_threshold = threshold,
+		.callback = stream_window,
+		.error_callback = stream_error,
+	};
+
+	return dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg);
+}
+
+static void stream_before(void *fixture)
+{
+	ARG_UNUSED(fixture);
+	memset(&stream_data, 0, sizeof(stream_data));
+	memset(regs, 0, sizeof(regs));
+	memset(stream_bds, 0, sizeof(stream_bds));
+	memset(stream_buf, 0, sizeof(stream_buf));
+	memset(&eng, 0, sizeof(eng));
+	stream_data.ch[CH_RX].dev = &stream_dev;
+	stream_data.ch[CH_RX].bds = stream_bds;
+	stream_data.ch[CH_RX].num_bds = STREAM_BDS;
+	k_work_init(&stream_data.ch[CH_RX].error_work, dma_xlnx_sg_error_work);
+	k_work_init(&stream_data.ch[CH_RX].rx_stream_work,
+		    dma_xlnx_sg_rx_stream_work_handler);
+	stream_windows = 0;
+	stream_windows_stale = 0;
+	stream_window_size = 0;
+	invd_count = 0;
+	stream_first_stamp = 0;
+	stream_errors = 0;
+	stream_error_sr = 0;
+	regs[0x34U / 4U] = DMASR_HALTED | DMASR_SGINCL;
+}
+
+static void stream_after(void *fixture)
+{
+	struct k_work_sync sync;
+
+	ARG_UNUSED(fixture);
+	stream_data.ch[CH_RX].rx_stream_active = false;
+	(void)k_work_cancel_sync(&stream_data.ch[CH_RX].rx_stream_work, &sync);
+	(void)k_work_cancel_sync(&stream_data.ch[CH_RX].error_work, &sync);
+}
+
+ZTEST_SUITE(xlnx_rx_stream, NULL, NULL, stream_before, stream_after, NULL);
+
+ZTEST(xlnx_rx_stream, test_runway_is_a_fixed_lead_not_the_irq_window)
+{
+	struct dma_xlnx_sg_chan *ch = &stream_data.ch[CH_RX];
+
+	zassert_ok(start_stream(1));
+	zassert_equal(ch->hw_irq_threshold, 1, "one BD per IOC");
+	/* The defect: TAILDESC one hardware threshold ahead leaves a
+	 * single-descriptor runway, so any two-BD packet halts the channel.
+	 */
+	zassert_equal(ch->rx_lead_bds, STREAM_BDS / 2U);
+	zassert_equal(eng.tail_abs, STREAM_BDS / 2U);
+	zassert_equal(regs[0x40U / 4U],
+		      (uint32_t)(uintptr_t)&stream_bds[STREAM_BDS / 2U - 1U]);
+}
+
+ZTEST(xlnx_rx_stream, test_threshold_one_survives_a_reframed_packet)
+{
+	struct dma_xlnx_sg_rx_stream_stats stats;
+
+	zassert_ok(start_stream(1));
+	for (unsigned int i = 0; i < 200U; i++) {
+		/* Packet 15 slips by one 16-byte frame and needs two BDs. */
+		uint32_t bytes = (i == 14U) ? STREAM_BD_BYTES + 16U : STREAM_BD_BYTES;
+
+		zassert_ok(feed_stream_packet(bytes), "stopped at packet %u", i);
+		k_msleep(1);
+	}
+	zassert_false(eng.halted);
+	zassert_false(eng.overrun, "engine wrote an unconsumed BD");
+	zassert_equal(stream_errors, 0);
+	/* 200 packets, one of which spans two BDs; one window per BD. */
+	zassert_equal(stream_windows, 201U);
+	zassert_equal(stream_windows_stale, 0U,
+		      "every window must be invalidated before delivery");
+	zassert_equal(stream_window_size, STREAM_BD_BYTES);
+	zassert_equal(stream_first_stamp, 0xbd000000U + 200U,
+		      "window must expose the BD the engine just filled");
+	zassert_ok(dma_xlnx_sg_rx_stream_status(&stream_dev, &stats));
+	zassert_true(stats.active);
+	zassert_false(stats.halted);
+	zassert_equal(stats.error_count, 0);
+	zassert_equal(stats.bds_produced, 201U);
+	zassert_equal(stats.bds_consumed, 201U);
+}
+
+ZTEST(xlnx_rx_stream, test_lagging_consumer_stalls_the_engine_without_overrun)
+{
+	struct dma_xlnx_sg_rx_stream_stats stats;
+	int ret = 0;
+	unsigned int fed = 0;
+
+	zassert_ok(start_stream(1));
+	/* Hold the system workqueue off so no window is ever consumed. */
+	k_sched_lock();
+	while (fed < 4U * STREAM_BDS) {
+		ret = feed_stream_packet(STREAM_BD_BYTES);
+		if (ret != 0) {
+			break;
+		}
+		fed++;
+	}
+	zassert_ok(dma_xlnx_sg_rx_stream_status(&stream_dev, &stats));
+	k_sched_unlock();
+	zassert_equal(ret, -EAGAIN, "engine must idle, not halt");
+	zassert_equal(fed, STREAM_BDS, "engine may fill the ring exactly once");
+	zassert_false(eng.overrun);
+	zassert_false(eng.halted);
+	zassert_equal(stream_errors, 0);
+	zassert_true(stats.overrun_count > 0U, "held-back tail must be counted");
+	zassert_equal(stats.bds_consumed, 0);
+
+	/* Let the consumer catch up: the engine gets its runway back. */
+	k_msleep(10);
+	zassert_ok(dma_xlnx_sg_rx_stream_status(&stream_dev, &stats));
+	zassert_equal(stats.bds_consumed, STREAM_BDS);
+	zassert_equal(stream_windows, STREAM_BDS);
+	for (unsigned int i = 0; i < STREAM_BDS; i++) {
+		zassert_ok(feed_stream_packet(STREAM_BD_BYTES));
+		k_msleep(1);
+	}
+	zassert_false(eng.overrun);
+	zassert_equal(stream_windows, 2U * STREAM_BDS);
+}
+
+ZTEST(xlnx_rx_stream, test_threshold_eight_window_delivery_is_unchanged)
+{
+	struct dma_xlnx_sg_rx_stream_stats stats;
+
+	zassert_ok(start_stream(8));
+	zassert_equal(stream_data.ch[CH_RX].hw_irq_threshold, 8);
+	for (unsigned int i = 0; i < 200U; i++) {
+		zassert_ok(feed_stream_packet(STREAM_BD_BYTES));
+		k_msleep(1);
+	}
+	zassert_equal(stream_windows, 25U, "one window per 8 BDs");
+	zassert_equal(stream_window_size, 8U * STREAM_BD_BYTES);
+	zassert_equal(stream_windows_stale, 0U,
+		      "the whole 16000-byte window is invalidated, not one BD");
+	zassert_equal(stream_first_stamp, 0xbd000000U + 192U);
+	zassert_false(eng.overrun);
+	zassert_equal(stream_errors, 0);
+	zassert_ok(dma_xlnx_sg_rx_stream_status(&stream_dev, &stats));
+	zassert_equal(stats.bds_consumed, 200U);
+	zassert_equal(stats.overrun_count, 0);
+}
+
+ZTEST(xlnx_rx_stream, test_dma_error_reaches_the_stream_consumer)
+{
+	struct dma_xlnx_sg_rx_stream_stats stats;
+
+	zassert_ok(start_stream(1));
+	/* Starve the runway down to a single descriptor with a consumer that
+	 * never runs, then present a two-BD packet: DMAIntErr, the silent
+	 * halt seen on silicon.
+	 */
+	k_sched_lock();
+	for (unsigned int i = 0; i < STREAM_BDS - 1U; i++) {
+		zassert_ok(feed_stream_packet(STREAM_BD_BYTES));
+	}
+	zassert_equal(feed_stream_packet(2U * STREAM_BD_BYTES), -EIO);
+	k_sched_unlock();
+	k_msleep(10);
+	zassert_equal(stream_errors, 1, "halt must reach the stream consumer");
+	zassert_true((stream_error_sr & DMASR_INTERR) != 0U);
+	zassert_ok(dma_xlnx_sg_rx_stream_status(&stream_dev, &stats));
+	zassert_true(stats.halted);
+	zassert_equal(stats.error_count, 1);
+	zassert_equal(stats.last_error, stream_error_sr);
 }
