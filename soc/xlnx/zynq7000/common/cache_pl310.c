@@ -27,10 +27,12 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/arch/cache.h>
 #include <zephyr/arch/arm/cortex_a_r/outer_cache.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/sys/util.h>
+#include <cmsis_core.h>
 
 #include "soc.h"
 
@@ -246,13 +248,31 @@ void outer_cache_flush_and_invd_all(void)
  */
 void zynq_pl310_init(uintptr_t base)
 {
+	bool restore_l1 = false;
+
 	zynq_pl310_base = base;
 
-	/* The FSBL hands over with the cache clean and off; a JTAG boot never
-	 * turned it on.  Writing the configuration below needs it off either
-	 * way.
+	/*
+	 * A bootloader may leave dirty data in an enabled controller. Stop L1
+	 * allocations and drain both levels before changing the configuration.
+	 * This hook runs on the primary core before the secondary is released.
 	 */
+	if ((pl310_read(PL310_CTRL) & PL310_CTRL_ENABLE) != 0U) {
+		restore_l1 = (__get_SCTLR() & SCTLR_C_Msk) != 0U;
+		arch_dcache_disable();
+		pl310_write(PL310_CLEAN_INV_WAY, PL310_WAY_MASK);
+		if (!pl310_wait_way(PL310_CLEAN_INV_WAY)) {
+			/* Leave dirty ways enabled if maintenance did not complete. */
+			if (restore_l1) {
+				arch_dcache_enable();
+			}
+			return;
+		}
+		pl310_sync();
+	}
+
 	pl310_write(PL310_CTRL, 0U);
+	barrier_dsync_fence_full();
 
 	pl310_write(PL310_AUX_CTRL, pl310_read(PL310_AUX_CTRL) | PL310_AUX_CTRL_INIT);
 	pl310_write(PL310_TAG_RAM_CTRL, PL310_TAG_RAM_INIT);
@@ -267,4 +287,7 @@ void zynq_pl310_init(uintptr_t base)
 	pl310_write(PL310_CTRL, pl310_read(PL310_CTRL) | PL310_CTRL_ENABLE);
 	barrier_dsync_fence_full();
 	barrier_isync_fence_full();
+	if (restore_l1) {
+		arch_dcache_enable();
+	}
 }
