@@ -194,6 +194,9 @@ struct dma_xlnx_sg_chan {
 	/* 0: free, 1: finite reservation, 2: stream */
 	atomic_t rx_owner;
 	bool rx_stream_active;
+	uintptr_t rx_base_phys; /* nonzero: caller-owned, CPU-invisible payload */
+	uint32_t rx_stride;
+	uint32_t rx_num_slots;
 	dma_xlnx_sg_rx_stream_cb_t rx_stream_callback;
 	dma_xlnx_sg_rx_stream_err_cb_t rx_stream_error_callback;
 	void *rx_stream_user_data;
@@ -375,6 +378,14 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 	struct dma_xlnx_sg_chan *ch = &data->ch[channel];
 	const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
 	uintptr_t phys = buf_phys(dev, channel);
+	uint32_t stride = ch->bd_buf_bytes;
+	uint32_t num_slots = 0U;
+
+	if (channel == CH_RX && ch->cyclic && ch->rx_base_phys != 0U) {
+		phys = ch->rx_base_phys;
+		stride = ch->rx_stride;
+		num_slots = ch->rx_num_slots;
+	}
 
 	/*
 	 * NOTE: Using CPU virtual addresses for BD next_desc and CURDESC/TAILDESC
@@ -458,11 +469,12 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 
 	for (uint32_t i = 0; i < ring_count; i++) {
 		uint32_t next = (i + 1) % ring_count;
+		uint32_t slot = num_slots != 0U ? i % num_slots : i;
 
 		memset(&ch->bds[i], 0, sizeof(ch->bds[i]));
 		ch->bds[i].next_desc = (uint32_t)(uintptr_t)&ch->bds[next];
 		ch->bds[i].next_desc_msb = 0U;
-		ch->bds[i].buf_addr = (uint32_t)(phys + (uintptr_t)i * ch->bd_buf_bytes);
+		ch->bds[i].buf_addr = (uint32_t)(phys + (uintptr_t)slot * stride);
 		ch->bds[i].buf_addr_msb = 0U;
 		ch->bds[i].control = ch->bd_buf_bytes & DEV_CFG(dev)->sg_len_mask;
 
@@ -517,9 +529,9 @@ static uint32_t build_dmacr(const struct dma_xlnx_sg_chan *ch)
  * -------------------------------------------------------------------------- */
 static uint32_t rx_stream_lead_bds(const struct dma_xlnx_sg_chan *ch)
 {
-	uint32_t lead = MAX(ch->num_bds / 2U, (uint32_t)ch->hw_irq_threshold);
+	uint32_t lead = MAX(ch->active_bds / 2U, (uint32_t)ch->hw_irq_threshold);
 
-	return MIN(lead, ch->num_bds);
+	return MIN(lead, ch->active_bds);
 }
 
 /* Call with rx_tail_lock held. */
@@ -528,7 +540,7 @@ static void rx_stream_advance_tail(const struct device *dev)
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
 	uint32_t desired = ch->rx_produced_bds + ch->rx_lead_bds;
-	uint32_t limit = (uint32_t)atomic_get(&ch->rx_consumed_bds) + ch->num_bds;
+	uint32_t limit = (uint32_t)atomic_get(&ch->rx_consumed_bds) + ch->active_bds;
 
 	if ((int32_t)(desired - limit) > 0) {
 		/* The consumer is behind: stop short of its oldest unread BD. */
@@ -541,7 +553,7 @@ static void rx_stream_advance_tail(const struct device *dev)
 	}
 
 	ch->rx_tail_bds = desired;
-	ch->tail_idx = (desired - 1U) % ch->num_bds;
+	ch->tail_idx = (desired - 1U) % ch->active_bds;
 	barrier_dmem_fence_full();
 	chan_write(dev, CH_RX, REG_TAILDESC, (uint32_t)(uintptr_t)&ch->bds[ch->tail_idx]);
 }
@@ -730,10 +742,9 @@ static void latch_dma_error(const struct device *dev, uint32_t channel,
 		size_t size = buf_size(dev, CH_RX);
 
 		/* Validate a potentially corrupted DMA buffer pointer. */
-		if (channel == CH_RX && snap->first.buf_addr_msb == 0U &&
-		    (addr & 3U) == 0U && addr >= base &&
-		    size >= sizeof(snap->payload) &&
-		    addr - base <= size - sizeof(snap->payload)) {
+		if (channel == CH_RX && !(ch->cyclic && ch->rx_base_phys != 0U) &&
+		    snap->first.buf_addr_msb == 0U && (addr & 3U) == 0U && addr >= base &&
+		    size >= sizeof(snap->payload) && addr - base <= size - sizeof(snap->payload)) {
 			uintptr_t va = buf_virt(dev, CH_RX) + (addr - base);
 			void *src = (void *)va;
 
@@ -836,7 +847,7 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 				ch->bds[idx].control &= ~BD_STS_CMPLT;
 				ch->bds[idx].status &= ~BD_STS_CMPLT;
 				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
-				idx = (idx + 1) % ch->num_bds;
+				idx = (idx + 1) % ch->active_bds;
 				harvested++;
 			}
 			ch->producer_idx = idx;
@@ -1233,6 +1244,9 @@ static void dma_xlnx_sg_prepare_rx_stream(const struct device *dev,
 	ch->rx_stream_callback = cfg->callback;
 	ch->rx_stream_error_callback = cfg->error_callback;
 	ch->rx_stream_user_data = cfg->user_data;
+	ch->rx_base_phys = cfg->base_phys;
+	ch->rx_num_slots = cfg->num_slots;
+	ch->rx_stride = cfg->stride != 0U ? cfg->stride : cfg->bd_bytes;
 }
 
 
@@ -1240,21 +1254,10 @@ static void dma_xlnx_sg_prepare_rx_stream(const struct device *dev,
  * Reconfigure RX ring at runtime.
  * -------------------------------------------------------------------------- */
 static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_bytes,
-				      uint16_t threshold)
+				      uint16_t threshold, uint32_t num_bds)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
 	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
-
-	if (bd_bytes == 0 || (size_t)bd_bytes * (size_t)ch->num_bds > buf_size(dev, CH_RX)) {
-		LOG_ERR("bd_bytes %u * %u BDs exceeds RX buf size %zu", bd_bytes, ch->num_bds,
-			buf_size(dev, CH_RX));
-		return -EINVAL;
-	}
-
-	if (threshold == 0 || threshold > ch->num_bds || (ch->num_bds % threshold) != 0) {
-		LOG_ERR("threshold %u must divide RX BD count %u evenly", threshold, ch->num_bds);
-		return -EINVAL;
-	}
 
 	/*
 	 * Stop the channel if running.  Halted channels (first call)
@@ -1275,7 +1278,7 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 
 	/* Update ring parameters — clear finite transfer state */
 	ch->bd_buf_bytes = bd_bytes;
-	ch->active_bds = 0;
+	ch->active_bds = num_bds;
 	ch->error = false;
 	ch->irq_threshold = threshold;
 
@@ -1312,7 +1315,7 @@ static int dma_xlnx_sg_reconfigure_rx(const struct device *dev, uint32_t bd_byte
 
 	kick_channel(dev, CH_RX);
 
-	LOG_DBG("RX ring reconfigured: %u BDs x %u bytes, threshold=%u", ch->num_bds, bd_bytes,
+	LOG_DBG("RX ring reconfigured: %u BDs x %u bytes, threshold=%u", ch->active_bds, bd_bytes,
 		threshold);
 	return 0;
 }
@@ -1346,7 +1349,7 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 	/*
 	 * The RX region is mapped Normal cacheable, so drop any lines the CPU
 	 * holds for this window before the consumer reads it.  One call for the
-	 * whole window: a window never wraps the ring (num_bds is a multiple of
+	 * whole window: a window never wraps the ring (active_bds is a multiple of
 	 * irq_threshold), so its BDs are contiguous in the buffer.
 	 *
 	 * bd_buf_bytes need not be a multiple of the cache line size, so the
@@ -1358,7 +1361,11 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 	 * bd_bytes that is a multiple of the line size or clean the window
 	 * before the driver hands the BDs back to the engine.
 	 */
-	cache_invd(window_buf, window_bytes);
+	if (ch->rx_base_phys == 0U) {
+		cache_invd(window_buf, window_bytes);
+	} else {
+		window_buf = NULL;
+	}
 
 	for (uint32_t i = 0; i < window_size; i++) {
 		struct xlnx_sg_bd *bd = &ch->bds[idx];
@@ -1372,7 +1379,7 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 			ch->rx_app.app[a] = bd->app[a];
 		}
 
-		idx = (idx + 1) % ch->num_bds;
+		idx = (idx + 1) % ch->active_bds;
 	}
 
 	ch->consumer_idx = idx;
@@ -1400,6 +1407,7 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 	while (atomic_get(&ch->rx_windows_ready) > 0) {
 		uint8_t *buf = NULL;
 		uint32_t size = 0U;
+		uint32_t first_bd = ch->consumer_idx;
 		int ret;
 
 		ret = dma_xlnx_sg_consume_rx_window(dev, &buf, &size);
@@ -1408,12 +1416,13 @@ static void dma_xlnx_sg_rx_stream_work_handler(struct k_work *work)
 			break;
 		}
 
-		if (buf != NULL && size > 0U && ch->rx_stream_callback != NULL) {
-			ch->rx_stream_callback(dev, ch->rx_stream_user_data, buf, size);
+		if (size > 0U && ch->rx_stream_callback != NULL) {
+			ch->rx_stream_callback(dev, ch->rx_stream_user_data, buf, size, first_bd);
 		}
 
 		/* Release only now: until the callback returns, the engine
-		 * must not be allowed to refill the BDs behind that buffer.
+		 * must not reuse these descriptors. Explicit repeated slots may
+		 * already have been overwritten through a different descriptor.
 		 */
 		atomic_add(&ch->rx_consumed_bds, (atomic_val_t)ch->irq_threshold);
 		k_spinlock_key_t key = k_spin_lock(&ch->rx_tail_lock);
@@ -1474,13 +1483,29 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 		return -EINVAL;
 	}
 
-	if (cfg->irq_threshold == 0U || cfg->irq_threshold > ch->num_bds ||
-	    (ch->num_bds % cfg->irq_threshold) != 0U) {
+	uint32_t num_bds = cfg->num_bds != 0U ? cfg->num_bds : ch->num_bds;
+
+	if (num_bds > ch->num_bds || cfg->irq_threshold == 0U || cfg->irq_threshold > num_bds ||
+	    (num_bds % cfg->irq_threshold) != 0U) {
 		return -EINVAL;
 	}
 
-	if (cfg->bd_bytes == 0U ||
-	    (size_t)cfg->bd_bytes * (size_t)ch->num_bds > buf_size(dev, CH_RX)) {
+	if (cfg->num_slots != 0U && (cfg->base_phys == 0U || cfg->num_slots > num_bds ||
+				     (num_bds % cfg->num_slots) != 0U)) {
+		return -EINVAL;
+	}
+
+	if (cfg->bd_bytes == 0U) {
+		return -EINVAL;
+	}
+	if (cfg->base_phys != 0U) {
+		uint32_t stride = cfg->stride != 0U ? cfg->stride : cfg->bd_bytes;
+
+		if (!IS_ALIGNED(cfg->base_phys, 32U) || !IS_ALIGNED(stride, 32U) ||
+		    stride < cfg->bd_bytes) {
+			return -EINVAL;
+		}
+	} else if ((size_t)cfg->bd_bytes * num_bds > buf_size(dev, CH_RX)) {
 		return -EINVAL;
 	}
 
@@ -1490,7 +1515,7 @@ int dma_xlnx_sg_start_rx_stream(const struct device *dev,
 
 	dma_xlnx_sg_prepare_rx_stream(dev, cfg);
 	ch->rx_stream_active = true;
-	ret = dma_xlnx_sg_reconfigure_rx(dev, cfg->bd_bytes, cfg->irq_threshold);
+	ret = dma_xlnx_sg_reconfigure_rx(dev, cfg->bd_bytes, cfg->irq_threshold, num_bds);
 	if (ret != 0) {
 		ch->rx_stream_active = false;
 		ch->rx_stream_callback = NULL;

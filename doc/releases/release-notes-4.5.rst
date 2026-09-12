@@ -62,6 +62,13 @@ The following CVEs are addressed by this release:
 API Changes
 ***********
 
+* The Xilinx AXI DMA SG RX stream extension supports an explicit physical
+  destination base and descriptor stride for DMA-owned payloads, with no CPU
+  payload cache maintenance. Completion callbacks include descriptor identity.
+  A stream may select a descriptor count smaller than the allocated RX pool
+  and independently repeat a smaller set of explicit destination slots.
+
+
 ..
   Only removed, deprecated and new APIs. Changes go in migration guide.
 

@@ -363,6 +363,7 @@ ZTEST(xlnx_finite_rx, test_error_dump_rejects_out_of_range_payload)
 
 static struct xlnx_sg_bd stream_bds[STREAM_BDS];
 static uint8_t stream_buf[STREAM_BDS * STREAM_BD_BYTES];
+static uint8_t placed_payload[2][2560] __aligned(32);
 static const struct dma_xlnx_sg_cfg stream_config = {
 	.rx_buf_phys = (uintptr_t)stream_buf,
 	.rx_buf_size = sizeof(stream_buf),
@@ -377,6 +378,8 @@ static struct {
 	uint32_t completed;   /* BDs completed since the last IOC */
 	bool overrun;         /* wrote a BD whose window was not consumed */
 	bool halted;
+	bool defer_ioc;
+	bool placed_payload;
 } eng;
 
 static void engine_curdesc_write(uint32_t value)
@@ -399,9 +402,10 @@ static void engine_tail_write(uint32_t value)
 		return;
 	}
 	uint32_t idx = (uint32_t)((value - base) / sizeof(struct xlnx_sg_bd));
-	uint32_t last = (eng.tail_abs + STREAM_BDS - 1U) % STREAM_BDS;
+	uint32_t count = ch->active_bds;
+	uint32_t last = (eng.tail_abs + count - 1U) % count;
 
-	eng.tail_abs += (idx + STREAM_BDS - last) % STREAM_BDS;
+	eng.tail_abs += (idx + count - last) % count;
 }
 
 static unsigned int stream_windows;
@@ -416,12 +420,26 @@ static void stream_stamp(uint32_t abs)
 {
 	uint32_t *p = (uint32_t *)&stream_buf[(abs % STREAM_BDS) * STREAM_BD_BYTES];
 
-	*p = 0xbd000000U + abs;
+	if (eng.placed_payload) {
+		uint32_t addr = stream_bds[abs % STREAM_BDS].buf_addr;
+
+		zassert_true(addr == 0xffffe060U || addr == 0xffffea60U,
+			     "descriptor escaped the two physical destinations");
+		uint32_t slot = (addr - 0xffffe060U) / 2560U;
+
+		p = (uint32_t *)&placed_payload[slot][96];
+		for (uint32_t i = 0; i < STREAM_BD_BYTES / sizeof(*p); i++) {
+			p[i] = 0xbd000000U + abs;
+		}
+	} else {
+		*p = 0xbd000000U + abs;
+	}
 }
 
-static void stream_window(const struct device *device, void *user, uint8_t *buf,
-			  uint32_t size)
+static void stream_window(const struct device *device, void *user, uint8_t *buf, uint32_t size,
+			  uint32_t first_bd)
 {
+	ARG_UNUSED(first_bd);
 	ARG_UNUSED(device);
 	ARG_UNUSED(user);
 	stream_windows++;
@@ -469,10 +487,10 @@ static int feed_stream_packet(uint32_t bytes)
 	for (uint32_t i = 0; i < need; i++) {
 		uint32_t consumed = (uint32_t)atomic_get(&ch->rx_consumed_bds);
 
-		if ((int32_t)(eng.bds_written - consumed - STREAM_BDS) >= 0) {
+		if ((int32_t)(eng.bds_written - consumed - ch->active_bds) >= 0) {
 			eng.overrun = true;
 		}
-		uint32_t idx = eng.bds_written % STREAM_BDS;
+		uint32_t idx = eng.bds_written % ch->active_bds;
 		uint32_t len = (i + 1U == need) ? (bytes - i * STREAM_BD_BYTES)
 						: STREAM_BD_BYTES;
 
@@ -480,7 +498,7 @@ static int feed_stream_packet(uint32_t bytes)
 		stream_bds[idx].status = BIT(31) | len;
 		eng.bds_written++;
 		eng.completed++;
-		if (eng.completed >= ch->hw_irq_threshold) {
+		if (!eng.defer_ioc && eng.completed >= ch->hw_irq_threshold) {
 			eng.completed = 0;
 			engine_ioc();
 		}
@@ -664,4 +682,260 @@ ZTEST(xlnx_rx_stream, test_dma_error_reaches_the_stream_consumer)
 	zassert_true(stats.halted);
 	zassert_equal(stats.error_count, 1);
 	zassert_equal(stats.last_error, stream_error_sr);
+}
+
+static void placed_window(const struct device *device, void *user, uint8_t *buf, uint32_t size,
+			  uint32_t first_bd)
+{
+	ARG_UNUSED(device);
+	ARG_UNUSED(user);
+	zassert_is_null(buf, "explicit destinations are CPU-invisible");
+	zassert_equal(size, STREAM_BD_BYTES);
+	zassert_equal(first_bd, stream_windows % 2U);
+	for (unsigned int i = 0; i < invd_count; i++) {
+		zassert_true(i < ARRAY_SIZE(invd_log));
+		zassert_true(invd_log[i].addr >= (uintptr_t)stream_bds &&
+				     invd_log[i].addr + invd_log[i].size <=
+					     (uintptr_t)(stream_bds + 2),
+			     "explicit placement must invalidate descriptors only");
+	}
+	stream_windows++;
+	invd_count = 0;
+}
+
+ZTEST(xlnx_rx_stream, test_explicit_placement_and_cpu_invisible_completion)
+{
+	struct k_work_sync sync;
+	struct dma_xlnx_sg_rx_stream_cfg cfg = {
+		.bd_bytes = STREAM_BD_BYTES,
+		.irq_threshold = 1,
+		.callback = placed_window,
+		.base_phys = 0xffffe060U,
+		.stride = 2560U,
+		.num_bds = 2,
+	};
+
+	zassert_equal(stream_data.ch[CH_RX].num_bds, STREAM_BDS);
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+	for (uint32_t i = 0; i < 2U; i++) {
+		zassert_equal(stream_bds[i].buf_addr, cfg.base_phys + i * cfg.stride);
+		zassert_equal(stream_bds[i].control, STREAM_BD_BYTES);
+		zassert_equal(stream_bds[i].next_desc,
+			      (uint32_t)(uintptr_t)&stream_bds[(i + 1U) % 2U]);
+	}
+	for (uint32_t i = 0; i < 6U; i++) {
+		stream_bds[i % 2U].status = BD_STS_CMPLT | STREAM_BD_BYTES;
+		engine_ioc();
+		(void)k_work_flush(&stream_data.ch[CH_RX].rx_stream_work, &sync);
+		zassert_equal(stream_windows, i + 1U, "NULL payload still delivers completion");
+	}
+	dma_xlnx_sg_stop_rx_stream(&stream_dev);
+	/* Explicit memory belongs to the caller, even when larger than rx_buf. */
+	cfg.num_bds = 0;
+	cfg.base_phys = 0x02000000U;
+	cfg.bd_bytes = 4096;
+	cfg.stride = 4096;
+	stream_data.ch[CH_RX].num_bds = STREAM_BDS;
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+}
+
+ZTEST(xlnx_rx_stream, test_explicit_placement_alignment_and_default_reset)
+{
+	struct dma_xlnx_sg_rx_stream_cfg cfg = {
+		.bd_bytes = STREAM_BD_BYTES,
+		.irq_threshold = 1,
+		.callback = placed_window,
+		.base_phys = 0xffffe061U,
+		.stride = 2560U,
+	};
+
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.base_phys--;
+	cfg.stride++;
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.stride = 1984;
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.stride = 2560;
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+	dma_xlnx_sg_stop_rx_stream(&stream_dev);
+	zassert_ok(start_stream(1));
+	zassert_equal(stream_bds[1].buf_addr, stream_config.rx_buf_phys + STREAM_BD_BYTES);
+	zassert_ok(feed_stream_packet(STREAM_BD_BYTES));
+	k_msleep(1);
+	zassert_equal(stream_windows, 1U);
+	zassert_equal(stream_windows_stale, 0U);
+}
+
+ZTEST(xlnx_rx_stream, test_explicit_payload_is_invisible_to_error_dump)
+{
+	struct k_work_sync sync;
+	struct dma_xlnx_sg_rx_stream_stats stats;
+	struct dma_xlnx_sg_rx_stream_cfg cfg = {
+		.bd_bytes = STREAM_BD_BYTES,
+		.irq_threshold = 1,
+		.callback = placed_window,
+		.error_callback = stream_error,
+		.base_phys = ROUND_UP((uintptr_t)stream_buf, 32U),
+		.stride = 2560U,
+	};
+
+	stream_data.ch[CH_RX].num_bds = 2;
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+	regs[0x34U / 4U] = DMASR_HALTED | DMASR_INTERR | DMASR_ERR_IRQ;
+	dma_xlnx_sg_rx_isr(&stream_dev);
+	(void)k_work_flush(&stream_data.ch[CH_RX].rx_stream_work, &sync);
+	(void)k_work_flush(&stream_data.ch[CH_RX].error_work, &sync);
+	zassert_equal(stream_errors, 1U);
+	zassert_false(stream_data.ch[CH_RX].error_snapshot.payload_valid);
+	zassert_false(invd_logged(cfg.base_phys, 64U));
+	zassert_ok(dma_xlnx_sg_rx_stream_status(&stream_dev, &stats));
+	zassert_true(stats.halted);
+	zassert_equal(stats.error_count, 1U);
+	zassert_equal(stats.last_error, stream_error_sr);
+}
+
+ZTEST(xlnx_rx_stream, test_stream_subset_preserves_finite_pool)
+{
+	struct dma_xlnx_sg_rx_stream_cfg cfg = {
+		.bd_bytes = STREAM_BD_BYTES,
+		.irq_threshold = 1,
+		.callback = placed_window,
+		.base_phys = 0xffffe060U,
+		.stride = 2560U,
+		.num_bds = 2,
+	};
+	struct dma_block_config block = {
+		.block_size = 512,
+		.dest_scatter_count = 8,
+	};
+	struct dma_config finite = {
+		.channel_direction = PERIPHERAL_TO_MEMORY,
+		.head_block = &block,
+	};
+
+	cfg.num_bds = STREAM_BDS + 1;
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.num_bds = 2;
+	cfg.irq_threshold = 4;
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.irq_threshold = 1;
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+	zassert_equal(stream_data.ch[CH_RX].active_bds, 2);
+	zassert_equal(stream_data.ch[CH_RX].rx_lead_bds, 1U);
+	zassert_equal(stream_data.ch[CH_RX].tail_idx, 0U);
+	zassert_equal(stream_bds[2].control, 0, "unused pool must not be armed");
+	zassert_equal(dma_xlnx_sg_reserve_rx(&stream_dev), -EBUSY);
+	dma_xlnx_sg_stop_rx_stream(&stream_dev);
+	zassert_ok(dma_xlnx_sg_reserve_rx(&stream_dev));
+	zassert_ok(dma_xlnx_sg_config(&stream_dev, CH_RX, &finite));
+	zassert_equal(stream_data.ch[CH_RX].num_bds, STREAM_BDS);
+	zassert_equal(stream_data.ch[CH_RX].active_bds, 8);
+	zassert_equal(stream_bds[7].buf_addr, stream_config.rx_buf_phys + 7U * 512U);
+	dma_xlnx_sg_release_rx(&stream_dev);
+}
+
+/* Payload slots may wrap while unconsumed descriptors still retain completion
+ * metadata. Count every completed BD and preserve its actual ring index.
+ */
+static void repeated_slot_window(const struct device *device, void *user, uint8_t *buf,
+				 uint32_t size, uint32_t first_bd)
+{
+	ARG_UNUSED(device);
+	ARG_UNUSED(user);
+	zassert_is_null(buf);
+	zassert_equal(size, STREAM_BD_BYTES);
+	zassert_equal(first_bd, stream_windows % STREAM_BDS);
+	stream_windows++;
+}
+
+ZTEST(xlnx_rx_stream, test_repeated_slots_survive_delayed_harvest)
+{
+	struct dma_xlnx_sg_rx_stream_cfg cfg = {
+		.bd_bytes = STREAM_BD_BYTES,
+		.irq_threshold = 1,
+		.callback = repeated_slot_window,
+		.base_phys = 0xffffe060U,
+		.stride = 2560U,
+		.num_bds = STREAM_BDS,
+		.num_slots = 2,
+	};
+	struct dma_xlnx_sg_rx_stream_stats stats;
+	struct k_work_sync sync;
+
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+	eng.placed_payload = true;
+	eng.defer_ioc = true;
+	memset(placed_payload, 0xa5, sizeof(placed_payload));
+	for (uint32_t i = 0; i < STREAM_BDS; i++) {
+		zassert_equal(stream_bds[i].buf_addr, cfg.base_phys + (i % 2U) * cfg.stride);
+		zassert_equal(stream_bds[i].next_desc,
+			      (uint32_t)(uintptr_t)&stream_bds[(i + 1U) % STREAM_BDS]);
+	}
+	for (uint32_t batch = 0; batch < 128U; batch++) {
+		int ret = 0;
+
+		/* Eight 125-us bursts before IRQ harvest, sixteen before workqueue
+		 * delivery. Feed attempts are not retried if TAILDESC runs out.
+		 */
+		k_sched_lock();
+		for (uint32_t phase = 0; phase < 2U && ret == 0; phase++) {
+			for (uint32_t burst = 0; burst < 8U; burst++) {
+				ret = feed_stream_packet(STREAM_BD_BYTES);
+				if (ret != 0) {
+					break;
+				}
+			}
+			engine_ioc();
+			eng.completed = 0;
+		}
+		k_sched_unlock();
+		(void)k_work_flush(&stream_data.ch[CH_RX].rx_stream_work, &sync);
+		zassert_ok(ret, "lost a burst while harvest was delayed");
+		zassert_ok(dma_xlnx_sg_rx_stream_status(&stream_dev, &stats));
+		zassert_equal(eng.bds_written, (batch + 1U) * 16U);
+		zassert_equal(stats.bds_produced, eng.bds_written);
+		zassert_equal(stats.bds_consumed, eng.bds_written);
+		zassert_equal(stream_windows, eng.bds_written);
+		zassert_equal(stats.overrun_count, 0U);
+		zassert_equal(stats.error_count, 0U);
+		zassert_false(eng.halted || eng.overrun);
+		for (uint32_t slot = 0; slot < 2U; slot++) {
+			uint32_t *words = (uint32_t *)&placed_payload[slot][96];
+
+			for (uint32_t word = 0; word < STREAM_BD_BYTES / 4U; word++) {
+				zassert_equal(words[word],
+					      0xbd000000U + eng.bds_written - 2U + slot);
+			}
+			for (uint32_t byte = 0; byte < 96U; byte++) {
+				zassert_equal(placed_payload[slot][byte], 0xa5);
+			}
+		}
+	}
+	zassert_equal(stream_data.ch[CH_RX].rx_lead_bds, 32U);
+	dma_xlnx_sg_stop_rx_stream(&stream_dev);
+	/* A later explicit stream may use one destination per descriptor. */
+	cfg.num_slots = 0;
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+	zassert_equal(stream_bds[2].buf_addr, cfg.base_phys + 2U * cfg.stride);
+}
+
+ZTEST(xlnx_rx_stream, test_repeated_slot_admission)
+{
+	struct dma_xlnx_sg_rx_stream_cfg cfg = {
+		.bd_bytes = STREAM_BD_BYTES,
+		.irq_threshold = 1,
+		.callback = repeated_slot_window,
+		.stride = 2560U,
+		.num_bds = STREAM_BDS,
+		.num_slots = 2,
+	};
+
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.base_phys = 0xffffe060U;
+	cfg.num_slots = STREAM_BDS + 1U;
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.num_slots = 3;
+	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
+	cfg.num_slots = 2;
+	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
 }

@@ -32,10 +32,15 @@ struct dma_xlnx_sg_app_fields {
  * the driver's RX buffer region, has already been cache-invalidated, and is
  * valid only for the duration of the callback; copy it if the data must
  * outlive the call. Do not write into it - see dma_xlnx_sg_get_buffer(). @p size is the
- * contiguous completed window span in bytes (`bd_bytes * irq_threshold`).
+ * completed payload size in bytes (`bd_bytes * irq_threshold`).
+ * With explicit base_phys placement, buf is NULL and no payload cache maintenance
+ * is performed. first_bd is the first descriptor index in this completed window;
+ * the caller owns its destination. With repeated slots, payload reuse follows
+ * num_slots rather than the descriptor count: delayed callbacks do not retain
+ * old payloads. The caller must synchronize reads with the producing hardware.
  */
 typedef void (*dma_xlnx_sg_rx_stream_cb_t)(const struct device *dev, void *user_data, uint8_t *buf,
-					   uint32_t size);
+					   uint32_t size, uint32_t first_bd);
 
 /**
  * @brief Callback invoked when the RX stream hits a DMA error.
@@ -57,6 +62,26 @@ struct dma_xlnx_sg_rx_stream_cfg {
 	void *user_data;
 	/** Optional; NULL leaves DMA errors visible only through the status query. */
 	dma_xlnx_sg_rx_stream_err_cb_t error_callback;
+	/** Physical destination base, 32-byte aligned; 0 selects the DT RX buffer.
+	 * Nonzero declares caller-owned, CPU-invisible memory. The caller must
+	 * reserve num_slots destinations (num_bds when zero) and keep their cache lines clean.
+	 */
+	uintptr_t base_phys;
+	/** Destination spacing, >= bd_bytes and 32-byte aligned for explicit
+	 * placement. Zero uses bd_bytes. Ignored when base_phys is zero.
+	 */
+	uint32_t stride;
+	/** Descriptors in this stream's ring; 0 uses the allocated RX pool.
+	 * A smaller ring leaves the full pool available to later finite sessions.
+	 */
+	uint32_t num_bds;
+	/** Explicit destination slots; 0 gives every descriptor its own slot.
+	 * Nonzero requires base_phys and must divide the selected descriptor count.
+	 * BD i writes base_phys + (i % num_slots) * stride. Repeated slots are
+	 * overwritten independently of callback delivery; only descriptor storage
+	 * is protected until the callback returns. Runway still uses num_bds.
+	 */
+	uint32_t num_slots;
 };
 
 /**
