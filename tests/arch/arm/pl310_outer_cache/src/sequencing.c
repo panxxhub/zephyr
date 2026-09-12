@@ -21,6 +21,7 @@ static bool l1_dirty;
 static bool l2_dirty;
 static bool drained;
 static size_t reconfigurations;
+static size_t debug_writes;
 
 static uint32_t model_read(mem_addr_t address)
 {
@@ -62,6 +63,8 @@ static void model_write(uint32_t value, mem_addr_t address)
 		zassert_false(l2_dirty, "invalidate discarded dirty bootloader data");
 		busy_reg = reg;
 		busy_reads = 2U;
+	} else if (reg == 0xF40U) {
+		debug_writes++;
 	}
 }
 
@@ -104,6 +107,7 @@ static void reset_model(bool l1_enabled)
 	busy_reg = 0U;
 	busy_reads = 0U;
 	reconfigurations = 0U;
+	debug_writes = 0U;
 	stuck = false;
 }
 
@@ -136,6 +140,23 @@ ZTEST(pl310_sequence, test_warm_init_timeout_keeps_dirty_ways_enabled)
 	zassert_equal(control, 1U);
 	zassert_equal(sctlr & SCTLR_C_Msk, SCTLR_C_Msk);
 	zassert_equal(reconfigurations, 0U);
+}
+
+ZTEST(pl310_sequence, test_r3p2_maintenance_does_not_write_debug_control)
+{
+	static uint8_t line[32] __aligned(32);
+
+	reset_model(false);
+	model_init(ZYNQ_PL310_BASE);
+	drained = false;
+	model_clean_range(line, sizeof(line));
+	model_invd_range(line, sizeof(line));
+	model_flush_and_invd_range(line, sizeof(line));
+	model_clean_all();
+	model_invd_all();
+	model_flush_and_invd_all();
+	zassert_true(drained, "maintenance still requires CACHE_SYNC completion");
+	zassert_equal(debug_writes, 0U, "r3p2 needs no debug-register workaround");
 }
 
 ZTEST_SUITE(pl310_sequence, NULL, NULL, NULL, NULL, NULL);

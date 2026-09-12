@@ -18,12 +18,10 @@
  * device_map()'d region is not, so every page is translated with the CP15
  * address translation operation (ATS1CPR) before its lines are queued.
  *
- * Errata for the r3p2 cut used on Zynq-7000 (UG585):
- *  - 588369 (r1p0/r2p0) and 727915 (r2p0..r3p0) predate this cut.
- *  - 753970 (sync register at 0x740) is r3p0 only; the Xilinx BSP removed its
- *    workaround for Zynq under CR#989132, see vendor xil_errata.h.
- *  - 769419 (the store buffer is not drained automatically) applies: every
- *    maintenance operation below ends in an explicit cache sync.
+ * Zynq-7000 uses r3p2 (UG585). Errata 727915, 753970 and 769419 are fixed
+ * in this revision (ARM UAN 0011B); 588369 also predates it. No debug-register
+ * workaround or alternate sync register is needed. CACHE_SYNC still drains
+ * maintenance writes before the caller hands memory to an external master.
  */
 
 #include <zephyr/kernel.h>
@@ -95,8 +93,7 @@ static ALWAYS_INLINE void pl310_write(uint32_t off, uint32_t val)
 }
 
 /*
- * Drain the store buffer.  This is the explicit sync erratum 769419 asks for
- * after every maintenance operation.  It must not be issued while a
+ * Drain maintenance writes to the point of coherency. It must not be issued while a
  * background by-way operation is still running -- the controller stalls the
  * write until that operation retires -- so every caller waits for the way
  * register first.
