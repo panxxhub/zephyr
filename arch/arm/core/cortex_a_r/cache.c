@@ -137,41 +137,39 @@ int arch_dcache_invd_range(void *start_addr, size_t size)
 	size_t line_size;
 	uintptr_t addr = (uintptr_t)start_addr;
 	uintptr_t end_addr = addr + size;
+	uintptr_t first;
+	uintptr_t last;
+
+	if (size == 0U) {
+		return 0;
+	}
 
 	line_size = arch_dcache_line_size_get();
-
-	/* Invalidate: outer first, then inner, so that a line the outer level
-	 * drops cannot be refilled from a stale inner copy.
-	 */
-	outer_cache_invd_range(start_addr, size);
+	first = ROUND_DOWN(addr, line_size);
+	last = ROUND_DOWN(end_addr, line_size);
 
 	/*
-	 * Clean and invalidate the partial cache lines at both ends of the
-	 * given range to prevent data corruption
+	 * Push dirty bytes outside the range into the outer cache before its
+	 * partial-line clean-invalidate. Cleaning L1 afterwards would repopulate
+	 * L2 with dirty edge data after the outer maintenance had completed.
 	 */
-	if (end_addr & (line_size - 1)) {
-		end_addr &= ~(line_size - 1);
-		L1C_CleanInvalidateDCacheMVA((void *)end_addr);
+	if (first != addr) {
+		L1C_CleanDCacheMVA((void *)first);
 	}
 
-	if (addr & (line_size - 1)) {
-		addr &= ~(line_size - 1);
-		if (addr == end_addr) {
-			goto done;
-		}
-		L1C_CleanInvalidateDCacheMVA((void *)addr);
-		addr += line_size;
+	if (last != end_addr && (last != first || first == addr)) {
+		L1C_CleanDCacheMVA((void *)last);
 	}
+	barrier_dsync_fence_full();
 
-	/* Align address to line size */
-	addr &= ~(line_size - 1);
+	outer_cache_invd_range(start_addr, size);
 
-	while (addr < end_addr) {
+	/* The edges are already clean; no inner writeback may follow L2 invalidation. */
+	for (addr = first; addr < end_addr; addr += line_size) {
 		L1C_InvalidateDCacheMVA((void *)addr);
-		addr += line_size;
 	}
+	barrier_dsync_fence_full();
 
-done:
 	return 0;
 }
 
