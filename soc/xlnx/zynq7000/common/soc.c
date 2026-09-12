@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/cache.h>
 #include <string.h>
 
 #include <zephyr/arch/cpu.h>
@@ -144,6 +145,38 @@ void soc_early_init_hook(void)
 	       __ocm_data_end - __ocm_data_start);
 #endif
 }
+
+#ifdef CONFIG_SMP
+/*
+ * The secondary core reaches this hook with the MMU and L1 caches already on
+ * (arch_secondary_cpu_init) but ACTLR.SMP still clear: soc_reset_hook only
+ * runs on the boot path of the primary core. With SMP clear a Cortex-A9
+ * treats every Shareable Normal access as non-cacheable, so the whole kernel
+ * RAM is uncached for that core (silicon 2026-09-10: 25 CPU cycles per byte
+ * for a memset on CPU 1). Switch the data cache off, set SMP, switch it on.
+ */
+void soc_per_core_init_hook(void)
+{
+	if ((__get_ACTLR() & ACTLR_SMP_Msk) == 0U) {
+		sys_cache_data_disable();
+		zynq_enable_smp_mode();
+		sys_cache_data_enable();
+	}
+
+	/*
+	 * Program-flow prediction (SCTLR.Z) resets to off and nothing in the
+	 * boot path turns it on, so every taken branch flushes the pipeline:
+	 * silicon 2026-09-10 measured 14 CPU cycles per load in a cache-hit
+	 * loop and 68 us for a 2 KiB memset on both cores.
+	 */
+	uint32_t sctlr = __get_SCTLR();
+
+	if ((sctlr & SCTLR_Z_Msk) == 0U) {
+		__set_SCTLR(sctlr | SCTLR_Z_Msk);
+		barrier_isync_fence_full();
+	}
+}
+#endif /* CONFIG_SMP */
 
 /* Platform-specific early initialization */
 
