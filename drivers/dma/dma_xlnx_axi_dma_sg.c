@@ -20,6 +20,7 @@
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/cache.h>
+#include <zephyr/arch/cache.h>
 #include <zephyr/sys/atomic.h>
 #include <string.h>
 
@@ -245,6 +246,7 @@ struct dma_xlnx_sg_cfg {
 	uint32_t sg_len_mask; /* (1 << sg_length_width) - 1 */
 	uint8_t sg_cache;     /* AxCACHE for M_AXI_SG transactions */
 	bool rx_invalidate_in_isr;
+	bool rx_outer_nocache;
 };
 
 /* --------------------------------------------------------------------------
@@ -307,6 +309,25 @@ static inline void cache_invd(void *addr, size_t len)
 #if !IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)
 	sys_cache_data_invd_range(addr, len);
 #endif
+}
+
+/* The DT attribute describes the CPU mapping, not DMA bus attributes. */
+static int rx_payload_invd(const struct device *dev, void *addr, size_t len)
+{
+	if (len == 0U || IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)) {
+		return 0;
+	}
+	if (DEV_CFG(dev)->rx_outer_nocache) {
+#if defined(CONFIG_DCACHE)
+		int ret = arch_dcache_invd_range(addr, len);
+
+		barrier_dsync_fence_full();
+		return ret;
+#else
+		return 0;
+#endif
+	}
+	return sys_cache_data_invd_range(addr, len);
 }
 
 /* Non-cacheable rings still require ordering before publishing to the engine. */
@@ -837,7 +858,13 @@ static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
 		total_bytes += bytes;
 		ch->consumer_idx = i + 1U;
 		if (DEV_CFG(dev)->rx_invalidate_in_isr) {
-			cache_invd((void *)(virt_base + (uintptr_t)i * ch->bd_buf_bytes), bytes);
+			int ret = rx_payload_invd(
+				dev, (void *)(virt_base + (uintptr_t)i * ch->bd_buf_bytes), bytes);
+
+			if (ret != 0) {
+				ch->error = true;
+				break;
+			}
 		}
 	}
 	ch->last_rx_bytes = total_bytes;
@@ -1438,7 +1465,11 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 	 * before the driver hands the BDs back to the engine.
 	 */
 	if (ch->rx_base_phys == 0U) {
-		cache_invd(window_buf, window_bytes);
+		int ret = rx_payload_invd(dev, window_buf, window_bytes);
+
+		if (ret != 0) {
+			return ret;
+		}
 	} else {
 		window_buf = NULL;
 	}
@@ -1721,11 +1752,8 @@ int dma_xlnx_sg_rx_invalidate(const struct device *dev, size_t offset, size_t le
 	}
 	while (len > 0U) {
 		size_t slice = MIN(len, RX_INVALIDATE_SLICE - addr % RX_INVALIDATE_SLICE);
-		int ret = 0;
+		int ret = rx_payload_invd(dev, (void *)addr, slice);
 
-		if (!IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)) {
-			ret = sys_cache_data_invd_range((void *)addr, slice);
-		}
 		if (ret != 0) {
 			return ret;
 		}
@@ -1851,6 +1879,7 @@ static int dma_xlnx_sg_init(const struct device *dev)
 		.tx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, tx_buf),                             \
 		.rx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, rx_buf),                             \
 		.sg_len_mask = SG_LEN_MASK(DT_INST_PROP_OR(inst, xlnx_sg_length_width, 14)),       \
+		.rx_outer_nocache = DT_INST_PROP(inst, xlnx_rx_outer_noncacheable),               \
 		.rx_invalidate_in_isr =                                                        \
 			IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_RX_INVALIDATE_IN_ISR),               \
 		.sg_cache = (uint8_t)DT_INST_PROP_OR(inst, xlnx_sg_cache, 0x3),                    \
@@ -1876,6 +1905,10 @@ static int dma_xlnx_sg_init(const struct device *dev)
 			},                                                                         \
 	};                                                                                         \
                                                                                                    \
+	BUILD_ASSERT(!DT_INST_PROP(inst, xlnx_rx_outer_noncacheable) ||                      \
+		     IS_ENABLED(CONFIG_CPU_AARCH32_CORTEX_A),                                  \
+		     "L1-only RX invalidation requires Cortex-A cache operations");            \
+	                                                                                  \
 	BUILD_ASSERT(DT_INST_PROP(inst, xlnx_addrwidth) == 32,                                     \
 		     "xlnx,axi-dma-sg: only 32-bit addressing supported");                         \
                                                                                                    \

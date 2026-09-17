@@ -7,15 +7,21 @@
 #include <zephyr/drivers/interrupt_controller/gic.h>
 #include <zephyr/drivers/dma/dma_xlnx_axi_dma_sg.h>
 #include <zephyr/irq.h>
+#include <zephyr/irq_offload.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/cache.h>
+#include <zephyr/arch/cache.h>
 #include <zephyr/sys/device_mmio.h>
 
 #define CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_RX_BD 64
 #define CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_THRESHOLD 1
 #define CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT 16
+
+int dma_test_outer_invalidate(void *addr, size_t size);
+uint32_t dma_test_outer_writes(void);
+static bool probe_outer;
 
 static uint32_t regs[32];
 static unsigned int resets;
@@ -43,6 +49,16 @@ static struct {
 	size_t size;
 } invd_log[8193];
 static unsigned int invd_count;
+static int invd_error;
+static uint32_t l1_invd_count;
+
+static int __unused test_l1_invd(void *addr, size_t size)
+{
+	ARG_UNUSED(addr);
+	ARG_UNUSED(size);
+	l1_invd_count++;
+	return 0;
+}
 
 static int test_cache_invd(void *addr, size_t size)
 {
@@ -51,7 +67,8 @@ static int test_cache_invd(void *addr, size_t size)
 		invd_log[invd_count].size = size;
 	}
 	invd_count++;
-	return 0;
+	return invd_error != 0 ? invd_error
+			       : (probe_outer ? dma_test_outer_invalidate(addr, size) : 0);
 }
 
 static bool invd_logged(uintptr_t addr, size_t size)
@@ -112,6 +129,10 @@ static void test_write32(uint32_t value, mem_addr_t addr)
 /* Exercise production ring/state logic without hardware or cache access. */
 #define sys_cache_data_flush_range test_cache_range
 #define sys_cache_data_invd_range  test_cache_invd
+#define arch_dcache_invd_range test_l1_invd
+#ifndef CONFIG_DCACHE
+#define CONFIG_DCACHE 1
+#endif
 #include "../../../../../drivers/dma/dma_xlnx_axi_dma_sg.c"
 
 static struct xlnx_sg_bd bds[8];
@@ -1439,22 +1460,23 @@ ZTEST(xlnx_finite_rx, test_delegated_isr_has_no_cache_operations)
 	struct dma_xlnx_sg_cfg cfg = finite_config;
 	struct device device = finite_dev;
 	const uint32_t counts[] = {128U, 1024U, 2048U};
+	const uint32_t sizes[] = {8192U, 256U, 32U};
 
 	cfg.rx_invalidate_in_isr = false;
 	device.config = &cfg;
 	for (uint32_t n = 0U; n < ARRAY_SIZE(counts); n++) {
 		finite_setup(counts[n]);
 		finite_data.ch[CH_RX].bds_nocache = true;
-		finite_data.ch[CH_RX].bd_buf_bytes = 8192U;
+		finite_data.ch[CH_RX].bd_buf_bytes = sizes[n];
 		for (uint32_t i = 0U; i < counts[n]; i++) {
-			finite_bds[i].status = BD_STS_CMPLT | 8192U;
+			finite_bds[i].status = BD_STS_CMPLT | sizes[n];
 		}
 		invd_count = 0U;
 		regs[0x34U / 4U] = DMASR_IOC_IRQ;
 		dma_xlnx_sg_rx_isr(&device);
 		zassert_equal(invd_count, 0U);
 		zassert_equal(callbacks, 1U);
-		zassert_equal(callback_bytes, counts[n] * 8192U);
+		zassert_equal(callback_bytes, counts[n] * sizes[n]);
 	}
 }
 
@@ -1482,6 +1504,10 @@ ZTEST(xlnx_finite_rx, test_consumer_invalidation_slices)
 		zassert_equal(length, 0U);
 	}
 	invd_count = 0U;
+	zassert_ok(dma_xlnx_sg_rx_invalidate(&finite_dev, 0U, 1U));
+	zassert_equal(invd_count, 1U);
+	zassert_equal(invd_log[0].size, 1U);
+	invd_count = 0U;
 	zassert_ok(dma_xlnx_sg_rx_invalidate(&finite_dev, sizeof(finite_buf), 0U));
 	zassert_equal(invd_count, 0U);
 	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, sizeof(finite_buf), 1U), -EINVAL);
@@ -1489,4 +1515,48 @@ ZTEST(xlnx_finite_rx, test_consumer_invalidation_slices)
 	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, 1U, SIZE_MAX), -EINVAL);
 	finite_data.ch[CH_RX].cyclic = true;
 	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, 0U, 32U), -EBUSY);
+}
+
+ZTEST(xlnx_finite_rx, test_outer_noncacheable_uses_l1_only)
+{
+	struct dma_xlnx_sg_cfg cfg = finite_config;
+	struct device device = finite_dev;
+
+	finite_setup(128U);
+	probe_outer = true;
+	(void)dma_test_outer_writes();
+	cfg.rx_outer_nocache = true;
+	device.config = &cfg;
+	invd_count = 0U;
+	l1_invd_count = 0U;
+	zassert_ok(dma_xlnx_sg_rx_invalidate(&device, 0U, sizeof(finite_buf)));
+	zassert_true(l1_invd_count > 0U);
+	zassert_equal(invd_count, 0U);
+	zassert_equal(dma_test_outer_writes(), 0U);
+	cfg.rx_outer_nocache = false;
+	invd_count = 0U;
+	l1_invd_count = 0U;
+	zassert_ok(dma_xlnx_sg_rx_invalidate(&device, 0U, sizeof(finite_buf)));
+	zassert_equal(l1_invd_count, 0U);
+	zassert_true(invd_count > 0U);
+	zassert_true(dma_test_outer_writes() > 0U);
+	probe_outer = false;
+}
+
+static void consumer_in_isr(const void *unused)
+{
+	ARG_UNUSED(unused);
+	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, 0U, 32U), -EWOULDBLOCK);
+}
+
+ZTEST(xlnx_finite_rx, test_consumer_context_and_cache_error)
+{
+	finite_setup(128U);
+	invd_count = 0U;
+	irq_offload(consumer_in_isr, NULL);
+	zassert_equal(invd_count, 0U);
+	invd_error = -EIO;
+	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, 0U, sizeof(finite_buf)), -EIO);
+	zassert_equal(invd_count, 1U);
+	invd_error = 0;
 }
