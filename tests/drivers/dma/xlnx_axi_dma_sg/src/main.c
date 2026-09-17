@@ -121,6 +121,7 @@ static const struct dma_xlnx_sg_cfg config = {
 	.rx_buf_phys = (uintptr_t)rx_buffer,
 	.rx_buf_size = 4096,
 	.sg_len_mask = 0x3fff,
+	.rx_invalidate_in_isr = true,
 };
 static const struct device dev = {.data = &data, .config = &config};
 static unsigned int callbacks;
@@ -386,6 +387,7 @@ static const struct dma_xlnx_sg_cfg stream_config = {
 	.rx_buf_phys = (uintptr_t)stream_buf,
 	.rx_buf_size = sizeof(stream_buf),
 	.sg_len_mask = 0x3fff,
+	.rx_invalidate_in_isr = true,
 };
 static struct dma_xlnx_sg_data stream_data;
 static const struct device stream_dev = {.data = &stream_data, .config = &stream_config};
@@ -969,6 +971,7 @@ static const struct dma_xlnx_sg_cfg finite_config = {
 	.rx_buf_phys = (uintptr_t)finite_buf,
 	.rx_buf_size = sizeof(finite_buf),
 	.sg_len_mask = 0x3fff,
+	.rx_invalidate_in_isr = true,
 };
 static const struct device finite_dev = {.data = &finite_data, .config = &finite_config};
 
@@ -1429,4 +1432,61 @@ ZTEST(xlnx_finite_rx, test_nocache_descriptor_operations)
 	finite_data.ch[CH_TX].bds_nocache = false;
 	zassert_ok(build_bd_ring(&finite_dev, CH_TX));
 	zassert_equal(flush_count, 1U);
+}
+
+ZTEST(xlnx_finite_rx, test_delegated_isr_has_no_cache_operations)
+{
+	struct dma_xlnx_sg_cfg cfg = finite_config;
+	struct device device = finite_dev;
+	const uint32_t counts[] = {128U, 1024U, 2048U};
+
+	cfg.rx_invalidate_in_isr = false;
+	device.config = &cfg;
+	for (uint32_t n = 0U; n < ARRAY_SIZE(counts); n++) {
+		finite_setup(counts[n]);
+		finite_data.ch[CH_RX].bds_nocache = true;
+		finite_data.ch[CH_RX].bd_buf_bytes = 8192U;
+		for (uint32_t i = 0U; i < counts[n]; i++) {
+			finite_bds[i].status = BD_STS_CMPLT | 8192U;
+		}
+		invd_count = 0U;
+		regs[0x34U / 4U] = DMASR_IOC_IRQ;
+		dma_xlnx_sg_rx_isr(&device);
+		zassert_equal(invd_count, 0U);
+		zassert_equal(callbacks, 1U);
+		zassert_equal(callback_bytes, counts[n] * 8192U);
+	}
+}
+
+ZTEST(xlnx_finite_rx, test_consumer_invalidation_slices)
+{
+	const size_t offsets[] = {0U, 1U, 31U, 1023U};
+
+	finite_setup(128U);
+	for (uint32_t n = 0U; n < ARRAY_SIZE(offsets); n++) {
+		size_t length = sizeof(finite_buf) - offsets[n];
+		uintptr_t next = (uintptr_t)finite_buf + offsets[n];
+
+		invd_count = 0U;
+		zassert_ok(dma_xlnx_sg_rx_invalidate(&finite_dev, offsets[n], length));
+		zassert_true(invd_count > 1U);
+		for (uint32_t i = 0U; i < invd_count; i++) {
+			zassert_equal(invd_log[i].addr, next);
+			zassert_true(invd_log[i].size > 0U && invd_log[i].size <= 1024U);
+			length -= invd_log[i].size;
+			next += invd_log[i].size;
+			if (i + 1U < invd_count) {
+				zassert_equal(next % 1024U, 0U);
+			}
+		}
+		zassert_equal(length, 0U);
+	}
+	invd_count = 0U;
+	zassert_ok(dma_xlnx_sg_rx_invalidate(&finite_dev, sizeof(finite_buf), 0U));
+	zassert_equal(invd_count, 0U);
+	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, sizeof(finite_buf), 1U), -EINVAL);
+	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, SIZE_MAX, 1U), -EINVAL);
+	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, 1U, SIZE_MAX), -EINVAL);
+	finite_data.ch[CH_RX].cyclic = true;
+	zassert_equal(dma_xlnx_sg_rx_invalidate(&finite_dev, 0U, 32U), -EBUSY);
 }

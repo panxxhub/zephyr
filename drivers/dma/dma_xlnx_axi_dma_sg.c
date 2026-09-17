@@ -244,6 +244,7 @@ struct dma_xlnx_sg_cfg {
 	size_t rx_buf_size;
 	uint32_t sg_len_mask; /* (1 << sg_length_width) - 1 */
 	uint8_t sg_cache;     /* AxCACHE for M_AXI_SG transactions */
+	bool rx_invalidate_in_isr;
 };
 
 /* --------------------------------------------------------------------------
@@ -817,7 +818,7 @@ static void dma_xlnx_sg_tx_isr(const struct device *dev)
 	}
 }
 
-/* Stop at the first incomplete BD and publish bytes after payload invalidation. */
+/* Stop at the first incomplete BD and accumulate each completed length once. */
 static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
@@ -835,7 +836,9 @@ static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
 
 		total_bytes += bytes;
 		ch->consumer_idx = i + 1U;
-		cache_invd((void *)(virt_base + (uintptr_t)i * ch->bd_buf_bytes), bytes);
+		if (DEV_CFG(dev)->rx_invalidate_in_isr) {
+			cache_invd((void *)(virt_base + (uintptr_t)i * ch->bd_buf_bytes), bytes);
+		}
 	}
 	ch->last_rx_bytes = total_bytes;
 }
@@ -1692,6 +1695,46 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_ap
 /* --------------------------------------------------------------------------
  * Get byte count from last completed RX transfer
  * -------------------------------------------------------------------------- */
+/* Bound each cache operation to 32 Cortex-A9 cache lines. Align internal
+ * boundaries so successive slices never maintain the same line twice.
+ */
+#define RX_INVALIDATE_SLICE 1024U
+
+int dma_xlnx_sg_rx_invalidate(const struct device *dev, size_t offset, size_t len)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	size_t capacity = buf_size(dev, CH_RX);
+	uintptr_t addr = buf_virt(dev, CH_RX);
+
+	if (k_is_in_isr()) {
+		return -EWOULDBLOCK;
+	}
+	if (data->ch[CH_RX].cyclic) {
+		return -EBUSY;
+	}
+	if (offset > capacity || len > capacity - offset || offset > UINTPTR_MAX - addr) {
+		return -EINVAL;
+	}
+	addr += offset;
+	if (len > UINTPTR_MAX - addr) {
+		return -EINVAL;
+	}
+	while (len > 0U) {
+		size_t slice = MIN(len, RX_INVALIDATE_SLICE - addr % RX_INVALIDATE_SLICE);
+		int ret = 0;
+
+		if (!IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)) {
+			ret = sys_cache_data_invd_range((void *)addr, slice);
+		}
+		if (ret != 0) {
+			return ret;
+		}
+		addr += slice;
+		len -= slice;
+	}
+	return 0;
+}
+
 uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
@@ -1808,6 +1851,8 @@ static int dma_xlnx_sg_init(const struct device *dev)
 		.tx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, tx_buf),                             \
 		.rx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, rx_buf),                             \
 		.sg_len_mask = SG_LEN_MASK(DT_INST_PROP_OR(inst, xlnx_sg_length_width, 14)),       \
+		.rx_invalidate_in_isr =                                                        \
+			IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_RX_INVALIDATE_IN_ISR),               \
 		.sg_cache = (uint8_t)DT_INST_PROP_OR(inst, xlnx_sg_cache, 0x3),                    \
 	};                                                                                         \
                                                                                                    \
