@@ -309,6 +309,12 @@ static ALWAYS_INLINE bool z_sched_wake(_wait_q_t *wait_q, int swap_retval, void 
 	return ret;
 }
 
+#ifdef CONFIG_SCHED_IRQ_EXIT_FASTPATH
+/* Local IRQs must be masked; only outermost architecture IRQ exit calls these. */
+bool z_sched_irq_exit_can_idle(void);
+void *z_irq_exit_switch_handle(void *interrupted);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
