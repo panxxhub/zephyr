@@ -183,6 +183,11 @@ _idle_state_cleared:
 #endif /* !CONFIG_ARM_CUSTOM_INTERRUPT_CONTROLLER */
 	push {r0, r1}
 
+#ifdef CONFIG_ARM_GIC_DECODE_IAR
+	/* Keep the raw acknowledge on the stack for EOI; dispatch only INTID. */
+	ubfx r0, r0, #0, #10
+#endif
+
 #ifdef CONFIG_ARM_TRACK_ACTIVE_IRQ
 	/*
 	 * Publish the acknowledged INTID for arch_irq_get_active(). The value
@@ -368,6 +373,11 @@ _idle_state_cleared:
 #endif /* !CONFIG_ARM_CUSTOM_INTERRUPT_CONTROLLER */
 
 	push {r0, r1}
+
+#ifdef CONFIG_ARM_GIC_DECODE_IAR
+	/* Keep the raw acknowledge on the stack for EOI; dispatch only INTID. */
+	ubfx r0, r0, #0, #10
+#endif
 
 #ifdef CONFIG_ARM_TRACK_ACTIVE_IRQ
 	/*

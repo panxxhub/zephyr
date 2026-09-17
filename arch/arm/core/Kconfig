@@ -100,11 +100,21 @@ config ARM_TRACK_ACTIVE_IRQ
 	  on every interrupt entry and exit. Works with both the GIC and a
 	  custom interrupt controller.
 
+config ARM_GIC_DECODE_IAR
+	bool
+	depends on GIC && GIC_VER < 3
+	depends on CPU_AARCH32_CORTEX_A || CPU_AARCH32_CORTEX_R
+	help
+	  Separate the GICv1/v2 INTID from SGI source-CPU bits for interrupt
+	  dispatch and tracking. Keep the complete acknowledge value on the
+	  stack for end-of-interrupt, including across nested interrupts.
+
 config ARM_TRACING_IRQ
 	bool "Expose the active IRQ to ISR tracing hooks"
 	depends on CPU_AARCH32_CORTEX_A || CPU_AARCH32_CORTEX_R
 	depends on TRACING_ISR
 	select ARM_TRACK_ACTIVE_IRQ
+	select ARM_GIC_DECODE_IAR if GIC && GIC_VER < 3
 	help
 	  Call the ISR enter hook after publishing the acknowledged interrupt
 	  and the exit hook before restoring the preempted interrupt. Hooks
