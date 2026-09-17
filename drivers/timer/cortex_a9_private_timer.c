@@ -229,7 +229,7 @@ static void private_timer_isr(const void *arg)
 
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		/* Periodic mode: auto-reload keeps running. */
-	} else {
+	} else if (!IS_ENABLED(CONFIG_TIMEOUT_ANNOUNCE_CPU0)) {
 		/*
 		 * Tickless: re-arm with a one-tick fallback.
 		 *
@@ -249,6 +249,7 @@ static void private_timer_isr(const void *arg)
 		pt_set_oneshot(CYC_PER_TICK);
 	}
 
+	/* With one announcing CPU, announce always reprograms this timer before return. */
 	sys_clock_announce_locked(dticks, key);
 }
 

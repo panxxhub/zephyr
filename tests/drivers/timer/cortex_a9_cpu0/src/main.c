@@ -5,7 +5,10 @@
 #include <zephyr/ztest.h>
 #include <zephyr/drivers/timer/system_timer.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/sys/device_mmio.h>
 
+static mm_reg_t timer_base;
+static atomic_t fallback_rearms;
 static atomic_t timer_irqs[2];
 static atomic_t announces[2];
 static atomic_t handlers[2];
@@ -23,6 +26,10 @@ void __real_sys_clock_announce_locked(uint32_t ticks, k_spinlock_key_t key);
 void __wrap_sys_clock_announce_locked(uint32_t ticks, k_spinlock_key_t key)
 {
 	atomic_inc(&announces[arch_curr_cpu()->id]);
+	if (timer_base != 0U && IS_ENABLED(CONFIG_TICKLESS_KERNEL) &&
+	    IS_ENABLED(CONFIG_TIMEOUT_ANNOUNCE_CPU0) && sys_read32(timer_base + 4U) != 0U) {
+		atomic_inc(&fallback_rearms);
+	}
 	__real_sys_clock_announce_locked(ticks, key);
 }
 
@@ -178,4 +185,17 @@ ZTEST(cpu0_timer, test_timeslicing)
 }
 #endif
 
-ZTEST_SUITE(cpu0_timer, NULL, NULL, NULL, NULL, NULL);
+static void *setup(void)
+{
+	device_map(&timer_base, DT_REG_ADDR(DT_NODELABEL(private_timer)),
+		   DT_REG_SIZE(DT_NODELABEL(private_timer)), K_MEM_CACHE_NONE);
+	return NULL;
+}
+
+ZTEST(cpu0_timer, test_no_tickless_fallback)
+{
+	k_sleep(K_MSEC(5));
+	zassert_equal(atomic_get(&fallback_rearms), 0, "fallback rearmed before announce");
+}
+
+ZTEST_SUITE(cpu0_timer, NULL, setup, NULL, NULL, NULL);

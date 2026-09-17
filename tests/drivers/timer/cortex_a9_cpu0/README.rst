@@ -67,6 +67,14 @@ instrumentation and idle hooks, such as runtime statistics and CPU load,
 retain their required instrumentation. Keep ``CONFIG_IPI_OPTIMIZE=y`` to avoid
 unrelated scheduler broadcasts; the timeout policy does not suppress them.
 
+With only CPU 0 announcing, every timer ISR completes the announce loop and
+reprograms its own timer. The one-tick fallback reload is therefore omitted in
+this mode. The ordinary SMP fallback is retained: its early-return path can
+otherwise leave a CPU's one-shot timer stopped while another CPU finishes the
+announce loop. A register-level QEMU assertion checks that the expired counter
+has not already been reloaded when the announce wrapper is entered; restoring
+the fallback makes it fail.
+
 All new policy and IRQ-aware placement options default off. Existing tracing
 categories retain their default-on behavior. Firmware repinning and census
 consumption are separate changes.
