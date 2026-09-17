@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+common:
+  tags:
+    - timer
+    - kernel
+    - smp
+  platform_allow:
+    - qemu_cortex_a9
+  integration_platforms:
+    - qemu_cortex_a9
+  timeout: 30
+tests:
+  drivers.timer.cortex_a9.cpu0:
+    extra_configs:
+      - CONFIG_TIMEOUT_ANNOUNCE_CPU0=y
+  drivers.timer.cortex_a9.all_cpus: {}
+  drivers.timer.cortex_a9.cpu0.periodic:
+    extra_configs:
+      - CONFIG_TIMEOUT_ANNOUNCE_CPU0=y
+      - CONFIG_TICKLESS_KERNEL=n
+  drivers.timer.cortex_a9.cpu0.no_timeslicing:
+    extra_configs:
+      - CONFIG_TIMEOUT_ANNOUNCE_CPU0=y
+      - CONFIG_TIMESLICING=n
+  drivers.timer.cortex_a9.cpu0.no_tracing:
+    extra_configs:
+      - CONFIG_TIMEOUT_ANNOUNCE_CPU0=y
+      - CONFIG_TRACING=n
+      - CONFIG_TRACING_USER=n
+      - CONFIG_TRACING_ISR=n
+      - CONFIG_ARM_TRACING_IRQ=n

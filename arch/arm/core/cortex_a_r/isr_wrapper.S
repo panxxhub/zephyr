@@ -146,7 +146,7 @@ _vfp_not_enabled:
 	add r0, r0, #1
 	str r0, [r2, #___cpu_t_nested_OFFSET]
 
-#ifdef CONFIG_TRACING_ISR
+#if defined(CONFIG_TRACING_ISR) && !defined(CONFIG_ARM_TRACING_IRQ)
 	bl sys_trace_isr_enter
 #endif
 
@@ -183,6 +183,11 @@ _idle_state_cleared:
 #endif /* !CONFIG_ARM_CUSTOM_INTERRUPT_CONTROLLER */
 	push {r0, r1}
 
+#ifdef CONFIG_ARM_GIC_DECODE_IAR
+	/* Keep the raw acknowledge on the stack for EOI; dispatch only INTID. */
+	ubfx r0, r0, #0, #10
+#endif
+
 #ifdef CONFIG_ARM_TRACK_ACTIVE_IRQ
 	/*
 	 * Publish the acknowledged INTID for arch_irq_get_active(). The value
@@ -198,6 +203,13 @@ _idle_state_cleared:
 	str r3, [r2, #_cpu_offset_to_active_irq]
 	push {r1, r2}
 #endif /* CONFIG_ARM_TRACK_ACTIVE_IRQ */
+
+#ifdef CONFIG_ARM_TRACING_IRQ
+	/* Preserve the acknowledged IRQ across the tracing call. */
+	push {r0, r1}
+	bl sys_trace_isr_enter
+	pop {r0, r1}
+#endif
 
 #if CONFIG_GIC_VER >= 3
 	/*
@@ -246,6 +258,10 @@ oob:
 	cpsid i
 
 spurious_continue:
+#ifdef CONFIG_ARM_TRACING_IRQ
+	/* Keep this nesting level published until its exit hook completes. */
+	bl sys_trace_isr_exit
+#endif
 #ifdef CONFIG_ARM_TRACK_ACTIVE_IRQ
 	/* Unwind the published active INTID to the preempted context's */
 	pop {r1, r2}
@@ -260,7 +276,7 @@ spurious_continue:
 	bl z_soc_irq_eoi
 #endif /* !CONFIG_ARM_CUSTOM_INTERRUPT_CONTROLLER */
 
-#ifdef CONFIG_TRACING_ISR
+#if defined(CONFIG_TRACING_ISR) && !defined(CONFIG_ARM_TRACING_IRQ)
 	bl sys_trace_isr_exit
 #endif
 
@@ -321,7 +337,7 @@ SECTION_FUNC(TEXT, _isr_wrapper)
 	sub sp, sp, r3
 	push {r0, r3}
 
-#ifdef CONFIG_TRACING_ISR
+#if defined(CONFIG_TRACING_ISR) && !defined(CONFIG_ARM_TRACING_IRQ)
 	bl sys_trace_isr_enter
 #endif /* CONFIG_TRACING_ISR */
 
@@ -358,6 +374,11 @@ _idle_state_cleared:
 
 	push {r0, r1}
 
+#ifdef CONFIG_ARM_GIC_DECODE_IAR
+	/* Keep the raw acknowledge on the stack for EOI; dispatch only INTID. */
+	ubfx r0, r0, #0, #10
+#endif
+
 #ifdef CONFIG_ARM_TRACK_ACTIVE_IRQ
 	/*
 	 * Publish the acknowledged INTID for arch_irq_get_active(). See the
@@ -369,6 +390,13 @@ _idle_state_cleared:
 	str r3, [r2, #_cpu_offset_to_active_irq]
 	push {r1, r2}
 #endif /* CONFIG_ARM_TRACK_ACTIVE_IRQ */
+
+#ifdef CONFIG_ARM_TRACING_IRQ
+	/* Preserve the acknowledged IRQ across the tracing call. */
+	push {r0, r1}
+	bl sys_trace_isr_enter
+	pop {r0, r1}
+#endif
 
 #if CONFIG_GIC_VER >= 3
 	/*
@@ -407,6 +435,10 @@ oob:
 	cpsid i
 
 spurious_continue:
+#ifdef CONFIG_ARM_TRACING_IRQ
+	/* Keep this nesting level published until its exit hook completes. */
+	bl sys_trace_isr_exit
+#endif
 #ifdef CONFIG_ARM_TRACK_ACTIVE_IRQ
 	/* Unwind the published active INTID to the preempted context's */
 	pop {r1, r2}
@@ -421,7 +453,7 @@ spurious_continue:
 	bl z_soc_irq_eoi
 #endif /* !CONFIG_ARM_CUSTOM_INTERRUPT_CONTROLLER */
 
-#ifdef CONFIG_TRACING_ISR
+#if defined(CONFIG_TRACING_ISR) && !defined(CONFIG_ARM_TRACING_IRQ)
 	bl sys_trace_isr_exit
 #endif
 

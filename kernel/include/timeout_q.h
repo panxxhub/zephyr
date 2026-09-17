@@ -166,6 +166,9 @@ static inline k_ticks_t z_add_thread_timeout(struct k_thread *thread, k_timeout_
 
 #endif /* CONFIG_SYS_CLOCK_EXISTS */
 
+/* Re-evaluate the global deadline on the announcing CPU after a remote request. */
+void z_timeout_reprogram(void);
+
 #ifdef __cplusplus
 }
 #endif

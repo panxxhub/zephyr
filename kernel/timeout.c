@@ -173,6 +173,22 @@ static void reprogram_next(uint32_t ticks_elapsed)
 	}
 }
 
+#ifdef CONFIG_TIMEOUT_ANNOUNCE_CPU0
+void z_timeout_reprogram(void)
+{
+	if (arch_curr_cpu()->id != 0U) {
+		return;
+	}
+
+	K_SPINLOCK(&timeout_lock) {
+		/* An interrupted announce loop will reprogram when it completes. */
+		if (!any_cpu_announcing()) {
+			reprogram_next(elapsed());
+		}
+	}
+}
+#endif
+
 k_ticks_t z_add_timeout(struct _timeout *to, _timeout_func_t fn, k_timeout_t timeout)
 {
 	k_ticks_t ticks = 0;
