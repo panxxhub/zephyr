@@ -1350,9 +1350,9 @@ void z_thread_mark_switched_in(void)
 	z_sched_usage_start(_current);
 #endif /* CONFIG_SCHED_THREAD_USAGE && !CONFIG_USE_SWITCH */
 
-#ifdef CONFIG_TRACING
+#ifdef CONFIG_TRACING_THREAD
 	SYS_PORT_TRACING_FUNC(k_thread, switched_in);
-#endif /* CONFIG_TRACING */
+#endif /* CONFIG_TRACING_THREAD */
 }
 
 void z_thread_mark_switched_out(void)
@@ -1361,7 +1361,7 @@ void z_thread_mark_switched_out(void)
 	z_sched_usage_stop();
 #endif /*CONFIG_SCHED_THREAD_USAGE && !CONFIG_USE_SWITCH */
 
-#ifdef CONFIG_TRACING
+#ifdef CONFIG_TRACING_THREAD
 #ifdef CONFIG_THREAD_LOCAL_STORAGE
 	/* Dummy thread won't have TLS set up to run arbitrary code */
 	if (!_current ||
@@ -1370,7 +1370,7 @@ void z_thread_mark_switched_out(void)
 	}
 #endif /* CONFIG_THREAD_LOCAL_STORAGE */
 	SYS_PORT_TRACING_FUNC(k_thread, switched_out);
-#endif /* CONFIG_TRACING */
+#endif /* CONFIG_TRACING_THREAD */
 }
 #endif /* CONFIG_INSTRUMENT_THREAD_SWITCHING */
 

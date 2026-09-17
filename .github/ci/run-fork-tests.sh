@@ -23,3 +23,10 @@ done
 python3 scripts/twister -p qemu_cortex_a9 \
   -T tests/drivers/ethernet/xlnx_gem_filter \
   --build-only --inline-logs --post-build-checks -O twister-out/gem
+
+python3 scripts/twister -p qemu_cortex_a9 \
+  -T tests/arch/arm/irq_trace --inline-logs --post-build-checks \
+  -O twister-out/irq-trace
+while IFS= read -r elf; do
+  python3 tests/subsys/tracing/call_sites/check.py "${elf%/zephyr/zephyr.elf}"
+done < <(find twister-out/irq-trace -name zephyr.elf)

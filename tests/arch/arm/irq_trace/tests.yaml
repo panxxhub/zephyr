@@ -16,3 +16,13 @@ tests:
     extra_configs:
       - CONFIG_USE_SWITCH=y
       - CONFIG_FPU_SHARING=n
+  arch.arm.irq_trace.isr_only:
+    extra_configs:
+      - CONFIG_TRACING_THREAD=n
+      - CONFIG_TRACING_IDLE=n
+  arch.arm.irq_trace.isr_only.switch:
+    extra_configs:
+      - CONFIG_USE_SWITCH=y
+      - CONFIG_FPU_SHARING=n
+      - CONFIG_TRACING_THREAD=n
+      - CONFIG_TRACING_IDLE=n
