@@ -16,3 +16,20 @@ config CORTEX_A9_PRIVATE_TIMER
 	  and the 64-bit SCU Global Timer counter for cycle counting.
 	  This avoids the Global Timer compare-register contention that
 	  breaks SMP + tickless mode on Cortex-A9.
+
+config TIMEOUT_ANNOUNCE_CPU0
+	bool "Announce timeouts only on CPU 0"
+	depends on CORTEX_A9_PRIVATE_TIMER && SMP && SCHED_IPI_SUPPORTED
+	depends on ARCH_HAS_DIRECTED_IPIS
+	select ARM_GIC_DECODE_IAR if GIC_VER < 3
+	help
+	  Keep secondary CPUs' private timers disabled. Only CPU 0 advances
+	  kernel time and executes timeout callbacks. A new earliest timeout
+	  on another CPU sends a scheduler IPI to CPU 0 to reprogram its timer.
+	  CPU 0 must remain online. Tickless operation on CPU 0 is preserved.
+
+	  Timed waits on secondary CPUs still wake through scheduler IPIs.
+	  Timeslices also expire on CPU 0 and request an IPI to the sliced CPU;
+	  they do not require a local timer. Busy waits and cycle reads use
+	  the shared global counter and are unaffected. A secondary CPU with
+	  no timed work needs no timer interrupts.

@@ -8,6 +8,7 @@
 #include <kswap.h>
 #include <ksched.h>
 #include <ipi.h>
+#include <timeout_q.h>
 
 #if defined(CONFIG_IPI_OPTIMIZE_IDLE) && defined(CONFIG_PM)
 #include <zephyr/pm/pm.h>
@@ -345,6 +346,10 @@ void z_sched_ipi(void)
 #ifdef CONFIG_TRACE_SCHED_IPI
 	z_trace_sched_ipi();
 #endif /* CONFIG_TRACE_SCHED_IPI */
+
+#ifdef CONFIG_TIMEOUT_ANNOUNCE_CPU0
+	z_timeout_reprogram();
+#endif
 
 #ifdef CONFIG_TIMESLICING
 	z_time_slice();

@@ -209,6 +209,12 @@ static void private_timer_isr(const void *arg)
 {
 	ARG_UNUSED(arg);
 
+	if (IS_ENABLED(CONFIG_TIMEOUT_ANNOUNCE_CPU0) && arch_curr_cpu()->id != 0U) {
+		sys_write32(0U, PT_REG(PT_CONTROL));
+		pt_clear_isr();
+		return;
+	}
+
 	k_spinlock_key_t key = sys_clock_lock();
 
 	pt_clear_isr();
@@ -265,6 +271,12 @@ void sys_clock_set_timeout(uint32_t ticks, bool idle)
 		 * before we entered idle, stopping would destroy it.
 		 * The original arm_arch_timer.c simply returns here.
 		 */
+		return;
+	}
+
+	if (IS_ENABLED(CONFIG_TIMEOUT_ANNOUNCE_CPU0) && arch_curr_cpu()->id != 0U) {
+		/* The timeout lock serializes this request with CPU 0's reprogramming. */
+		arch_sched_directed_ipi(BIT(0));
 		return;
 	}
 
@@ -349,6 +361,13 @@ void smp_timer_init(void)
 	 * the calling CPU's registers.
 	 */
 	DEVICE_MMIO_TOPLEVEL_MAP(pt_regs, K_MEM_CACHE_NONE);
+
+	if (IS_ENABLED(CONFIG_TIMEOUT_ANNOUNCE_CPU0)) {
+		sys_write32(0U, PT_REG(PT_CONTROL));
+		pt_clear_isr();
+		irq_disable(PT_IRQ);
+		return;
+	}
 
 	if (!IS_ENABLED(CONFIG_TICKLESS_KERNEL)) {
 		pt_set_periodic(CYC_PER_TICK);
