@@ -1,0 +1,29 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+common:
+  tags:
+    - kernel
+    - smp
+  platform_allow:
+    - qemu_x86_64
+  integration_platforms:
+    - qemu_x86_64
+  timeout: 30
+tests:
+  kernel.smp.irq_exit_fastpath: {}
+  kernel.smp.irq_exit_fastpath.disabled:
+    extra_configs:
+      - CONFIG_SCHED_IRQ_EXIT_FASTPATH=n
+  kernel.smp.irq_exit_fastpath.scalable:
+    extra_configs:
+      - CONFIG_SCHED_SCALABLE=y
+  kernel.smp.irq_exit_fastpath.multiq:
+    extra_configs:
+      - CONFIG_SCHED_MULTIQ=y
+  kernel.smp.irq_exit_fastpath.metairq:
+    extra_configs:
+      - CONFIG_NUM_METAIRQ_PRIORITIES=1
+  kernel.smp.irq_exit_fastpath.no_timeslice:
+    extra_configs:
+      - CONFIG_TIMESLICING=n
