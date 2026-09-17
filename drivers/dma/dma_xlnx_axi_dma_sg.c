@@ -20,6 +20,7 @@
 #include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/cache.h>
+#include <zephyr/arch/cache.h>
 #include <zephyr/sys/atomic.h>
 #include <string.h>
 
@@ -178,6 +179,7 @@ struct dma_xlnx_sg_chan {
 	uint32_t consumer_idx;  /* next BD to check for completion */
 	dma_callback_t callback;
 	void *user_data;
+	bool bds_nocache; /* descriptor storage bypasses all CPU caches */
 	bool cyclic; /* true for cyclic RX */
 	bool error;  /* sticky error flag */
 	uint16_t irq_threshold;    /* software window size in BDs */
@@ -243,6 +245,8 @@ struct dma_xlnx_sg_cfg {
 	size_t rx_buf_size;
 	uint32_t sg_len_mask; /* (1 << sg_length_width) - 1 */
 	uint8_t sg_cache;     /* AxCACHE for M_AXI_SG transactions */
+	bool rx_invalidate_in_isr;
+	bool rx_outer_nocache;
 };
 
 /* --------------------------------------------------------------------------
@@ -305,6 +309,42 @@ static inline void cache_invd(void *addr, size_t len)
 #if !IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)
 	sys_cache_data_invd_range(addr, len);
 #endif
+}
+
+/* The DT attribute describes the CPU mapping, not DMA bus attributes. */
+static int rx_payload_invd(const struct device *dev, void *addr, size_t len)
+{
+	if (len == 0U || IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)) {
+		return 0;
+	}
+	if (DEV_CFG(dev)->rx_outer_nocache) {
+#if defined(CONFIG_DCACHE)
+		int ret = arch_dcache_invd_range(addr, len);
+
+		barrier_dsync_fence_full();
+		return ret;
+#else
+		return 0;
+#endif
+	}
+	return sys_cache_data_invd_range(addr, len);
+}
+
+/* Non-cacheable rings still require ordering before publishing to the engine. */
+static inline void bd_flush(const struct dma_xlnx_sg_chan *ch, void *addr, size_t len)
+{
+	if (!ch->bds_nocache) {
+		cache_flush(addr, len);
+	}
+	barrier_dsync_fence_full();
+}
+
+static inline void bd_invd(const struct dma_xlnx_sg_chan *ch, void *addr, size_t len)
+{
+	if (!ch->bds_nocache) {
+		cache_invd(addr, len);
+	}
+	barrier_dsync_fence_full();
 }
 
 static void dma_xlnx_sg_program_sgctl(const struct device *dev)
@@ -415,7 +455,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 				ch->bds[0].app[a] = ch->tx_app.app[a];
 			}
 			ch->bds[0].status = 0U;
-			cache_flush(ch->bds, sizeof(struct xlnx_sg_bd));
+			bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd));
 			return 0;
 		}
 
@@ -459,7 +499,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 			remaining -= chunk;
 		}
 
-		cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * num_needed);
+		bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd) * num_needed);
 		return 0;
 	}
 
@@ -496,7 +536,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 	}
 
 	/* Flush entire BD ring so DMA engine sees current values */
-	cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * ring_count);
+	bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd) * ring_count);
 	return 0;
 }
 
@@ -738,7 +778,7 @@ static void latch_dma_error(const struct device *dev, uint32_t channel,
 
 	if (ch->bds != NULL && count > 0U && count <= ch->num_bds) {
 		snap->bd_count = MIN(count, ARRAY_SIZE(snap->bd_words));
-		cache_invd(ch->bds, snap->bd_count * sizeof(*ch->bds));
+		bd_invd(ch, ch->bds, snap->bd_count * sizeof(*ch->bds));
 		snap->first = ch->bds[0];
 		memcpy(snap->bd_words, ch->bds,
 		       snap->bd_count * sizeof(*ch->bds));
@@ -799,7 +839,7 @@ static void dma_xlnx_sg_tx_isr(const struct device *dev)
 	}
 }
 
-/* Stop at the first incomplete BD and publish bytes after payload invalidation. */
+/* Stop at the first incomplete BD and accumulate each completed length once. */
 static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
@@ -809,7 +849,7 @@ static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
 	uintptr_t virt_base = buf_virt(dev, CH_RX);
 
 	for (uint32_t i = ch->consumer_idx; i < ring_count; i++) {
-		cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
+		bd_invd(ch, &ch->bds[i], sizeof(ch->bds[i]));
 		if ((ch->bds[i].status & BD_STS_CMPLT) == 0U) {
 			break;
 		}
@@ -817,7 +857,15 @@ static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
 
 		total_bytes += bytes;
 		ch->consumer_idx = i + 1U;
-		cache_invd((void *)(virt_base + (uintptr_t)i * ch->bd_buf_bytes), bytes);
+		if (DEV_CFG(dev)->rx_invalidate_in_isr) {
+			int ret = rx_payload_invd(
+				dev, (void *)(virt_base + (uintptr_t)i * ch->bd_buf_bytes), bytes);
+
+			if (ret != 0) {
+				ch->error = true;
+				break;
+			}
+		}
 	}
 	ch->last_rx_bytes = total_bytes;
 }
@@ -868,13 +916,13 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 			uint32_t harvested = 0;
 
 			while (harvested < budget) {
-				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
+				bd_invd(ch, &ch->bds[idx], sizeof(ch->bds[idx]));
 				if ((ch->bds[idx].status & BD_STS_CMPLT) == 0U) {
 					break;
 				}
 				ch->bds[idx].control &= ~BD_STS_CMPLT;
 				ch->bds[idx].status &= ~BD_STS_CMPLT;
-				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
+				bd_flush(ch, &ch->bds[idx], sizeof(ch->bds[idx]));
 				idx = (idx + 1) % ch->active_bds;
 				harvested++;
 			}
@@ -1107,10 +1155,16 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	if (channel == CH_RX && !ch->cyclic) {
 		uint32_t count = ch->active_bds > 0U ? ch->active_bds : ch->num_bds;
 
+		/* Retain delay IRQs for small sparse captures while the ISR still
+		 * invalidates payloads, so cache work is spread across packets.
+		 * Large rings keep their bounded threshold/remainder IRQ policy.
+		 */
+		if (count > 255U || !DEV_CFG(dev)->rx_invalidate_in_isr) {
+			ch->irq_timeout = 0U;
+		}
 		if (count > 255U) {
 			ch->irq_threshold = 255U;
 			ch->hw_irq_threshold = 255U;
-			ch->irq_timeout = 0U;
 		}
 	}
 
@@ -1417,7 +1471,11 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 	 * before the driver hands the BDs back to the engine.
 	 */
 	if (ch->rx_base_phys == 0U) {
-		cache_invd(window_buf, window_bytes);
+		int ret = rx_payload_invd(dev, window_buf, window_bytes);
+
+		if (ret != 0) {
+			return ret;
+		}
 	} else {
 		window_buf = NULL;
 	}
@@ -1426,7 +1484,7 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 		struct xlnx_sg_bd *bd = &ch->bds[idx];
 		uint32_t byte_count;
 
-		cache_invd(bd, sizeof(*bd));
+		bd_invd(ch, bd, sizeof(*bd));
 		byte_count = bd->status & DEV_CFG(dev)->sg_len_mask;
 
 		ch->last_rx_bytes = byte_count;
@@ -1663,7 +1721,7 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_ap
 			for (int a = 0; a < 5; a++) {
 				ch->bds[i].app[a] = app->app[a];
 			}
-			cache_flush(&ch->bds[i], sizeof(ch->bds[i]));
+			bd_flush(ch, &ch->bds[i], sizeof(ch->bds[i]));
 		}
 	}
 
@@ -1674,6 +1732,43 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_ap
 /* --------------------------------------------------------------------------
  * Get byte count from last completed RX transfer
  * -------------------------------------------------------------------------- */
+/* Bound each cache operation to 32 Cortex-A9 cache lines. Align internal
+ * boundaries so successive slices never maintain the same line twice.
+ */
+#define RX_INVALIDATE_SLICE 1024U
+
+int dma_xlnx_sg_rx_invalidate(const struct device *dev, size_t offset, size_t len)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	size_t capacity = buf_size(dev, CH_RX);
+	uintptr_t addr = buf_virt(dev, CH_RX);
+
+	if (k_is_in_isr()) {
+		return -EWOULDBLOCK;
+	}
+	if (data->ch[CH_RX].cyclic) {
+		return -EBUSY;
+	}
+	if (offset > capacity || len > capacity - offset || offset > UINTPTR_MAX - addr) {
+		return -EINVAL;
+	}
+	addr += offset;
+	if (len > UINTPTR_MAX - addr) {
+		return -EINVAL;
+	}
+	while (len > 0U) {
+		size_t slice = MIN(len, RX_INVALIDATE_SLICE - addr % RX_INVALIDATE_SLICE);
+		int ret = rx_payload_invd(dev, (void *)addr, slice);
+
+		if (ret != 0) {
+			return ret;
+		}
+		addr += slice;
+		len -= slice;
+	}
+	return 0;
+}
+
 uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev)
 {
 	struct dma_xlnx_sg_data *data = dev->data;
@@ -1752,12 +1847,18 @@ static int dma_xlnx_sg_init(const struct device *dev)
 /* --------------------------------------------------------------------------
  * DT instantiation macro
  * -------------------------------------------------------------------------- */
+#if defined(CONFIG_DMA_XLNX_AXI_DMA_SG_NOCACHE_BD)
+#define XLNX_SG_BD_MEMORY __nocache
+#else
+#define XLNX_SG_BD_MEMORY
+#endif
+
 #define DMA_XLNX_SG_INIT(inst)                                                                     \
                                                                                                    \
 	static struct xlnx_sg_bd dma_xlnx_sg_tx_bds_##inst[CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_TX_BD]   \
-		__aligned(64);                                                                     \
+		__aligned(64) XLNX_SG_BD_MEMORY;                                                   \
 	static struct xlnx_sg_bd dma_xlnx_sg_rx_bds_##inst[CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_RX_BD]   \
-		__aligned(64);                                                                     \
+		__aligned(64) XLNX_SG_BD_MEMORY;                                                   \
                                                                                                    \
 	static void dma_xlnx_sg_irq_config_##inst(const struct device *dev)                        \
 	{                                                                                          \
@@ -1784,6 +1885,9 @@ static int dma_xlnx_sg_init(const struct device *dev)
 		.tx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, tx_buf),                             \
 		.rx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, rx_buf),                             \
 		.sg_len_mask = SG_LEN_MASK(DT_INST_PROP_OR(inst, xlnx_sg_length_width, 14)),       \
+		.rx_outer_nocache = DT_INST_PROP(inst, xlnx_rx_outer_noncacheable),               \
+		.rx_invalidate_in_isr =                                                        \
+			IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_RX_INVALIDATE_IN_ISR),               \
 		.sg_cache = (uint8_t)DT_INST_PROP_OR(inst, xlnx_sg_cache, 0x3),                    \
 	};                                                                                         \
                                                                                                    \
@@ -1793,16 +1897,24 @@ static int dma_xlnx_sg_init(const struct device *dev)
 				[CH_TX] =                                                          \
 					{                                                          \
 						.bds = dma_xlnx_sg_tx_bds_##inst,                  \
+						.bds_nocache = IS_ENABLED(                       \
+							CONFIG_DMA_XLNX_AXI_DMA_SG_NOCACHE_BD), \
 						.num_bds = CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_TX_BD,   \
 					},                                                         \
 				[CH_RX] =                                                          \
 					{                                                          \
 						.bds = dma_xlnx_sg_rx_bds_##inst,                  \
+						.bds_nocache = IS_ENABLED(                       \
+							CONFIG_DMA_XLNX_AXI_DMA_SG_NOCACHE_BD), \
 						.num_bds = CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_RX_BD,   \
 					},                                                         \
 			},                                                                         \
 	};                                                                                         \
                                                                                                    \
+	BUILD_ASSERT(!DT_INST_PROP(inst, xlnx_rx_outer_noncacheable) ||                      \
+		     IS_ENABLED(CONFIG_CPU_AARCH32_CORTEX_A),                                  \
+		     "L1-only RX invalidation requires Cortex-A cache operations");            \
+	                                                                                  \
 	BUILD_ASSERT(DT_INST_PROP(inst, xlnx_addrwidth) == 32,                                     \
 		     "xlnx,axi-dma-sg: only 32-bit addressing supported");                         \
                                                                                                    \

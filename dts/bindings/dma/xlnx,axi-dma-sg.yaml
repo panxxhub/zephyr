@@ -64,6 +64,16 @@ properties:
 
       Must be in the range 0..15.
 
+  xlnx,rx-outer-noncacheable:
+    type: boolean
+    description: |
+      The entire CPU mapping of rx_buf is outer-non-cacheable and has no
+      cacheable aliases. On Cortex-A, invalidate only L1 for RX payloads,
+      bypassing the outer-cache controller and its lock. This property does
+      not configure the MMU: the board must provide the matching mapping.
+      RX memory must never contain dirty CPU cache lines. Explicit physical
+      streaming destinations remain CPU-invisible and are not maintained.
+
   dma-channels:
     const: 2
     description: Fixed 2 channels (TX + RX).

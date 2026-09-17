@@ -70,9 +70,20 @@ def main():
             .read_text()
             .replace('../../../../../drivers/dma/dma_xlnx_axi_dma_sg.c', str(driver))
         )
+        (app / "pl310.c").write_text(
+            (TEST / "src/pl310.c")
+            .read_text()
+            .replace(
+                "../../../../../drivers/cache/cache_xlnx_zynq7000_pl310.c",
+                str(ROOT / "drivers/cache/cache_xlnx_zynq7000_pl310.c"),
+            )
+        )
         (app / "prj.conf").write_text((TEST / "prj.conf").read_text())
         (app / "CMakeLists.txt").write_text(
-            (TEST / "CMakeLists.txt").read_text().replace("src/main.c", "main.c")
+            (TEST / "CMakeLists.txt")
+            .read_text()
+            .replace("src/main.c", "main.c")
+            .replace("src/pl310.c", "pl310.c")
         )
         for name, change in [("baseline", None), *MUTATIONS.items()]:
             source = original

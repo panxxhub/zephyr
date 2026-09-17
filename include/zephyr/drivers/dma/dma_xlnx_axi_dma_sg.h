@@ -184,6 +184,30 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_ap
 uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev);
 
 /**
+ * @brief Invalidate a completed finite RX buffer range in thread context.
+ *
+ * Required before the first payload read when RX_INVALIDATE_IN_ISR is disabled.
+ * Wait for completion and retain the finite RX reservation until all reads end;
+ * do not restart or reconfigure RX concurrently. The range is relative to the
+ * RX buffer region, not a packed sum of BD lengths. Never write into RX memory.
+ * Each cache call covers at most 1024 bytes (32 Cortex-A9 lines); internal
+ * boundaries are aligned so slices do not overlap. This bounds lock work, not
+ * wall-clock latency. Cache errors stop at the first unsuccessful slice.
+ * On SMP, invalidate on every CPU that reads the range unless the platform
+ * broadcasts inner-cache maintenance; keep the reader on that CPU otherwise.
+ *
+ * @param dev DMA device.
+ * @param offset Byte offset within the RX buffer region.
+ * @param len Number of bytes, or zero for no maintenance.
+ * @retval 0 Range invalidated successfully.
+ * @retval -EINVAL Range outside the RX buffer region or address overflow.
+ * @retval -EWOULDBLOCK Called from interrupt context.
+ * @retval -EBUSY RX is configured for streaming.
+ * @return Negative cache error on failure.
+ */
+int dma_xlnx_sg_rx_invalidate(const struct device *dev, size_t offset, size_t len);
+
+/**
  * @brief Get buffer region addresses for a channel.
  *
  * Returns both the physical address (for hardware/BD programming) and
@@ -191,8 +215,9 @@ uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev);
  *
  * The RX region is mapped Normal cacheable. The driver invalidates the data it
  * reports as received - a stream window before its callback, a finite transfer
- * before its completion callback - so a consumer that reads only that data
- * needs no cache maintenance. Reading elsewhere in the region, or writing into
+ * before its completion callback when RX_INVALIDATE_IN_ISR is enabled. With
+ * that option disabled, finite consumers must call dma_xlnx_sg_rx_invalidate().
+ * Reading elsewhere in the region, or writing into
  * it at all, is the caller's own problem: the driver relies on the RX region
  * never holding a dirty line.
  *

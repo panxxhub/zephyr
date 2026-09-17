@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+common:
+  build_only: true
+  tags:
+    - drivers
+    - dma
+  platform_allow:
+    - qemu_cortex_a9
+  integration_platforms:
+    - qemu_cortex_a9
+tests:
+  drivers.dma.xlnx_axi_dma_sg.build.nocache: {}
+  drivers.dma.xlnx_axi_dma_sg.build.delegated:
+    extra_configs:
+      - CONFIG_DMA_XLNX_AXI_DMA_SG_RX_INVALIDATE_IN_ISR=n
+  drivers.dma.xlnx_axi_dma_sg.build.cacheable:
+    extra_configs:
+      - CONFIG_DMA_XLNX_AXI_DMA_SG_NOCACHE_BD=n
+  drivers.dma.xlnx_axi_dma_sg.build.no_dcache:
+    extra_configs:
+      - CONFIG_DCACHE=n
