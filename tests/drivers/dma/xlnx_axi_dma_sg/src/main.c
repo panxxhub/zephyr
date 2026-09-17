@@ -1,4 +1,5 @@
-// SPDX-License-Identifier: Apache-2.0
+/* SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors */
+/* SPDX-License-Identifier: Apache-2.0 */
 #include <zephyr/ztest.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -19,6 +20,9 @@
 static uint32_t regs[32];
 static unsigned int resets;
 static bool reset_stuck;
+static bool finite_model_enabled;
+
+static void finite_control_write(uint32_t value, bool before);
 
 static int test_cache_range(void *addr, size_t size)
 {
@@ -34,7 +38,7 @@ static int test_cache_range(void *addr, size_t size)
 static struct {
 	uintptr_t addr;
 	size_t size;
-} invd_log[16];
+} invd_log[8193];
 static unsigned int invd_count;
 
 static int test_cache_invd(void *addr, size_t size)
@@ -67,6 +71,11 @@ static void engine_curdesc_write(uint32_t value);
 
 static void test_write32(uint32_t value, mem_addr_t addr)
 {
+	uint32_t old_control = regs[0x30U / 4U];
+
+	if (addr == 0x30U && finite_model_enabled) {
+		finite_control_write(value, true);
+	}
 	if (addr == 0x04U || addr == 0x34U) {
 		regs[addr / 4U] &= ~value; /* DMASR is write-1-to-clear */
 		return;
@@ -83,8 +92,11 @@ static void test_write32(uint32_t value, mem_addr_t addr)
 			regs[0x30U / 4U] = 0;
 			regs[0x34U / 4U] = BIT(0) | BIT(3);
 		}
-	} else if (addr == 0x30U && (value & BIT(0)) != 0U) {
+	} else if (addr == 0x30U && (value & BIT(0)) != 0U && (old_control & BIT(0)) == 0U) {
 		regs[0x34U / 4U] = BIT(3); /* Armed, waiting for stream data. */
+	}
+	if (addr == 0x30U && finite_model_enabled) {
+		finite_control_write(value, false);
 	}
 }
 
@@ -110,6 +122,7 @@ static const struct dma_xlnx_sg_cfg config = {
 static const struct device dev = {.data = &data, .config = &config};
 static unsigned int callbacks;
 static int callback_status;
+static uint32_t callback_bytes;
 
 static void completed(const struct device *device, void *user,
 		      uint32_t channel, int status)
@@ -119,6 +132,7 @@ static void completed(const struct device *device, void *user,
 	ARG_UNUSED(channel);
 	callbacks++;
 	callback_status = status;
+	callback_bytes = dma_xlnx_sg_last_rx_bytes(device);
 }
 
 /* PG021 tail-pointer model: consume one packet per BD, including tail,
@@ -167,6 +181,7 @@ static int configure_rx(void)
 
 static void before(void *fixture)
 {
+	finite_model_enabled = false;
 	ARG_UNUSED(fixture);
 	/* Normally referenced by DT device/IRQ instantiation, absent here. */
 	(void)dma_xlnx_sg_init;
@@ -520,6 +535,7 @@ static int start_stream(uint16_t threshold)
 
 static void stream_before(void *fixture)
 {
+	finite_model_enabled = false;
 	ARG_UNUSED(fixture);
 	memset(&stream_data, 0, sizeof(stream_data));
 	memset(regs, 0, sizeof(regs));
@@ -938,4 +954,450 @@ ZTEST(xlnx_rx_stream, test_repeated_slot_admission)
 	zassert_equal(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg), -EINVAL);
 	cfg.num_slots = 2;
 	zassert_ok(dma_xlnx_sg_start_rx_stream(&stream_dev, &cfg));
+}
+
+#define FINITE_BDS   4096U
+#define FINITE_BYTES 32U
+
+static struct xlnx_sg_bd finite_bds[FINITE_BDS];
+static uint8_t finite_buf[FINITE_BDS * FINITE_BYTES] __aligned(64);
+static struct dma_xlnx_sg_data finite_data;
+static const struct dma_xlnx_sg_cfg finite_config = {
+	.rx_buf_phys = (uintptr_t)finite_buf,
+	.rx_buf_size = sizeof(finite_buf),
+	.sg_len_mask = 0x3fff,
+};
+static const struct device finite_dev = {.data = &finite_data, .config = &finite_config};
+
+static void finite_setup(uint32_t count)
+{
+	finite_model_enabled = false;
+	struct dma_block_config block = {
+		.block_size = FINITE_BYTES,
+		.dest_scatter_count = count,
+	};
+	struct dma_config cfg = {
+		.channel_direction = PERIPHERAL_TO_MEMORY,
+		.head_block = &block,
+		.dma_callback = completed,
+	};
+
+	memset(&finite_data, 0, sizeof(finite_data));
+	memset(regs, 0, sizeof(regs));
+	finite_data.ch[CH_RX].bds = finite_bds;
+	finite_data.ch[CH_RX].num_bds = FINITE_BDS;
+	regs[0x34U / 4U] = DMASR_HALTED | DMASR_SGINCL;
+	callbacks = 0;
+	reset_stuck = false;
+	zassert_ok(dma_xlnx_sg_config(&finite_dev, CH_RX, &cfg));
+	zassert_ok(dma_xlnx_sg_start(&finite_dev, CH_RX));
+}
+
+static void finite_ioc(void)
+{
+	invd_count = 0;
+	regs[0x34U / 4U] = DMASR_IOC_IRQ;
+	dma_xlnx_sg_rx_isr(&finite_dev);
+}
+
+/* Inject small completion batches independently of coalescing to exercise
+ * delayed descriptor visibility and repeated/spurious IOC observations.
+ */
+static void finite_harvest(uint32_t check)
+{
+	static uint32_t invalidations[1024];
+	uint32_t expected = 0U;
+
+	memset(invalidations, 0, sizeof(invalidations));
+	finite_setup(1024U);
+	for (uint32_t first = 0U; first < 1024U; first += 3U) {
+		uint32_t end = MIN(first + 3U, 1024U);
+		uint32_t visits = 0U;
+
+		for (uint32_t i = first; i < end; i++) {
+			uint32_t bytes = 1U + i % FINITE_BYTES;
+
+			finite_bds[i].status = BD_STS_CMPLT | bytes;
+			expected += bytes;
+		}
+		finite_ioc();
+		for (uint32_t i = 0U; i < invd_count; i++) {
+			uintptr_t addr = invd_log[i].addr;
+
+			zassert_true(i < ARRAY_SIZE(invd_log));
+			if (addr >= (uintptr_t)finite_bds &&
+			    addr < (uintptr_t)(finite_bds + FINITE_BDS)) {
+				visits++;
+			} else if (addr >= (uintptr_t)finite_buf &&
+				   addr < (uintptr_t)(finite_buf + sizeof(finite_buf))) {
+				uint32_t bd = (addr - (uintptr_t)finite_buf) / FINITE_BYTES;
+
+				invalidations[bd]++;
+				zassert_equal(invd_log[i].size, 1U + bd % FINITE_BYTES);
+			}
+		}
+		if (check == 0U) {
+			zassert_true(visits <= end - first + 2U, "visited %u BDs", visits);
+		} else if (check == 1U) {
+			for (uint32_t i = 0U; i < end; i++) {
+				zassert_equal(invalidations[i], 1U, "BD %u invalidated twice", i);
+			}
+		} else if (check == 2U) {
+			zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), expected);
+		} else {
+			zassert_equal(callbacks, end == 1024U ? 1U : 0U);
+			if (end == 1024U) {
+				zassert_equal(callback_bytes, expected);
+				zassert_equal(callback_status, DMA_STATUS_COMPLETE);
+			}
+		}
+	}
+}
+
+ZTEST(xlnx_finite_rx, test_large_visit_bound)
+{
+	finite_harvest(0U);
+}
+
+ZTEST(xlnx_finite_rx, test_large_invalidate_once)
+{
+	finite_harvest(1U);
+}
+
+ZTEST(xlnx_finite_rx, test_large_exact_bytes)
+{
+	finite_harvest(2U);
+}
+
+ZTEST(xlnx_finite_rx, test_large_completion_callback)
+{
+	finite_harvest(3U);
+}
+
+ZTEST(xlnx_finite_rx, test_large_first_incomplete_stops_harvest)
+{
+	finite_setup(1024U);
+	finite_bds[1].status = BD_STS_CMPLT | 17U;
+	finite_ioc();
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), 0U);
+	zassert_equal(invd_count, 1U);
+	finite_bds[0].status = BD_STS_CMPLT | 11U;
+	finite_ioc();
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), 28U);
+	finite_ioc();
+	zassert_equal(invd_count, 1U);
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), 28U);
+}
+
+ZTEST(xlnx_finite_rx, test_large_threshold_and_final_group)
+{
+	const uint32_t counts[] = {256U, 257U, 509U, 510U, 511U, 1024U, 2048U};
+
+	for (uint32_t c = 0U; c < ARRAY_SIZE(counts); c++) {
+		uint32_t pending = 0U;
+		uint32_t interrupts = 0U;
+
+		finite_setup(counts[c]);
+		for (uint32_t i = 0U; i < counts[c]; i++) {
+			uint32_t cr = regs[0x30U / 4U];
+			uint32_t threshold = (cr & DMACR_IRQTHRESH_MASK) >> DMACR_IRQTHRESH_SHIFT;
+			uint32_t tail = regs[0x40U / 4U];
+
+			if (i == 0U) {
+				zassert_true(threshold > 1U && threshold <= 255U);
+			}
+			zassert_equal(cr & (DMACR_DLY_IRQEN | DMACR_IRQDELAY_MASK), 0U);
+			zassert_true((uint32_t)(uintptr_t)&finite_bds[i] <= tail,
+				     "engine stalled before BD %u", i);
+			finite_bds[i].status = BD_STS_CMPLT | FINITE_BYTES;
+			pending++;
+			if (pending == threshold) {
+				pending = 0U;
+				interrupts++;
+				finite_ioc();
+			}
+			zassert_equal(callbacks, i + 1U == counts[c] ? 1U : 0U);
+		}
+		zassert_equal(pending, 0U, "last group must generate IOC without delay");
+		zassert_true(interrupts <= DIV_ROUND_UP(counts[c], 128U));
+		zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), counts[c] * FINITE_BYTES);
+	}
+}
+
+ZTEST(xlnx_finite_rx, test_finite_harvest_lifecycle)
+{
+	struct dma_xlnx_sg_chan *ch = &finite_data.ch[CH_RX];
+	struct dma_block_config block = {
+		.block_size = FINITE_BYTES,
+		.dest_scatter_count = 1024U,
+	};
+	struct dma_config cfg = {
+		.channel_direction = PERIPHERAL_TO_MEMORY,
+		.head_block = &block,
+		.dma_callback = completed,
+	};
+
+	finite_setup(1024U);
+	finite_bds[0].status = BD_STS_CMPLT | 17U;
+	finite_ioc();
+	regs[0x34U / 4U] = DMASR_HALTED;
+	zassert_ok(dma_xlnx_sg_stop(&finite_dev, CH_RX));
+	zassert_equal(ch->consumer_idx, 0U);
+	ch->consumer_idx = 7U;
+	zassert_ok(do_soft_reset(&finite_dev, CH_RX));
+	zassert_equal(ch->consumer_idx, 0U);
+	ch->consumer_idx = 7U;
+	zassert_ok(dma_xlnx_sg_config(&finite_dev, CH_RX, &cfg));
+	zassert_equal(ch->consumer_idx, 0U);
+	ch->consumer_idx = 7U;
+	ch->hw_irq_threshold = 7U;
+	zassert_ok(dma_xlnx_sg_start(&finite_dev, CH_RX));
+	zassert_equal(ch->hw_irq_threshold, 255U);
+	zassert_equal(ch->consumer_idx, 0U);
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), 0U);
+	finite_bds[0].status = BD_STS_CMPLT | 11U;
+	finite_ioc();
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), 11U);
+}
+
+ZTEST(xlnx_finite_rx, test_small_threshold_policy_is_unchanged)
+{
+	const uint32_t counts[] = {1U, 8U, 128U, 254U, 255U};
+
+	for (uint32_t i = 0U; i < ARRAY_SIZE(counts); i++) {
+		finite_setup(counts[i]);
+		zassert_equal(finite_data.ch[CH_RX].irq_timeout,
+			      CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT);
+		zassert_equal((regs[0x30U / 4U] & DMACR_IRQTHRESH_MASK) >> DMACR_IRQTHRESH_SHIFT,
+			      counts[i]);
+		zassert_equal(regs[0x40U / 4U], (uint32_t)(uintptr_t)&finite_bds[counts[i] - 1U]);
+		/* Preserve the existing notification on an early IOC/DLY event. */
+		finite_ioc();
+		zassert_equal(callbacks, 1U);
+	}
+}
+
+/* A free-running one-shot source loses data as soon as DMA parks. Servicing
+ * the IOC afterwards cannot recover the bursts emitted during that gap.
+ */
+ZTEST(xlnx_finite_rx, test_dense_source_cannot_wait_at_an_intermediate_tail)
+{
+	const uint32_t counts[] = {512U, 1024U, 2048U, 4096U};
+
+	for (uint32_t c = 0U; c < ARRAY_SIZE(counts); c++) {
+		uint32_t pending = 0U;
+
+		finite_setup(counts[c]);
+		for (uint32_t i = 0U; i < counts[c]; i++) {
+			uint32_t threshold =
+				(regs[0x30U / 4U] & DMACR_IRQTHRESH_MASK) >> DMACR_IRQTHRESH_SHIFT;
+
+			finite_bds[i].status = BD_STS_CMPLT | FINITE_BYTES;
+			zassert_false(i + 1U < counts[c] &&
+					      regs[0x40U / 4U] ==
+						      (uint32_t)(uintptr_t)&finite_bds[i],
+				      "source lost data at intermediate tail BD %u", i);
+			pending++;
+			if (pending == threshold) {
+				pending = 0U;
+				finite_ioc();
+			}
+		}
+		zassert_equal(callbacks, 1U);
+		zassert_equal(callback_bytes, counts[c] * FINITE_BYTES);
+	}
+}
+
+/* The counter runs independently of the ISR. Control writes reload it and
+ * preserve pending IOC. Source completions can straddle a reload without
+ * recursively servicing an interrupt, just as on the target.
+ */
+static struct {
+	uint32_t count;
+	uint32_t produced;
+	uint32_t countdown;
+	uint32_t reloads;
+	uint32_t before_write;
+	uint32_t after_write;
+	bool repeat;
+} finite_model;
+
+static uint32_t finite_threshold(void)
+{
+	return (regs[0x30U / 4U] & DMACR_IRQTHRESH_MASK) >> DMACR_IRQTHRESH_SHIFT;
+}
+
+static void finite_model_feed(uint32_t count)
+{
+	for (uint32_t n = 0U; n < count; n++) {
+		uint32_t i = finite_model.produced;
+		uint32_t tail = regs[0x40U / 4U];
+
+		zassert_true(i < finite_model.count);
+		zassert_true((uint32_t)(uintptr_t)&finite_bds[i] <= tail);
+		finite_bds[i].status = BD_STS_CMPLT | FINITE_BYTES;
+		finite_model.produced++;
+		zassert_false(finite_model.produced < finite_model.count &&
+				      tail == (uint32_t)(uintptr_t)&finite_bds[i],
+			      "free-running source lost data at BD %u", i);
+		zassert_true(finite_model.countdown > 0U);
+		finite_model.countdown--;
+		if (finite_model.countdown == 0U) {
+			regs[0x34U / 4U] |= DMASR_IOC_IRQ;
+			finite_model.countdown = finite_threshold();
+		}
+	}
+}
+
+static void finite_control_write(uint32_t value, bool before)
+{
+	uint32_t inject = before ? finite_model.before_write : finite_model.after_write;
+
+	if (!before) {
+		zassert_equal(value & (DMACR_DLY_IRQEN | DMACR_IRQDELAY_MASK), 0U);
+		finite_model.countdown = finite_threshold();
+		finite_model.reloads++;
+		zassert_true(finite_model.reloads <= 254U, "rearm must make progress");
+	}
+	if (!finite_model.repeat) {
+		if (before) {
+			finite_model.before_write = 0U;
+		} else {
+			finite_model.after_write = 0U;
+		}
+	}
+	finite_model_feed(MIN(inject, finite_model.count - finite_model.produced));
+}
+
+static void finite_model_begin(uint32_t count)
+{
+	finite_setup(count);
+	memset(&finite_model, 0, sizeof(finite_model));
+	finite_model.count = count;
+	finite_model.countdown = finite_threshold();
+	finite_model_enabled = true;
+}
+
+static void finite_model_irq(void)
+{
+	zassert_true((regs[0x34U / 4U] & DMASR_IOC_IRQ) != 0U, "completion IOC lost");
+	invd_count = 0U;
+	dma_xlnx_sg_rx_isr(&finite_dev);
+	zassert_equal(dma_xlnx_sg_last_rx_bytes(&finite_dev), finite_model.produced * FINITE_BYTES);
+}
+
+static void finite_race(uint32_t before_write, uint32_t after_write, bool repeat)
+{
+	uint32_t visits = 0U;
+	uint32_t invalidations = 0U;
+	uint32_t previous_bd = 0U;
+
+	finite_model_begin(509U);
+	finite_model_feed(255U);
+	finite_model.before_write = before_write;
+	finite_model.after_write = after_write;
+	finite_model.repeat = repeat;
+	finite_model_irq();
+	/* Retries only add incomplete probes, never rescan a completed prefix.
+	 * Every retry after the first requires at least one new completion.
+	 */
+	for (uint32_t i = 0U; i < invd_count; i++) {
+		uintptr_t addr = invd_log[i].addr;
+
+		zassert_true(i < ARRAY_SIZE(invd_log));
+		if (addr >= (uintptr_t)finite_bds && addr < (uintptr_t)(finite_bds + FINITE_BDS)) {
+			uint32_t bd = (addr - (uintptr_t)finite_bds) / sizeof(finite_bds[0]);
+
+			zassert_true(bd >= previous_bd, "completed prefix rescanned");
+			previous_bd = bd;
+			visits++;
+		} else {
+			zassert_equal(addr, (uintptr_t)finite_buf + invalidations * FINITE_BYTES);
+			zassert_equal(invd_log[i].size, FINITE_BYTES);
+			invalidations++;
+		}
+	}
+	zassert_equal(invalidations, finite_model.produced);
+	zassert_true(visits <= 2U * finite_model.produced + 2U);
+	if (finite_model.produced < finite_model.count) {
+		zassert_equal(callbacks, 0U);
+		finite_model_feed(finite_model.count - finite_model.produced);
+		finite_model_irq();
+	}
+	zassert_equal(callbacks, 1U);
+	zassert_equal(callback_status, DMA_STATUS_COMPLETE);
+	zassert_equal(callback_bytes, finite_model.count * FINITE_BYTES);
+	if ((regs[0x34U / 4U] & DMASR_IOC_IRQ) != 0U) {
+		finite_model_irq();
+		zassert_equal(callbacks, 1U, "pending IOC must not repeat completion");
+		zassert_equal(invd_count, 0U);
+	}
+}
+
+ZTEST(xlnx_finite_rx, test_remainder_finishes_after_recheck)
+{
+	finite_race(0U, 0U, false);
+}
+
+ZTEST(xlnx_finite_rx, test_remainder_finishes_before_reload)
+{
+	finite_race(254U, 0U, false);
+}
+
+ZTEST(xlnx_finite_rx, test_remainder_finishes_after_reload)
+{
+	finite_race(0U, 254U, false);
+}
+
+ZTEST(xlnx_finite_rx, test_partial_completion_before_reload)
+{
+	finite_race(2U, 0U, false);
+}
+
+ZTEST(xlnx_finite_rx, test_partial_completion_after_reload)
+{
+	finite_race(0U, 2U, false);
+}
+
+ZTEST(xlnx_finite_rx, test_partial_completion_straddles_reload)
+{
+	finite_race(1U, 1U, false);
+}
+
+ZTEST(xlnx_finite_rx, test_each_reload_races_another_completion)
+{
+	finite_race(1U, 0U, true);
+	zassert_equal(finite_model.reloads, 254U);
+}
+
+ZTEST(xlnx_finite_rx, test_first_interrupt_finds_whole_ring_complete)
+{
+	finite_model_begin(FINITE_BDS);
+	finite_model_feed(FINITE_BDS);
+	finite_model_irq();
+	zassert_equal(finite_model.reloads, 0U);
+	zassert_equal(callbacks, 1U);
+	zassert_equal(callback_bytes, FINITE_BDS * FINITE_BYTES);
+}
+
+static void finite_stop_on_completion(const struct device *device, void *user, uint32_t channel,
+				      int status)
+{
+	completed(device, user, channel, status);
+	regs[0x34U / 4U] |= DMASR_HALTED;
+	zassert_ok(dma_xlnx_sg_stop(device, channel));
+}
+
+ZTEST(xlnx_finite_rx, test_pending_ioc_after_callback_stops_channel)
+{
+	finite_model_begin(509U);
+	finite_data.ch[CH_RX].callback = finite_stop_on_completion;
+	finite_model_feed(255U);
+	finite_model.after_write = 254U;
+	finite_model_irq();
+	zassert_equal(callbacks, 1U);
+	/* Stopping resets the harvest index, but a racing IOC may remain set. */
+	finite_model_irq();
+	zassert_equal(callbacks, 1U);
+	zassert_equal(invd_count, 0U);
 }

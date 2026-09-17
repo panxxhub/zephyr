@@ -348,6 +348,11 @@ static inline size_t buf_size(const struct device *dev, uint32_t channel)
  * -------------------------------------------------------------------------- */
 static int do_soft_reset(const struct device *dev, uint32_t channel)
 {
+	struct dma_xlnx_sg_data *data = dev->data;
+
+	if (!data->ch[CH_RX].cyclic) {
+		data->ch[CH_RX].consumer_idx = 0U;
+	}
 	chan_write(dev, channel, REG_DMACR, DMACR_RESET);
 
 	uint32_t elapsed = 0;
@@ -794,6 +799,29 @@ static void dma_xlnx_sg_tx_isr(const struct device *dev)
 	}
 }
 
+/* Stop at the first incomplete BD and publish bytes after payload invalidation. */
+static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
+{
+	struct dma_xlnx_sg_data *data = dev->data;
+	struct dma_xlnx_sg_chan *ch = &data->ch[CH_RX];
+	uint32_t total_bytes = ch->last_rx_bytes;
+	const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
+	uintptr_t virt_base = buf_virt(dev, CH_RX);
+
+	for (uint32_t i = ch->consumer_idx; i < ring_count; i++) {
+		cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
+		if ((ch->bds[i].status & BD_STS_CMPLT) == 0U) {
+			break;
+		}
+		uint32_t bytes = ch->bds[i].status & len_mask;
+
+		total_bytes += bytes;
+		ch->consumer_idx = i + 1U;
+		cache_invd((void *)(virt_base + (uintptr_t)i * ch->bd_buf_bytes), bytes);
+	}
+	ch->last_rx_bytes = total_bytes;
+}
+
 /* --------------------------------------------------------------------------
  * RX ISR — cyclic streaming completion
  * -------------------------------------------------------------------------- */
@@ -865,36 +893,40 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 				(void)k_work_submit(&ch->rx_stream_work);
 			}
 		} else {
-			/* Non-streaming finite RX: scan completed BDs to
-			 * compute total bytes received.
+			uint32_t first = ch->consumer_idx;
+			uint32_t ring_count = ch->active_bds > 0U ? ch->active_bds : ch->num_bds;
+
+			/* A completion callback may stop RX and reset its harvest index
+			 * while an IOC from the final reload is still pending.
 			 */
-			uint32_t total_bytes = 0U;
-			uint32_t ring_count = (ch->active_bds > 0)
-						      ? ch->active_bds
-						      : ch->num_bds;
-			const uint32_t len_mask = DEV_CFG(dev)->sg_len_mask;
-
-			uintptr_t virt_base = buf_virt(dev, CH_RX);
-
-			for (uint32_t i = 0; i < ring_count; i++) {
-				cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
-				if ((ch->bds[i].status & BD_STS_CMPLT) == 0U) {
-					continue;
-				}
-				uint32_t bytes = ch->bds[i].status & len_mask;
-
-				total_bytes += bytes;
-				/* Same reason as the stream window: the RX
-				 * region is cacheable, so drop the CPU's view
-				 * of what the engine just wrote.
-				 */
-				cache_invd((void *)(virt_base +
-						    (uintptr_t)i * ch->bd_buf_bytes),
-					   bytes);
+			if (ring_count > 255U && !ch->error &&
+			    (chan_read(dev, CH_RX, REG_DMACR) & DMACR_RS) == 0U) {
+				return;
 			}
-			ch->last_rx_bytes = total_bytes;
 
-			if (ch->callback) {
+			rx_finite_harvest(dev, ring_count);
+
+			if (!ch->error && ring_count > 255U) {
+				uint32_t remaining = ring_count - ch->consumer_idx;
+
+				/* A threshold write reloads the IOC counter. Recheck the
+				 * prefix for completions racing that write. If only part
+				 * of the remainder landed, rearm again: those events may
+				 * have preceded the reload and cannot be counted on for
+				 * another IOC. Each retry consumes at least one more BD;
+				 * the threshold strictly decreases, at most 254 times.
+				 */
+				while (remaining > 0U && remaining < ch->hw_irq_threshold) {
+					ch->hw_irq_threshold = (uint8_t)remaining;
+					chan_write(dev, CH_RX, REG_DMACR, build_dmacr(ch));
+					rx_finite_harvest(dev, ring_count);
+					remaining = ring_count - ch->consumer_idx;
+				}
+			}
+
+			if (ch->callback != NULL &&
+			    (ring_count <= 255U || ch->error ||
+			     (ch->consumer_idx == ring_count && first < ring_count))) {
 				int status = ch->error ? -EIO : DMA_STATUS_COMPLETE;
 
 				ch->callback(dev, ch->user_data, CH_RX, status);
@@ -1072,6 +1104,16 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	 */
 	ch->hw_irq_threshold = (uint8_t)ch->irq_threshold;
 
+	if (channel == CH_RX && !ch->cyclic) {
+		uint32_t count = ch->active_bds > 0U ? ch->active_bds : ch->num_bds;
+
+		if (count > 255U) {
+			ch->irq_threshold = 255U;
+			ch->hw_irq_threshold = 255U;
+			ch->irq_timeout = 0U;
+		}
+	}
+
 	/* Reset indices */
 	ch->producer_idx = 0;
 	ch->consumer_idx = 0;
@@ -1140,6 +1182,11 @@ static int dma_xlnx_sg_start(const struct device *dev, uint32_t channel)
 			}
 		}
 		ch->arm_valid = true;
+		ch->consumer_idx = 0U;
+		ch->last_rx_bytes = 0U;
+		if (count > 255U) {
+			ch->hw_irq_threshold = 255U;
+		}
 	}
 
 	kick_channel(dev, channel);
@@ -1186,6 +1233,14 @@ static int dma_xlnx_sg_stop(const struct device *dev, uint32_t channel)
 		 * performs a soft reset to recover.
 		 */
 		LOG_DBG("ch %u: halt timeout (expected for mid-burst stream stop)", channel);
+	}
+
+	if (channel == CH_RX) {
+		struct dma_xlnx_sg_data *data = dev->data;
+
+		if (!data->ch[CH_RX].cyclic) {
+			data->ch[CH_RX].consumer_idx = 0U;
+		}
 	}
 
 	LOG_DBG("ch %u stopped", channel);
