@@ -52,6 +52,18 @@ runner.MUTATIONS = {
         "(chan_read(dev, CH_RX, REG_DMACR) & DMACR_RS) == 0U",
         "false",
     ),
+    "small legacy delay suppressed": (
+        "count > 255U || !DEV_CFG(dev)->rx_invalidate_in_isr",
+        "true",
+    ),
+    "small delegated delay retained": (
+        "count > 255U || !DEV_CFG(dev)->rx_invalidate_in_isr",
+        "count > 255U",
+    ),
+    "large legacy delay restored": (
+        "count > 255U || !DEV_CFG(dev)->rx_invalidate_in_isr",
+        "!DEV_CFG(dev)->rx_invalidate_in_isr",
+    ),
     "delay enabled": ("ch->irq_timeout = 0U;", "ch->irq_timeout = 16U;"),
 }
 

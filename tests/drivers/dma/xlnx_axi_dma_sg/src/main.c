@@ -996,11 +996,11 @@ static const struct dma_xlnx_sg_cfg finite_config = {
 };
 static const struct device finite_dev = {.data = &finite_data, .config = &finite_config};
 
-static void finite_setup(uint32_t count)
+static void finite_setup_device(uint32_t count, uint32_t bytes, const struct device *device)
 {
 	finite_model_enabled = false;
 	struct dma_block_config block = {
-		.block_size = FINITE_BYTES,
+		.block_size = bytes,
 		.dest_scatter_count = count,
 	};
 	struct dma_config cfg = {
@@ -1016,8 +1016,13 @@ static void finite_setup(uint32_t count)
 	regs[0x34U / 4U] = DMASR_HALTED | DMASR_SGINCL;
 	callbacks = 0;
 	reset_stuck = false;
-	zassert_ok(dma_xlnx_sg_config(&finite_dev, CH_RX, &cfg));
-	zassert_ok(dma_xlnx_sg_start(&finite_dev, CH_RX));
+	zassert_ok(dma_xlnx_sg_config(device, CH_RX, &cfg));
+	zassert_ok(dma_xlnx_sg_start(device, CH_RX));
+}
+
+static void finite_setup(uint32_t count)
+{
+	finite_setup_device(count, FINITE_BYTES, &finite_dev);
 }
 
 static void finite_ioc(void)
@@ -1541,6 +1546,83 @@ ZTEST(xlnx_finite_rx, test_outer_noncacheable_uses_l1_only)
 	zassert_true(invd_count > 0U);
 	zassert_true(dma_test_outer_writes() > 0U);
 	probe_outer = false;
+}
+
+static void sparse_source(bool delegated)
+{
+	static uint8_t sparse_buf[255U * 2048U] __aligned(64);
+	const uint32_t counts[] = {128U, 1U, 8U, 254U, 255U, 256U, 1024U, 2048U};
+	struct dma_xlnx_sg_cfg cfg = finite_config;
+	struct device device = finite_dev;
+
+	cfg.rx_invalidate_in_isr = !delegated;
+	cfg.rx_buf_phys = (uintptr_t)sparse_buf;
+	cfg.rx_buf_size = sizeof(sparse_buf);
+	device.config = &cfg;
+	for (uint32_t n = 0U; n < ARRAY_SIZE(counts); n++) {
+		bool delay_enabled = !delegated && counts[n] <= 255U;
+		uint32_t bytes = counts[n] <= 255U ? 2048U : FINITE_BYTES;
+		uint32_t interrupts = 0U;
+		uint32_t pending = 0U;
+		uint32_t invalidated = 0U;
+		uint32_t peak_bytes = 0U;
+
+		finite_setup_device(counts[n], bytes, &device);
+		finite_data.ch[CH_RX].bds_nocache = true;
+		for (uint32_t i = 0U; i < counts[n]; i++) {
+			uint32_t cr = regs[0x30U / 4U];
+			uint32_t threshold = finite_threshold();
+			uint32_t irq_bytes = 0U;
+
+			finite_bds[i].status = BD_STS_CMPLT | bytes;
+			pending++;
+			/* One millisecond at 100 MHz exceeds any 8-bit delay.
+			 * Service an enabled delay before the next packet arrives.
+			 */
+			if (pending == threshold) {
+				regs[0x34U / 4U] = DMASR_IOC_IRQ;
+			} else if ((cr & DMACR_DLY_IRQEN) != 0U) {
+				regs[0x34U / 4U] = DMASR_DLY_IRQ;
+			} else {
+				continue;
+			}
+			pending = 0U;
+			interrupts++;
+			invd_count = 0U;
+			dma_xlnx_sg_rx_isr(&device);
+			for (uint32_t j = 0U; j < invd_count; j++) {
+				zassert_equal(invd_log[j].addr,
+					      (uintptr_t)sparse_buf + invalidated);
+				zassert_equal(invd_log[j].size, bytes);
+				invalidated += invd_log[j].size;
+				irq_bytes += invd_log[j].size;
+			}
+			peak_bytes = MAX(peak_bytes, irq_bytes);
+		}
+		zassert_equal(invalidated, delegated ? 0U : counts[n] * bytes);
+		if (delay_enabled) {
+			zassert_equal(peak_bytes, bytes,
+				      "sparse payload invalidation accumulated in one ISR");
+		} else if (delegated) {
+			zassert_equal(peak_bytes, 0U);
+		}
+		zassert_equal(interrupts,
+			      delay_enabled ? counts[n] : DIV_ROUND_UP(counts[n], 255U));
+		zassert_equal(callbacks, delay_enabled ? counts[n] : 1U);
+		zassert_equal(callback_bytes, counts[n] * bytes);
+		zassert_equal(finite_data.ch[CH_RX].irq_timeout,
+			      delay_enabled ? CONFIG_DMA_XLNX_AXI_DMA_SG_IRQ_TIMEOUT : 0U);
+	}
+}
+
+ZTEST(xlnx_finite_rx, test_sparse_source_threshold_interrupts_only)
+{
+	sparse_source(true);
+}
+
+ZTEST(xlnx_finite_rx, test_sparse_legacy_invalidation_stays_distributed)
+{
+	sparse_source(false);
 }
 
 static void consumer_in_isr(const void *unused)

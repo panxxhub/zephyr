@@ -1155,10 +1155,16 @@ static int dma_xlnx_sg_config(const struct device *dev, uint32_t channel,
 	if (channel == CH_RX && !ch->cyclic) {
 		uint32_t count = ch->active_bds > 0U ? ch->active_bds : ch->num_bds;
 
+		/* Retain delay IRQs for small sparse captures while the ISR still
+		 * invalidates payloads, so cache work is spread across packets.
+		 * Large rings keep their bounded threshold/remainder IRQ policy.
+		 */
+		if (count > 255U || !DEV_CFG(dev)->rx_invalidate_in_isr) {
+			ch->irq_timeout = 0U;
+		}
 		if (count > 255U) {
 			ch->irq_threshold = 255U;
 			ch->hw_irq_threshold = 255U;
-			ch->irq_timeout = 0U;
 		}
 	}
 

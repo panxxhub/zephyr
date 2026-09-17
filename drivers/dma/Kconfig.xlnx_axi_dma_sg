@@ -58,7 +58,11 @@ config DMA_XLNX_AXI_DMA_SG_RX_INVALIDATE_IN_ISR
 	  Disable only when every finite RX consumer calls
 	  dma_xlnx_sg_rx_invalidate() in thread context before reading payloads.
 	  Completion callbacks and byte counts are unchanged. Streaming windows
-	  remain invalidated by the driver in thread context.
+	  remain invalidated by the driver in thread context. When enabled,
+	  finite transfers of at most 255 descriptors retain IRQ_TIMEOUT to
+	  distribute cache work for sparse sources. Disabling this option also
+	  disables their delay interrupt. Larger finite transfers always use
+	  threshold/remainder interrupts without a delay interrupt.
 
 config DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT
 	bool "DMA is cache-coherent with CPU"
