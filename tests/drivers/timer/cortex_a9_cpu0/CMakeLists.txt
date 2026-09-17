@@ -4,6 +4,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../../arch/arm/irq_trace/qemu_smp.cmake)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+qemu_smp_generate_dtb()
 project(cortex_a9_cpu0)
 target_sources(app PRIVATE src/main.c)
 zephyr_ld_options(-Wl,--wrap=sys_clock_announce_locked)
