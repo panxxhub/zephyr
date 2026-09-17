@@ -178,6 +178,7 @@ struct dma_xlnx_sg_chan {
 	uint32_t consumer_idx;  /* next BD to check for completion */
 	dma_callback_t callback;
 	void *user_data;
+	bool bds_nocache; /* descriptor storage bypasses all CPU caches */
 	bool cyclic; /* true for cyclic RX */
 	bool error;  /* sticky error flag */
 	uint16_t irq_threshold;    /* software window size in BDs */
@@ -307,6 +308,23 @@ static inline void cache_invd(void *addr, size_t len)
 #endif
 }
 
+/* Non-cacheable rings still require ordering before publishing to the engine. */
+static inline void bd_flush(const struct dma_xlnx_sg_chan *ch, void *addr, size_t len)
+{
+	if (!ch->bds_nocache) {
+		cache_flush(addr, len);
+	}
+	barrier_dsync_fence_full();
+}
+
+static inline void bd_invd(const struct dma_xlnx_sg_chan *ch, void *addr, size_t len)
+{
+	if (!ch->bds_nocache) {
+		cache_invd(addr, len);
+	}
+	barrier_dsync_fence_full();
+}
+
 static void dma_xlnx_sg_program_sgctl(const struct device *dev)
 {
 	uintptr_t sgctl_addr = dma_base(dev) + REG_SGCTL;
@@ -415,7 +433,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 				ch->bds[0].app[a] = ch->tx_app.app[a];
 			}
 			ch->bds[0].status = 0U;
-			cache_flush(ch->bds, sizeof(struct xlnx_sg_bd));
+			bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd));
 			return 0;
 		}
 
@@ -459,7 +477,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 			remaining -= chunk;
 		}
 
-		cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * num_needed);
+		bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd) * num_needed);
 		return 0;
 	}
 
@@ -496,7 +514,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 	}
 
 	/* Flush entire BD ring so DMA engine sees current values */
-	cache_flush(ch->bds, sizeof(struct xlnx_sg_bd) * ring_count);
+	bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd) * ring_count);
 	return 0;
 }
 
@@ -738,7 +756,7 @@ static void latch_dma_error(const struct device *dev, uint32_t channel,
 
 	if (ch->bds != NULL && count > 0U && count <= ch->num_bds) {
 		snap->bd_count = MIN(count, ARRAY_SIZE(snap->bd_words));
-		cache_invd(ch->bds, snap->bd_count * sizeof(*ch->bds));
+		bd_invd(ch, ch->bds, snap->bd_count * sizeof(*ch->bds));
 		snap->first = ch->bds[0];
 		memcpy(snap->bd_words, ch->bds,
 		       snap->bd_count * sizeof(*ch->bds));
@@ -809,7 +827,7 @@ static void rx_finite_harvest(const struct device *dev, uint32_t ring_count)
 	uintptr_t virt_base = buf_virt(dev, CH_RX);
 
 	for (uint32_t i = ch->consumer_idx; i < ring_count; i++) {
-		cache_invd(&ch->bds[i], sizeof(ch->bds[i]));
+		bd_invd(ch, &ch->bds[i], sizeof(ch->bds[i]));
 		if ((ch->bds[i].status & BD_STS_CMPLT) == 0U) {
 			break;
 		}
@@ -868,13 +886,13 @@ static void dma_xlnx_sg_rx_isr(const struct device *dev)
 			uint32_t harvested = 0;
 
 			while (harvested < budget) {
-				cache_invd(&ch->bds[idx], sizeof(ch->bds[idx]));
+				bd_invd(ch, &ch->bds[idx], sizeof(ch->bds[idx]));
 				if ((ch->bds[idx].status & BD_STS_CMPLT) == 0U) {
 					break;
 				}
 				ch->bds[idx].control &= ~BD_STS_CMPLT;
 				ch->bds[idx].status &= ~BD_STS_CMPLT;
-				cache_flush(&ch->bds[idx], sizeof(ch->bds[idx]));
+				bd_flush(ch, &ch->bds[idx], sizeof(ch->bds[idx]));
 				idx = (idx + 1) % ch->active_bds;
 				harvested++;
 			}
@@ -1426,7 +1444,7 @@ static int dma_xlnx_sg_consume_rx_window(const struct device *dev, uint8_t **buf
 		struct xlnx_sg_bd *bd = &ch->bds[idx];
 		uint32_t byte_count;
 
-		cache_invd(bd, sizeof(*bd));
+		bd_invd(ch, bd, sizeof(*bd));
 		byte_count = bd->status & DEV_CFG(dev)->sg_len_mask;
 
 		ch->last_rx_bytes = byte_count;
@@ -1663,7 +1681,7 @@ int dma_xlnx_sg_set_tx_app(const struct device *dev, const struct dma_xlnx_sg_ap
 			for (int a = 0; a < 5; a++) {
 				ch->bds[i].app[a] = app->app[a];
 			}
-			cache_flush(&ch->bds[i], sizeof(ch->bds[i]));
+			bd_flush(ch, &ch->bds[i], sizeof(ch->bds[i]));
 		}
 	}
 
@@ -1752,12 +1770,18 @@ static int dma_xlnx_sg_init(const struct device *dev)
 /* --------------------------------------------------------------------------
  * DT instantiation macro
  * -------------------------------------------------------------------------- */
+#if defined(CONFIG_DMA_XLNX_AXI_DMA_SG_NOCACHE_BD)
+#define XLNX_SG_BD_MEMORY __nocache
+#else
+#define XLNX_SG_BD_MEMORY
+#endif
+
 #define DMA_XLNX_SG_INIT(inst)                                                                     \
                                                                                                    \
 	static struct xlnx_sg_bd dma_xlnx_sg_tx_bds_##inst[CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_TX_BD]   \
-		__aligned(64);                                                                     \
+		__aligned(64) XLNX_SG_BD_MEMORY;                                                   \
 	static struct xlnx_sg_bd dma_xlnx_sg_rx_bds_##inst[CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_RX_BD]   \
-		__aligned(64);                                                                     \
+		__aligned(64) XLNX_SG_BD_MEMORY;                                                   \
                                                                                                    \
 	static void dma_xlnx_sg_irq_config_##inst(const struct device *dev)                        \
 	{                                                                                          \
@@ -1793,11 +1817,15 @@ static int dma_xlnx_sg_init(const struct device *dev)
 				[CH_TX] =                                                          \
 					{                                                          \
 						.bds = dma_xlnx_sg_tx_bds_##inst,                  \
+						.bds_nocache = IS_ENABLED(                       \
+							CONFIG_DMA_XLNX_AXI_DMA_SG_NOCACHE_BD), \
 						.num_bds = CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_TX_BD,   \
 					},                                                         \
 				[CH_RX] =                                                          \
 					{                                                          \
 						.bds = dma_xlnx_sg_rx_bds_##inst,                  \
+						.bds_nocache = IS_ENABLED(                       \
+							CONFIG_DMA_XLNX_AXI_DMA_SG_NOCACHE_BD), \
 						.num_bds = CONFIG_DMA_XLNX_AXI_DMA_SG_NUM_RX_BD,   \
 					},                                                         \
 			},                                                                         \

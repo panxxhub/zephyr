@@ -24,10 +24,13 @@ static bool finite_model_enabled;
 
 static void finite_control_write(uint32_t value, bool before);
 
+static uint32_t flush_count;
+
 static int test_cache_range(void *addr, size_t size)
 {
 	ARG_UNUSED(addr);
 	ARG_UNUSED(size);
+	flush_count++;
 	return 0;
 }
 
@@ -1400,4 +1403,30 @@ ZTEST(xlnx_finite_rx, test_pending_ioc_after_callback_stops_channel)
 	finite_model_irq();
 	zassert_equal(callbacks, 1U);
 	zassert_equal(invd_count, 0U);
+}
+
+ZTEST(xlnx_finite_rx, test_nocache_descriptor_operations)
+{
+	finite_setup(1024U);
+	finite_data.ch[CH_RX].bds_nocache = true;
+	flush_count = 0U;
+	zassert_ok(build_bd_ring(&finite_dev, CH_RX));
+	zassert_equal(flush_count, 0U);
+	for (uint32_t i = 0U; i < 1024U; i++) {
+		finite_bds[i].status = BD_STS_CMPLT | FINITE_BYTES;
+	}
+	finite_ioc();
+	zassert_equal(invd_count, 1024U);
+	for (uint32_t i = 0U; i < invd_count; i++) {
+		zassert_equal(invd_log[i].addr, (uintptr_t)finite_buf + i * FINITE_BYTES);
+	}
+	finite_data.ch[CH_TX].bds = finite_bds;
+	finite_data.ch[CH_TX].num_bds = FINITE_BDS;
+	finite_data.ch[CH_TX].bd_buf_bytes = FINITE_BYTES;
+	finite_data.ch[CH_TX].bds_nocache = true;
+	zassert_ok(build_bd_ring(&finite_dev, CH_TX));
+	zassert_equal(flush_count, 0U);
+	finite_data.ch[CH_TX].bds_nocache = false;
+	zassert_ok(build_bd_ring(&finite_dev, CH_TX));
+	zassert_equal(flush_count, 1U);
 }

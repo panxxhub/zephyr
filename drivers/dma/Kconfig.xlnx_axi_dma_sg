@@ -18,6 +18,15 @@ config DMA_XLNX_AXI_DMA_SG_APP_FIELDS
 	  Keep this disabled unless the connected peripheral actually uses the
 	  AXI DMA control/status streams.
 
+config DMA_XLNX_AXI_DMA_SG_NOCACHE_BD
+	bool "Place descriptor rings in non-cacheable memory"
+	default y
+	depends on ARCH_HAS_NOCACHE_MEMORY_SUPPORT
+	select NOCACHE_MEMORY
+	help
+	  Place both descriptor rings in the non-cacheable linker section and
+	  omit descriptor cache maintenance. Disable to retain cacheable rings.
+
 config DMA_XLNX_AXI_DMA_SG_NUM_TX_BD
 	int "Number of TX scatter-gather descriptors"
 	default 16
