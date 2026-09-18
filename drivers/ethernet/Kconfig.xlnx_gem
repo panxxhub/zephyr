@@ -29,6 +29,21 @@ config ETH_NIC_MODEL
 
 if ETH_XLNX_GEM
 
+config ETH_XLNX_GEM_QEMU_NO_CHKSUM_OFFLOAD
+	bool "Disable GEM checksum offload on QEMU"
+	depends on QEMU_TARGET
+	default y
+	help
+	  Ignore the checksum offload the device tree asks for and report no
+	  offload at all, which is what a QEMU build has always done.
+
+	  Turn this off to build the configuration a board uses, so that what
+	  the driver reports and what the network stack does with it can be
+	  exercised under emulation. QEMU's controller model computes and
+	  checks the same checksums the controller does, but it is a model of
+	  the offload, not of the silicon.
+
+
 config ETH_XLNX_GEM_RX_THREAD
 	bool "Deferred GEM work on a driver-owned thread"
 	help
