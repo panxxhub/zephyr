@@ -69,6 +69,32 @@ it does not run the real socket/ARP stack or establish hardware throughput.
 Costs are injected, not Cortex-A9 measurements. The DTS default remains 1536
 bytes; only test fixtures use 512 or 2048 bytes.
 
+## Opt-in options (#67)
+
+`optin.patch` holds every deviation of `eth_xlnx_gem.c` and
+`eth_xlnx_gem_priv.h` from the minimal driver. The harness reverses it before
+hashing, so the pinned hashes above still reject any change to the receive
+loop, the recovery path or the send function that is not declared in that
+patch; the patch itself is reviewed as a diff.
+
+`gem_optin_host.c` compiles the actual driver functions twice, once with
+`CONFIG_ETH_XLNX_GEM_RX_THREAD`, `..._FRAME_SIZED_CACHE_OPS`,
+`..._TX_DONE_WORKQ` and `..._TX_RECLAIM` defined and once without them. Each
+case states a property one of those options provides, so building it without
+them is the reverse control.
+
+| Test | Evidence | Reverse |
+| --- | --- | --- |
+| T30 | 22 frame length classes from 1 to 6000 bytes, 1 to 3 buffers each, sent and received through the actual functions. Every cache operation is recorded: it covers its descriptor's buffer start, both ends are cache line aligned, it covers the fragment in full and never reaches past the buffer. Received bytes are compared against what was placed in the ring. | Whole-buffer maintenance fails the frame-sized total. Replacing `ROUND_UP` with `ROUND_DOWN` in the production span macro fails "covers the fragment in full". |
+| T31 | 256 transmissions whose confirmation never arrives, in both the in-interrupt and the deferred completion mode. The free descriptor count and the ring cursors return to their initial values after each one, and a confirmed transmission still succeeds afterwards. | Historical behaviour books the descriptors out and never returns them; the free count fails on the first timeout and walks to zero. |
+| T32 | A confirmation that arrives after the timeout neither releases a sender nor moves the ring cursors, and the next transmission is unaffected. | Historical behaviour has already lost the descriptors by then. |
+| T33 | A second sender entering the send function while the first waits for its confirmation. The model admits it exactly when the driver does not hold the transmit lock. | Without the lock it is admitted, consumes the first sender's confirmation and leaks that sender's descriptors. |
+| T34 | With completion deferred, one interrupt carrying both receive and transmit indications submits both work items to the driver's own queue and performs no descriptor or cache work of its own. | Holds for the historical behaviour too; run as a control, not a reverse. |
+
+The host model has no cache, no second core and no real scheduler: it
+establishes the spans, the accounting and the exclusion, not the cost of a
+PL310 operation or the latency of a thread. Those are hardware measurements.
+
 ## Hardware evidence and scope
 
 Owner control kupv7 (unmodified d9c2bd00, logging off, 255 x 2048 RX, pools

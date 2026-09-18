@@ -85,9 +85,72 @@ def mutation(source, old, new):
     return source.replace(old, new)
 
 
+def unapply(source, patch, path):
+    """Reverse a unified diff hunk by hunk, requiring an exact match."""
+    lines = source.splitlines(True)
+    patch_lines = patch.splitlines(True)
+    result = []
+    consumed = 0
+    index = 0
+    selected = False
+    applied = False
+    while index < len(patch_lines):
+        line = patch_lines[index]
+        index += 1
+        if line.startswith('--- '):
+            selected = line[4:].strip() == 'a/' + path
+            continue
+        header = re.match(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@', line)
+        if header is None:
+            continue
+        if not selected:
+            continue
+        start = int(header.group(1)) - 1
+        remaining = int(header.group(2) or 1)
+        applied = True
+        assert start >= consumed, (path, start, consumed)
+        result.extend(lines[consumed:start])
+        consumed = start
+        while remaining > 0 or (index < len(patch_lines) and
+                                patch_lines[index].startswith('-')):
+            body = patch_lines[index]
+            index += 1
+            if body == '\n':
+                # A blank context line, stored without its leading space.
+                body = ' \n'
+            if body.startswith('-'):
+                result.append(body[1:])
+                continue
+            assert body[0] in '+ ', (path, body)
+            assert lines[consumed] == body[1:], (path, consumed, lines[consumed])
+            if body.startswith(' '):
+                result.append(body[1:])
+            consumed += 1
+            remaining -= 1
+    assert applied, path
+    result.extend(lines[consumed:])
+    return ''.join(result)
+
+
+def without_optin(source, header):
+    """Strip the opt-in additions, leaving the minimal driver to be hashed.
+
+    Every deviation from the minimal driver lives in optin.patch, so the
+    pinned hashes below still reject any change to the receive loop, the
+    recovery path or the send function that is not declared there. The patch
+    is reviewed as a diff; the hashes guarantee it is the whole of it.
+    """
+    patch = (HERE / 'optin.patch').read_text()
+    return (
+        unapply(source, patch, 'drivers/ethernet/eth_xlnx_gem.c'),
+        unapply(header, patch, 'drivers/ethernet/eth_xlnx_gem_priv.h'),
+    )
+
+
 def gem():
-    source = (ROOT / 'drivers/ethernet/eth_xlnx_gem.c').read_text()
-    header = (ROOT / 'drivers/ethernet/eth_xlnx_gem_priv.h').read_text()
+    actual = (ROOT / 'drivers/ethernet/eth_xlnx_gem.c').read_text()
+    actual_header = (ROOT / 'drivers/ethernet/eth_xlnx_gem_priv.h').read_text()
+    source, header = without_optin(actual, actual_header)
     hard_changes = [
         (
             (
@@ -345,6 +408,64 @@ def gem():
     print('GEM baseline source equality and reverse: PASS', flush=True)
 
 
+OPTIN_OPTIONS = (
+    'CONFIG_ETH_XLNX_GEM_RX_THREAD',
+    'CONFIG_ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS',
+    'CONFIG_ETH_XLNX_GEM_TX_DONE_WORKQ',
+    'CONFIG_ETH_XLNX_GEM_TX_RECLAIM',
+)
+
+OPTIN_NAMES = (
+    'eth_xlnx_gem_configure_buffers',
+    'eth_xlnx_gem_reset_rx_queue',
+    'eth_xlnx_gem_submit_work',
+    'eth_xlnx_gem_rx_invd_buffer',
+    'eth_xlnx_gem_tx_flush_buffer',
+    'eth_xlnx_gem_tx_lock',
+    'eth_xlnx_gem_tx_unlock',
+    'eth_xlnx_gem_tx_timeout_reclaim',
+    'eth_xlnx_gem_handle_tx_done',
+    'eth_xlnx_gem_handle_rx_pending',
+    'eth_xlnx_gem_send',
+    'eth_xlnx_gem_isr',
+)
+
+
+def gem_optin():
+    """The opt-in options of #67, and the historical behaviour as the reverse."""
+    source = (ROOT / 'drivers/ethernet/eth_xlnx_gem.c').read_text()
+    header = (ROOT / 'drivers/ethernet/eth_xlnx_gem_priv.h').read_text()
+    functions = '\n\n'.join(function(source, name) for name in OPTIN_NAMES)
+    template = (HERE / 'gem_optin_host.c').read_text()
+    template = template.replace(
+        '/* MACROS */',
+        macros(header) + '\n' + mmio_macro(header, 'ETH_XLNX_GEM_CACHE_SPAN'),
+    )
+    template = template.replace('/* FUNCTIONS */', functions)
+
+    enabled = template.replace(
+        '/* OPTIONS */', '\n'.join(f'#define {name} 1' for name in OPTIN_OPTIONS)
+    )
+    disabled = template.replace('/* OPTIONS */', '')
+
+    cases = [30, 31, 32, 33, 34]
+    compile_run(enabled, 'gem_optin', cases)
+    # Every case states a property one of the options provides, so the
+    # historical behaviour has to fail it. Case 34 holds for both.
+    for case in [30, 31, 32, 33]:
+        compile_run(disabled, f'gem_optin_reverse_{case}', [case], reverse=True)
+    compile_run(disabled, 'gem_optin_baseline_workq', [34])
+
+    # The span must round up: truncating it leaves part of the frame stale.
+    truncating = mutation(
+        enabled,
+        mmio_macro(header, 'ETH_XLNX_GEM_CACHE_SPAN'),
+        mmio_macro(header, 'ETH_XLNX_GEM_CACHE_SPAN').replace('ROUND_UP', 'ROUND_DOWN'),
+    )
+    compile_run(truncating, 'gem_optin_reverse_round_down', [30], reverse=True)
+    print('GEM opt-in options and reverse: PASS', flush=True)
+
+
 def phy():
     source = (ROOT / 'drivers/ethernet/phy/phy_motorcomm_yt8531.c').read_text()
     names = [
@@ -594,6 +715,7 @@ def coap_log():
 if __name__ == '__main__':
     bringup()
     gem()
+    gem_optin()
     phy()
     mdio()
     phy_io()
