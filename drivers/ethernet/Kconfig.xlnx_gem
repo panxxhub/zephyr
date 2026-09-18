@@ -129,4 +129,45 @@ config ETH_XLNX_GEM_TX_RECLAIM
 
 	  When this option is disabled, the send function behaves as before.
 
+config ETH_XLNX_GEM_TX_ASYNC
+	bool "Return from a GEM transmission without waiting for the wire"
+	select ETH_XLNX_GEM_TX_RECLAIM
+	help
+	  Hand a frame to the controller and return, instead of blocking until
+	  the controller reports that it has been transmitted.
+
+	  The send function copies the frame into this driver's own DMA buffers
+	  and then waits for the completion interrupt of that very frame before
+	  returning. Only one transmission is ever in flight: every frame pays
+	  for its own wire time plus an interrupt, a semaphore wake and a
+	  context switch before the next one can be prepared, while the rest of
+	  the transmit ring stands idle. Measured on a Zynq-7000 this, rather
+	  than the cache maintenance or the descriptor walk, is where the time
+	  of a transmitted packet goes.
+
+	  With this option the send function returns as soon as the descriptors
+	  are handed to the controller. Nothing references the caller's packet
+	  by then, because its contents have been copied. Transmissions are
+	  still started in the order in which senders arrive, and completion
+	  reclaims descriptors for whichever transmissions have finished.
+
+	  A sender blocks only when the ring has no room, which is the back
+	  pressure that bounds how many transmissions are in flight. If no
+	  completion arrives while it waits, the sender returns the descriptors
+	  of the transmission at the head of the ring, so a controller that
+	  stops reporting completions costs frames rather than the ring.
+
+	  When this option is disabled, the send function blocks until the
+	  transmission completes, which is the historical behaviour.
+
+config ETH_XLNX_GEM_TX_ASYNC_TIMEOUT_MS
+	int "Age at which an unfinished GEM transmission is reclaimed"
+	default 100
+	depends on ETH_XLNX_GEM_TX_ASYNC
+	help
+	  How long a sender waits for room in a full ring, and therefore the age
+	  at which a transmission the controller has not reported as complete
+	  has its descriptors returned. The default matches the confirmation
+	  timeout of the blocking send function.
+
 endif # ETH_XLNX_GEM

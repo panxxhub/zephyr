@@ -744,6 +744,10 @@ struct eth_xlnx_gem_dev_data {
 	/* Exclusive access to the transmit path */
 	struct k_mutex			tx_lock;
 #endif
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+	/* Posted whenever reclamation returns TX BDs to the ring */
+	struct k_sem			tx_space_sem;
+#endif
 
 	uint8_t				*first_rx_buffer;
 	uint8_t				*first_tx_buffer;
