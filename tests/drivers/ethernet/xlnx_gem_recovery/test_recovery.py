@@ -111,8 +111,7 @@ def unapply(source, patch, path):
         assert start >= consumed, (path, start, consumed)
         result.extend(lines[consumed:start])
         consumed = start
-        while remaining > 0 or (index < len(patch_lines) and
-                                patch_lines[index].startswith('-')):
+        while remaining > 0 or (index < len(patch_lines) and patch_lines[index].startswith('-')):
             body = patch_lines[index]
             index += 1
             if body == '\n':

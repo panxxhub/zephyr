@@ -1,3 +1,8 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Every deviation of the GEM driver and its private header from the minimal
+# driver of 82e9d825. test_recovery.py reverses this before hashing them.
 diff --git a/drivers/ethernet/eth_xlnx_gem.c b/drivers/ethernet/eth_xlnx_gem.c
 index 4de58a553e7..5bcacbf08fd 100644
 --- a/drivers/ethernet/eth_xlnx_gem.c
