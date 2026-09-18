@@ -740,6 +740,10 @@ struct eth_xlnx_gem_dev_data {
 	struct k_work			tx_done_work;
 	struct k_work			rx_pend_work;
 	struct k_sem			tx_done_sem;
+#ifdef CONFIG_ETH_XLNX_GEM_TX_RECLAIM
+	/* Exclusive access to the transmit path */
+	struct k_mutex			tx_lock;
+#endif
 
 	uint8_t				*first_rx_buffer;
 	uint8_t				*first_tx_buffer;

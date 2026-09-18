@@ -105,4 +105,28 @@ config ETH_XLNX_GEM_TX_DONE_WORKQ
 	  When this option is disabled, only instances whose device tree asks
 	  for it defer transmit completion, which is the historical behaviour.
 
+config ETH_XLNX_GEM_TX_RECLAIM
+	bool "Serialize GEM transmission and recover from a confirmation timeout"
+	help
+	  Let only one thread at a time transmit through a GEM instance, and
+	  return the buffer descriptors of a transmission to the ring when its
+	  completion notification times out.
+
+	  An instance has a single transmit completion semaphore, which can
+	  report the completion of one transmission. A second sender entering
+	  the send function while the first waits for its confirmation consumes
+	  that confirmation, so the first sender times out although its frame
+	  was transmitted. The descriptors it booked out are then never
+	  accounted for again, and every such timeout permanently reduces the
+	  number of descriptors available until the interface can no longer
+	  transmit anything.
+
+	  With this option the send function holds a mutex for the whole
+	  transmission, so the outstanding transmission is always the calling
+	  thread's own, and a timeout returns exactly the descriptors that
+	  transmission booked out. A confirmation that arrives after the
+	  timeout is discarded rather than released to the next sender.
+
+	  When this option is disabled, the send function behaves as before.
+
 endif # ETH_XLNX_GEM
