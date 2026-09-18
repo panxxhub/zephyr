@@ -60,4 +60,26 @@ config ETH_XLNX_GEM_RX_THREAD_STACK_SIZE
 	help
 	  Stack size of the driver-owned GEM work queue thread, in bytes.
 
+config ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS
+	bool "Size GEM cache maintenance to the frame length"
+	depends on DCACHE
+	help
+	  Invalidate and clean only the cache lines a frame actually occupies
+	  instead of the whole DMA buffer holding it.
+
+	  The driver reserves a buffer per descriptor, typically 1536 or 2048
+	  bytes, but most frames are far shorter, and on a Cortex-A9 with an
+	  outer L2 cache every maintenance operation is charged to the one
+	  global cache lock the other core shares. Sizing the operation to the
+	  frame cuts the work and the lock hold to what the transfer needs.
+
+	  A length is rounded up to the next cache line, so the operation still
+	  covers every byte the frame touches. Buffers start on a cache line
+	  boundary and their size is a multiple of the line size, which the
+	  driver asserts at build time, so the rounded-up span stays inside the
+	  buffer it belongs to.
+
+	  When this option is disabled, whole buffers are maintained, which is
+	  the historical behaviour.
+
 endif # ETH_XLNX_GEM

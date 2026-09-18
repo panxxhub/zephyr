@@ -23,6 +23,26 @@
 #include <zephyr/sys/device_mmio.h>
 
 #define ETH_XLNX_BUFFER_ALIGNMENT			4 /* RX/TX buffer alignment (in bytes) */
+#define ETH_XLNX_GEM_DMA_AREA_ALIGNMENT			4096 /* DMA memory area alignment */
+
+/**
+ * @brief Cache maintenance span covering the used part of a DMA buffer.
+ *
+ * Every RX and TX buffer starts at a multiple of ETH_XLNX_GEM_DMA_AREA_ALIGNMENT
+ * plus a whole number of buffer sizes, and if the data cache is enabled both the
+ * area alignment and the buffer size are multiples of the cache line size. The
+ * length rounded up to the next cache line therefore stays inside the buffer it
+ * belongs to: no cache line is shared with a neighbouring buffer or with any
+ * unrelated object, so neither invalidating nor flushing the rounded-up span can
+ * discard or write back data that belongs to someone else.
+ *
+ * Only ever used where CONFIG_DCACHE is enabled.
+ *
+ * @param length      Number of payload bytes exchanged through the buffer
+ * @param buffer_size Size of the DMA buffer the payload is placed in
+ */
+#define ETH_XLNX_GEM_CACHE_SPAN(length, buffer_size) \
+	MIN(ROUND_UP((length), CONFIG_DCACHE_LINE_SIZE), (size_t)(buffer_size))
 
 /* Buffer descriptor (BD) related defines */
 
@@ -515,7 +535,7 @@ struct eth_xlnx_gem##port##_dma_area_layout {\
 /* DMA memory area instantiation macro */
 #define ETH_XLNX_GEM_DMA_AREA_INST(port) \
 static struct eth_xlnx_gem##port##_dma_area_layout eth_xlnx_gem##port##_dma_area\
-	__aligned(4096);
+	__aligned(ETH_XLNX_GEM_DMA_AREA_ALIGNMENT);
 
 /* Interrupt configuration function macro */
 #define ETH_XLNX_GEM_CONFIG_IRQ_FUNC(port) \

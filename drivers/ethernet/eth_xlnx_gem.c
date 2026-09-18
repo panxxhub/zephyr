@@ -65,6 +65,10 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
 static void eth_xlnx_gem_set_mac_address(const struct device *dev);
 static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev);
 static void eth_xlnx_gem_configure_buffers(const struct device *dev);
+static void eth_xlnx_gem_rx_invd_buffer(const struct device *dev, uint8_t bd_idx,
+					uint32_t length);
+static void eth_xlnx_gem_tx_flush_buffer(const struct device *dev, uint8_t bd_idx,
+					 uint32_t length);
 static void eth_xlnx_gem_submit_work(struct k_work *work);
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
@@ -140,7 +144,10 @@ BUILD_ASSERT((DT_INST_PROP(port, rx_buffer_size) % CONFIG_DCACHE_LINE_SIZE) == 0
 	     "instance " #port);\
 BUILD_ASSERT((DT_INST_PROP(port, tx_buffer_size) % CONFIG_DCACHE_LINE_SIZE) == 0,\
 	     "TX buffer size is not a multiple of the dcache line size for GEM "\
-	     "instance " #port);
+	     "instance " #port);\
+BUILD_ASSERT((ETH_XLNX_GEM_DMA_AREA_ALIGNMENT % CONFIG_DCACHE_LINE_SIZE) == 0,\
+	     "DMA memory area alignment is not a multiple of the dcache line "\
+	     "size for GEM instance " #port);
 
 DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_BUFFER_SIZE_CHECK)
 
@@ -344,6 +351,76 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 }
 
 /**
+ * @brief Invalidates the cache lines holding a received frame fragment.
+ * Discards the cache lines covering the part of an RX buffer the controller
+ * has just written, so that the subsequent copy to the network packet reads
+ * the received data rather than a stale copy.
+ *
+ * @param dev Pointer to the device data
+ * @param bd_idx Index of the RX buffer descriptor whose buffer is to be
+ *               invalidated
+ * @param length Number of bytes of the received frame held in that buffer
+ */
+static void eth_xlnx_gem_rx_invd_buffer(const struct device *dev, uint8_t bd_idx,
+					uint32_t length)
+{
+#ifdef CONFIG_DCACHE
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	void *buffer = (void *)(dev_data->rx_bd_ring.first_bd[bd_idx].addr &
+				ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK);
+
+#ifdef CONFIG_ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS
+	size_t span = ETH_XLNX_GEM_CACHE_SPAN(length, dev_conf->rx_buffer_size);
+
+	sys_cache_data_invd_range(buffer, span);
+#else
+	ARG_UNUSED(length);
+	sys_cache_data_invd_range(buffer, dev_conf->rx_buffer_size);
+#endif
+#else
+	ARG_UNUSED(dev);
+	ARG_UNUSED(bd_idx);
+	ARG_UNUSED(length);
+#endif
+}
+
+/**
+ * @brief Writes back the cache lines holding a frame fragment to be sent.
+ * Cleans the cache lines covering the part of a TX buffer the send function
+ * has just written, so that the controller's DMA reads the data to be sent
+ * rather than the previous contents of that buffer.
+ *
+ * @param dev Pointer to the device data
+ * @param bd_idx Index of the TX buffer descriptor whose buffer is to be
+ *               flushed
+ * @param length Number of bytes of the frame to be sent held in that buffer
+ */
+static void eth_xlnx_gem_tx_flush_buffer(const struct device *dev, uint8_t bd_idx,
+					 uint32_t length)
+{
+#ifdef CONFIG_DCACHE
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	void *buffer = (void *)(dev_data->first_tx_buffer +
+				(dev_conf->tx_buffer_size * bd_idx));
+
+#ifdef CONFIG_ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS
+	size_t span = ETH_XLNX_GEM_CACHE_SPAN(length, dev_conf->tx_buffer_size);
+
+	sys_cache_data_flush_and_invd_range(buffer, span);
+#else
+	ARG_UNUSED(length);
+	sys_cache_data_flush_and_invd_range(buffer, dev_conf->tx_buffer_size);
+#endif
+#else
+	ARG_UNUSED(dev);
+	ARG_UNUSED(bd_idx);
+	ARG_UNUSED(length);
+#endif
+}
+
+/**
  * @brief GEM data send function
  * GEM data send function. Blocks until a TX complete notification has been
  * received & processed.
@@ -484,11 +561,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	 */
 	reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
 	sys_write32(reg_val, reg_ctrl);
-#ifdef CONFIG_DCACHE
-	sys_cache_data_flush_and_invd_range((void *)(dev_data->first_tx_buffer +
-					    (dev_conf->tx_buffer_size * curr_bd_idx)),
-					    dev_conf->tx_buffer_size);
-#endif
+	eth_xlnx_gem_tx_flush_buffer(dev, curr_bd_idx, reg_val & ETH_XLNX_GEM_TX_BD_LEN_MASK);
 
 	while (curr_bd_idx != first_bd_idx) {
 		curr_bd_idx = (curr_bd_idx != 0) ? (curr_bd_idx - 1) :
@@ -497,11 +570,8 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 		reg_val = sys_read32(reg_ctrl);
 		reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
 		sys_write32(reg_val, reg_ctrl);
-#ifdef CONFIG_DCACHE
-		sys_cache_data_flush_and_invd_range((void *)(dev_data->first_tx_buffer +
-						    (dev_conf->tx_buffer_size * curr_bd_idx)),
-						    dev_conf->tx_buffer_size);
-#endif
+		eth_xlnx_gem_tx_flush_buffer(dev, curr_bd_idx,
+					     reg_val & ETH_XLNX_GEM_TX_BD_LEN_MASK);
 	}
 
 	/* Set the start TX bit in the gem.net_ctrl register */
@@ -1657,21 +1727,18 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 		 * by the controller.
 		 */
 		do {
+			uint32_t bd_data_length =
+				(rx_data_remaining < dev_conf->rx_buffer_size) ?
+				rx_data_remaining : dev_conf->rx_buffer_size;
+
 			if (pkt != NULL) {
-#ifdef CONFIG_DCACHE
-				sys_cache_data_invd_range(
-					(void *)(dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
-					ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK),
-					dev_conf->rx_buffer_size);
-#endif
+				eth_xlnx_gem_rx_invd_buffer(dev, curr_bd_idx, bd_data_length);
 				net_pkt_write(pkt, (const void *)
 					      (dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
 					      ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK),
-					      (rx_data_remaining < dev_conf->rx_buffer_size) ?
-					      rx_data_remaining : dev_conf->rx_buffer_size);
+					      bd_data_length);
 			}
-			rx_data_remaining -= (rx_data_remaining < dev_conf->rx_buffer_size) ?
-					     rx_data_remaining : dev_conf->rx_buffer_size;
+			rx_data_remaining -= bd_data_length;
 
 			/*
 			 * The entire packet data of the current BD has been
