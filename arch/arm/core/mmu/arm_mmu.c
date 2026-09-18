@@ -60,6 +60,13 @@ static uint32_t arm_mmu_l2_tables_free = CONFIG_ARM_MMU_NUM_L2_TABLES;
 static uint32_t arm_mmu_l2_next_free_table;
 
 /*
+ * Attributes of the memory the page tables themselves live in. Every CPU needs
+ * them when it programs TTBR0, and only the CPU that builds the tables works
+ * them out, so they are kept here for the other CPUs to use.
+ */
+static uint32_t arm_mmu_pt_attrs;
+
+/*
  * Static definition of all code & data memory regions of the
  * current Zephyr image. This information must be available &
  * processed upon MMU initialization.
@@ -124,6 +131,7 @@ static const struct arm_mmu_flat_range mmu_zephyr_ranges[] = {
 
 static void arm_mmu_l2_map_page(uint32_t va, uint32_t pa,
 				struct arm_mmu_perms_attrs perms_attrs);
+static void arm_mmu_enable(void);
 
 /**
  * @brief Invalidates the TLB
@@ -756,7 +764,6 @@ int z_arm_mmu_init(void)
 	uint32_t attrs;
 	uint32_t pt_attrs = 0;
 	uint32_t rem_size;
-	uint32_t reg_val = 0;
 	struct arm_mmu_perms_attrs perms_attrs;
 
 	__ASSERT(KB(4) == CONFIG_MMU_PAGE_SIZE,
@@ -832,6 +839,23 @@ int z_arm_mmu_init(void)
 		}
 	}
 
+	arm_mmu_pt_attrs = pt_attrs;
+	arm_mmu_enable();
+
+	return 0;
+}
+
+/**
+ * @brief Points the current CPU at the page tables and switches its MMU on.
+ * Everything here is private to the CPU that executes it: TTBR0, TTBCR, DACR
+ * and SCTLR are banked per CPU, and the TLB invalidation is of this CPU's TLB.
+ * The page tables themselves are shared and are not touched.
+ */
+static void arm_mmu_enable(void)
+{
+	const uint32_t pt_attrs = arm_mmu_pt_attrs;
+	uint32_t reg_val = 0;
+
 	/* Clear TTBR1 */
 	__asm__ volatile("mcr p15, 0, %0, c2, c0, 1" : : "r"(reg_val));
 
@@ -885,6 +909,20 @@ int z_arm_mmu_init(void)
 	reg_val |= ARM_MMU_SCTLR_DCACHE_ENABLE_BIT;
 	reg_val |= ARM_MMU_SCTLR_MMU_ENABLE_BIT;
 	__set_SCTLR(reg_val);
+}
+
+/**
+ * @brief MMU initialization for a secondary CPU
+ * A secondary CPU comes up long after the primary has built the page tables
+ * and while the primary is running on them. Rebuilding them from here would
+ * rewrite entries the other CPU is translating through, so this only points
+ * the new CPU at the tables that already exist.
+ *
+ * @retval Always 0.
+ */
+int z_arm_mmu_init_secondary(void)
+{
+	arm_mmu_enable();
 
 	return 0;
 }
