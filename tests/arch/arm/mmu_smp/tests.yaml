@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+common:
+  tags:
+    - arch
+    - mmu
+    - smp
+  platform_allow:
+    - qemu_cortex_a9
+  integration_platforms:
+    - qemu_cortex_a9
+  timeout: 60
+tests:
+  arch.arm.mmu_smp: {}
