@@ -36,3 +36,12 @@ tests:
       - CONFIG_ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS=y
       - CONFIG_ETH_XLNX_GEM_TX_ASYNC=y
       - CONFIG_ETH_XLNX_GEM_TX_DONE_WORKQ=y
+  drivers.ethernet.xlnx_gem_loopback.chksum_offload:
+    extra_configs:
+      - CONFIG_ETH_XLNX_GEM_QEMU_NO_CHKSUM_OFFLOAD=n
+  drivers.ethernet.xlnx_gem_loopback.optin_async_chksum_offload:
+    extra_configs:
+      - CONFIG_ETH_XLNX_GEM_QEMU_NO_CHKSUM_OFFLOAD=n
+      - CONFIG_ETH_XLNX_GEM_RX_THREAD=y
+      - CONFIG_ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS=y
+      - CONFIG_ETH_XLNX_GEM_TX_ASYNC=y

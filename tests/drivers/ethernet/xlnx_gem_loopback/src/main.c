@@ -42,6 +42,11 @@ static const uint16_t frame_lengths[] = {
 	511, 512, 513, 1023, 1024, 1500, 1513, 1514,
 };
 
+/* Offsets of the two checksum fields the controller substitutes, if enabled. */
+#define IP_OFFSET	 14
+#define UDP_OFFSET	 34
+#define CHKSUM_FRAME_LEN 60
+
 struct loopback_fixture {
 	const struct device *dev;
 	struct net_if *iface;
@@ -112,6 +117,23 @@ static void teardown(void *unused)
 	(void)net_promisc_mode_off(fixture.iface);
 }
 
+/*
+ * How much of a frame is guaranteed to come back unaltered. With the transmit
+ * checksum engine enabled the controller substitutes the checksum fields of the
+ * frames it recognises, so only the bytes ahead of any network header can be
+ * compared. QEMU's model recognises more frames than the silicon does - it
+ * rewrote the IPv4 header checksum position of frames whose EtherType is not
+ * IPv4 at all - which is one more reason not to compare past that point.
+ */
+static uint16_t unaltered_span(uint16_t length)
+{
+	if (DEV_CFG(fixture.dev)->disable_tx_chksum_offload) {
+		return length;
+	}
+
+	return MIN(length, IP_OFFSET);
+}
+
 static void drain(void)
 {
 	struct net_pkt *pkt;
@@ -144,7 +166,8 @@ static void round_trip(uint16_t length)
 	zassert_ok(net_pkt_read(pkt, received, length), "read back of %u bytes failed", length);
 	net_pkt_unref(pkt);
 
-	zassert_mem_equal(received, sent, length, "%u byte frame came back altered", length);
+	zassert_mem_equal(received, sent, unaltered_span(length),
+			  "%u byte frame came back altered", length);
 }
 
 /* Every length class survives the round trip byte for byte. */
@@ -198,7 +221,8 @@ ZTEST(xlnx_gem_loopback, test_back_to_back_frames)
 
 		zassert_equal(received[14], (uint8_t)i, "frame %d came back in position %u",
 			      received[14], i);
-		zassert_mem_equal(received, sent[i], length, "frame %d came back altered", i);
+		zassert_mem_equal(received, sent[i], unaltered_span(length),
+				  "frame %d came back altered", i);
 	}
 
 	zassert_is_null(net_promisc_mode_wait_data(K_MSEC(100)), "more frames came back");
@@ -267,6 +291,147 @@ ZTEST(xlnx_gem_loopback, test_cache_maintenance_alignment)
 			remaining -= chunk;
 		}
 	}
+}
+
+/*
+ * Checksum offload. The controller computes and checks the IPv4 header, TCP and
+ * UDP checksums; it knows nothing about ICMP. The driver reports exactly that,
+ * and the network stack skips in software only what the driver reports.
+ *
+ * What this cannot show: the emulated controller is a model of the offload, not
+ * of the silicon, and the point of the offload is the time it saves the CPU,
+ * which is a hardware measurement.
+ */
+static uint16_t ones_complement(const uint8_t *data, size_t length)
+{
+	uint32_t sum = 0;
+
+	for (size_t i = 0; i < length; i += 2) {
+		sum += ((uint32_t)data[i] << 8) | data[i + 1];
+	}
+	while ((sum >> 16) != 0U) {
+		sum = (sum & 0xFFFFU) + (sum >> 16);
+	}
+
+	return (uint16_t)~sum;
+}
+
+/* An IPv4/UDP datagram whose two checksum fields are left at zero. */
+static void build_datagram(uint8_t *buffer)
+{
+	uint8_t *ip = buffer + IP_OFFSET;
+	uint8_t *udp = buffer + UDP_OFFSET;
+
+	memset(buffer, 0, CHKSUM_FRAME_LEN);
+	fill(buffer, IP_OFFSET);
+	buffer[12] = 0x08;
+	buffer[13] = 0x00;
+
+	ip[0] = 0x45;
+	ip[3] = (uint8_t)(CHKSUM_FRAME_LEN - IP_OFFSET);
+	ip[8] = 64;
+	ip[9] = 17;
+	ip[12] = 10; ip[13] = 0; ip[14] = 0; ip[15] = 1;
+	ip[16] = 10; ip[17] = 0; ip[18] = 0; ip[19] = 2;
+
+	udp[0] = 0x13; udp[1] = 0x88;
+	udp[2] = 0x13; udp[3] = 0x89;
+	udp[5] = (uint8_t)(CHKSUM_FRAME_LEN - UDP_OFFSET);
+
+	for (int i = UDP_OFFSET + 8; i < CHKSUM_FRAME_LEN; i++) {
+		buffer[i] = (uint8_t)i;
+	}
+}
+
+/* What the driver reports must follow the device tree and the Kconfig. */
+ZTEST(xlnx_gem_loopback, test_checksum_offload_is_reported)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(fixture.dev);
+	const bool offload = !IS_ENABLED(CONFIG_ETH_XLNX_GEM_QEMU_NO_CHKSUM_OFFLOAD) &&
+			     !DT_PROP(GEM_NODE, disable_rx_checksum_offload);
+	enum ethernet_hw_caps caps = fixture.api->get_capabilities(fixture.dev, fixture.iface);
+	struct ethernet_config config;
+	uint32_t reg;
+
+	zassert_equal(!dev_conf->disable_rx_chksum_offload, offload);
+	zassert_equal(!dev_conf->disable_tx_chksum_offload, offload);
+	zassert_equal((caps & ETHERNET_HW_RX_CHKSUM_OFFLOAD) != 0, offload);
+	zassert_equal((caps & ETHERNET_HW_TX_CHKSUM_OFFLOAD) != 0, offload);
+
+	/* gem.net_cfg [24] receive checksum offload, gem.dma_cfg [11] transmit */
+	reg = sys_read32(DEVICE_MMIO_NAMED_GET(fixture.dev, mac) + ETH_XLNX_GEM_NWCFG_OFFSET);
+	zassert_equal((reg & ETH_XLNX_GEM_NWCFG_RXCHKSUMEN_BIT) != 0, offload,
+		      "gem.net_cfg 0x%08x does not match the configured RX offload", reg);
+	reg = sys_read32(DEVICE_MMIO_NAMED_GET(fixture.dev, mac) + ETH_XLNX_GEM_DMACR_OFFSET);
+	zassert_equal((reg & ETH_XLNX_GEM_DMACR_TCP_CHKSUM_BIT) != 0, offload,
+		      "gem.dma_cfg 0x%08x does not match the configured TX offload", reg);
+
+	zassert_ok(fixture.api->get_config(fixture.dev, fixture.iface,
+					   ETHERNET_CONFIG_TYPE_TX_CHECKSUM_SUPPORT, &config));
+	zassert_equal(config.chksum_support,
+		      offload ? (ETHERNET_CHECKSUM_SUPPORT_IPV4_HEADER |
+				 ETHERNET_CHECKSUM_SUPPORT_IPV6_HEADER |
+				 ETHERNET_CHECKSUM_SUPPORT_TCP |
+				 ETHERNET_CHECKSUM_SUPPORT_UDP)
+			      : ETHERNET_CHECKSUM_SUPPORT_NONE);
+
+	/* The stack skips exactly the checksums the controller computes. */
+	zassert_equal(net_if_need_calc_tx_checksum(fixture.iface, NET_IF_CHECKSUM_IPV4_UDP),
+		      !offload);
+	zassert_equal(net_if_need_calc_tx_checksum(fixture.iface, NET_IF_CHECKSUM_IPV4_TCP),
+		      !offload);
+	zassert_equal(net_if_need_calc_rx_checksum(fixture.iface, NET_IF_CHECKSUM_IPV4_HEADER),
+		      !offload);
+	/* The controller knows nothing about ICMP, whatever else is offloaded. */
+	zassert_true(net_if_need_calc_tx_checksum(fixture.iface, NET_IF_CHECKSUM_IPV4_ICMP),
+		     "ICMP checksums must stay in software");
+}
+
+/* An offloading controller fills in the checksums the stack left at zero. */
+ZTEST(xlnx_gem_loopback, test_checksum_offload_fills_in_the_frame)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(fixture.dev);
+	static uint8_t sent[CHKSUM_FRAME_LEN];
+	static uint8_t received[CHKSUM_FRAME_LEN];
+	struct net_pkt *pkt;
+	uint16_t expected;
+
+	drain();
+	build_datagram(sent);
+
+	pkt = net_pkt_alloc_with_buffer(fixture.iface, CHKSUM_FRAME_LEN, NET_AF_UNSPEC, 0,
+					K_SECONDS(1));
+	zassert_not_null(pkt);
+	zassert_ok(net_pkt_write(pkt, sent, CHKSUM_FRAME_LEN));
+	zassert_ok(fixture.api->send(fixture.dev, pkt));
+	net_pkt_unref(pkt);
+
+	pkt = net_promisc_mode_wait_data(K_MSEC(500));
+	zassert_not_null(pkt, "the datagram did not come back");
+	net_pkt_cursor_init(pkt);
+	zassert_ok(net_pkt_read(pkt, received, CHKSUM_FRAME_LEN));
+	net_pkt_unref(pkt);
+
+	if (dev_conf->disable_tx_chksum_offload) {
+		/* Nothing computes them, so they stay as the stack left them. */
+		zassert_equal(received[IP_OFFSET + 10], 0);
+		zassert_equal(received[IP_OFFSET + 11], 0);
+		zassert_equal(received[UDP_OFFSET + 6], 0);
+		zassert_equal(received[UDP_OFFSET + 7], 0);
+		ztest_test_skip();
+	}
+
+	expected = ones_complement(&received[IP_OFFSET], 20);
+	zassert_equal(expected, 0, "the IPv4 header checksum came back wrong");
+	zassert_true(received[IP_OFFSET + 10] != 0 || received[IP_OFFSET + 11] != 0,
+		     "the IPv4 header checksum was not filled in");
+	zassert_true(received[UDP_OFFSET + 6] != 0 || received[UDP_OFFSET + 7] != 0,
+		     "the UDP checksum was not filled in");
+
+	/* Everything but the two checksum fields survives unaltered. */
+	memcpy(&received[IP_OFFSET + 10], &sent[IP_OFFSET + 10], 2);
+	memcpy(&received[UDP_OFFSET + 6], &sent[UDP_OFFSET + 6], 2);
+	zassert_mem_equal(received, sent, CHKSUM_FRAME_LEN, "the datagram came back altered");
 }
 
 #ifdef CONFIG_ETH_XLNX_GEM_RX_THREAD
