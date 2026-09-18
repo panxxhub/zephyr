@@ -23,6 +23,26 @@
 #include <zephyr/sys/device_mmio.h>
 
 #define ETH_XLNX_BUFFER_ALIGNMENT			4 /* RX/TX buffer alignment (in bytes) */
+#define ETH_XLNX_GEM_DMA_AREA_ALIGNMENT			4096 /* DMA memory area alignment */
+
+/**
+ * @brief Cache maintenance span covering the used part of a DMA buffer.
+ *
+ * Every RX and TX buffer starts at a multiple of ETH_XLNX_GEM_DMA_AREA_ALIGNMENT
+ * plus a whole number of buffer sizes, and if the data cache is enabled both the
+ * area alignment and the buffer size are multiples of the cache line size. The
+ * length rounded up to the next cache line therefore stays inside the buffer it
+ * belongs to: no cache line is shared with a neighbouring buffer or with any
+ * unrelated object, so neither invalidating nor flushing the rounded-up span can
+ * discard or write back data that belongs to someone else.
+ *
+ * Only ever used where CONFIG_DCACHE is enabled.
+ *
+ * @param length      Number of payload bytes exchanged through the buffer
+ * @param buffer_size Size of the DMA buffer the payload is placed in
+ */
+#define ETH_XLNX_GEM_CACHE_SPAN(length, buffer_size) \
+	MIN(ROUND_UP((length), CONFIG_DCACHE_LINE_SIZE), (size_t)(buffer_size))
 
 /* Buffer descriptor (BD) related defines */
 
@@ -427,7 +447,8 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 	.config_func			= eth_xlnx_gem##port##_irq_config,\
 	.pll_clock_frequency		= DT_INST_PROP(port, clock_frequency),\
 	.defer_rxp_to_queue		= !DT_INST_PROP(port, handle_rx_in_isr),\
-	.defer_txd_to_queue		= DT_INST_PROP(port, handle_tx_in_workq),\
+	.defer_txd_to_queue		= UTIL_OR(IS_ENABLED(CONFIG_ETH_XLNX_GEM_TX_DONE_WORKQ),\
+					  DT_INST_PROP(port, handle_tx_in_workq)),\
 	.ahb_burst_length		= (enum eth_xlnx_ahb_burst_length)\
 		(DT_INST_PROP(port, amba_ahb_burst_length)),\
 	.hw_rx_buffer_size		= (enum eth_xlnx_hwrx_buffer_size)\
@@ -448,8 +469,9 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 	.enable_sgmii_mode		= DT_INST_PROP(port, sgmii_mode),\
 	.disable_reject_fcs_crc_errors	= DT_INST_PROP(port, disable_reject_fcs_crc_errors),\
 	.enable_rx_halfdup_while_tx	= DT_INST_PROP(port, rx_halfdup_while_tx),\
-	.disable_rx_chksum_offload	= UTIL_OR(IS_ENABLED(CONFIG_QEMU_TARGET),\
-					  DT_INST_PROP(port, disable_rx_checksum_offload)),\
+	.disable_rx_chksum_offload	= UTIL_OR(\
+		IS_ENABLED(CONFIG_ETH_XLNX_GEM_QEMU_NO_CHKSUM_OFFLOAD),\
+		DT_INST_PROP(port, disable_rx_checksum_offload)),\
 	.disable_pause_copy		= DT_INST_PROP(port, disable_pause_copy),\
 	.discard_rx_fcs			= DT_INST_PROP(port, discard_rx_fcs),\
 	.discard_rx_length_errors	= DT_INST_PROP(port, discard_rx_length_errors),\
@@ -462,8 +484,9 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 	.disable_bcast			= DT_INST_PROP(port, reject_broadcast),\
 	.discard_non_vlan		= DT_INST_PROP(port, discard_non_vlan),\
 	.disc_rx_ahb_unavail		= DT_INST_PROP(port, discard_rx_frame_ahb_unavail),\
-	.disable_tx_chksum_offload	= UTIL_OR(IS_ENABLED(CONFIG_QEMU_TARGET),\
-					  DT_INST_PROP(port, disable_tx_checksum_offload)),\
+	.disable_tx_chksum_offload	= UTIL_OR(\
+		IS_ENABLED(CONFIG_ETH_XLNX_GEM_QEMU_NO_CHKSUM_OFFLOAD),\
+		DT_INST_PROP(port, disable_tx_checksum_offload)),\
 	.tx_buffer_size_full		= DT_INST_PROP(port, hw_tx_buffer_size_full),\
 	.enable_ahb_packet_endian_swap	= DT_INST_PROP(port, ahb_packet_endian_swap),\
 	.enable_ahb_md_endian_swap	= DT_INST_PROP(port, ahb_md_endian_swap)\
@@ -515,7 +538,7 @@ struct eth_xlnx_gem##port##_dma_area_layout {\
 /* DMA memory area instantiation macro */
 #define ETH_XLNX_GEM_DMA_AREA_INST(port) \
 static struct eth_xlnx_gem##port##_dma_area_layout eth_xlnx_gem##port##_dma_area\
-	__aligned(4096);
+	__aligned(ETH_XLNX_GEM_DMA_AREA_ALIGNMENT);
 
 /* Interrupt configuration function macro */
 #define ETH_XLNX_GEM_CONFIG_IRQ_FUNC(port) \
@@ -719,6 +742,14 @@ struct eth_xlnx_gem_dev_data {
 	struct k_work			tx_done_work;
 	struct k_work			rx_pend_work;
 	struct k_sem			tx_done_sem;
+#ifdef CONFIG_ETH_XLNX_GEM_TX_RECLAIM
+	/* Exclusive access to the transmit path */
+	struct k_mutex			tx_lock;
+#endif
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+	/* Posted whenever reclamation returns TX BDs to the ring */
+	struct k_sem			tx_space_sem;
+#endif
 
 	uint8_t				*first_rx_buffer;
 	uint8_t				*first_tx_buffer;

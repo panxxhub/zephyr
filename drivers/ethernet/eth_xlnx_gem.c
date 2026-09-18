@@ -19,6 +19,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/init.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/cache.h>
 
@@ -64,6 +65,17 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
 static void eth_xlnx_gem_set_mac_address(const struct device *dev);
 static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev);
 static void eth_xlnx_gem_configure_buffers(const struct device *dev);
+static void eth_xlnx_gem_rx_invd_buffer(const struct device *dev, uint8_t bd_idx,
+					uint32_t length);
+static void eth_xlnx_gem_tx_flush_buffer(const struct device *dev, uint8_t bd_idx,
+					 uint32_t length);
+static void eth_xlnx_gem_tx_lock(const struct device *dev);
+static void eth_xlnx_gem_tx_unlock(const struct device *dev);
+static void eth_xlnx_gem_submit_work(struct k_work *work);
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+static uint8_t eth_xlnx_gem_tx_reclaim_frame(const struct device *dev, bool require_used);
+static uint8_t eth_xlnx_gem_tx_age_reclaim(const struct device *dev);
+#endif
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
 static void eth_xlnx_gem_tx_done_work(struct k_work *item);
@@ -75,6 +87,35 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
 static void eth_xlnx_gem_phy_cb(const struct device *phy,
 				struct phy_link_state *state,
 				void *eth_dev);
+
+#ifdef CONFIG_ETH_XLNX_GEM_RX_THREAD
+static K_KERNEL_STACK_DEFINE(eth_xlnx_gem_workq_stack,
+			     CONFIG_ETH_XLNX_GEM_RX_THREAD_STACK_SIZE);
+static struct k_work_q eth_xlnx_gem_workq;
+
+/**
+ * @brief Starts the work queue shared by all GEM instances.
+ *
+ * Runs before any interface is brought up, therefore before the first work
+ * item can be submitted from an interrupt.
+ *
+ * @retval 0 always
+ */
+static int eth_xlnx_gem_workq_start(void)
+{
+	struct k_work_queue_config queue_cfg = {
+		.name = "gem_rx",
+	};
+
+	k_work_queue_start(&eth_xlnx_gem_workq, eth_xlnx_gem_workq_stack,
+			   K_KERNEL_STACK_SIZEOF(eth_xlnx_gem_workq_stack),
+			   CONFIG_ETH_XLNX_GEM_RX_THREAD_PRIORITY, &queue_cfg);
+
+	return 0;
+}
+
+SYS_INIT(eth_xlnx_gem_workq_start, POST_KERNEL, CONFIG_ETH_INIT_PRIORITY);
+#endif /* CONFIG_ETH_XLNX_GEM_RX_THREAD */
 
 static const struct ethernet_api eth_xlnx_gem_apis = {
 	.iface_api.init   = eth_xlnx_gem_iface_init,
@@ -109,7 +150,10 @@ BUILD_ASSERT((DT_INST_PROP(port, rx_buffer_size) % CONFIG_DCACHE_LINE_SIZE) == 0
 	     "instance " #port);\
 BUILD_ASSERT((DT_INST_PROP(port, tx_buffer_size) % CONFIG_DCACHE_LINE_SIZE) == 0,\
 	     "TX buffer size is not a multiple of the dcache line size for GEM "\
-	     "instance " #port);
+	     "instance " #port);\
+BUILD_ASSERT((ETH_XLNX_GEM_DMA_AREA_ALIGNMENT % CONFIG_DCACHE_LINE_SIZE) == 0,\
+	     "DMA memory area alignment is not a multiple of the dcache line "\
+	     "size for GEM instance " #port);
 
 DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_BUFFER_SIZE_CHECK)
 
@@ -225,6 +269,12 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
 	/* Initialize TX-related semaphores */
 	k_sem_init(&dev_data->tx_done_sem, 0, 1);
 	k_sem_init(&dev_data->tx_bd_ring.ring_sem, 1, 1);
+#ifdef CONFIG_ETH_XLNX_GEM_TX_RECLAIM
+	k_mutex_init(&dev_data->tx_lock);
+#endif
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+	k_sem_init(&dev_data->tx_space_sem, 0, K_SEM_MAX_LIMIT);
+#endif
 
 	/* Initialize the device's interrupt */
 	dev_conf->config_func(dev);
@@ -243,7 +293,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
  * @brief GEM interrupt service routine
  * GEM interrupt service routine. Checks for indications of errors
  * and either immediately handles RX pending / TX complete notifications
- * or defers them to the system work queue.
+ * or defers them to a work queue.
  *
  * @param dev Pointer to the device data
  */
@@ -280,7 +330,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
 			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 		if (dev_conf->defer_txd_to_queue) {
-			k_work_submit(&dev_data->tx_done_work);
+			eth_xlnx_gem_submit_work(&dev_data->tx_done_work);
 		} else {
 			eth_xlnx_gem_handle_tx_done(dev);
 		}
@@ -292,7 +342,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
 			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 		if (dev_conf->defer_rxp_to_queue) {
-			k_work_submit(&dev_data->rx_pend_work);
+			eth_xlnx_gem_submit_work(&dev_data->rx_pend_work);
 		} else {
 			eth_xlnx_gem_handle_rx_pending(dev);
 		}
@@ -311,6 +361,293 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 		    ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT)),
 		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 }
+
+/**
+ * @brief Invalidates the cache lines holding a received frame fragment.
+ * Discards the cache lines covering the part of an RX buffer the controller
+ * has just written, so that the subsequent copy to the network packet reads
+ * the received data rather than a stale copy.
+ *
+ * @param dev Pointer to the device data
+ * @param bd_idx Index of the RX buffer descriptor whose buffer is to be
+ *               invalidated
+ * @param length Number of bytes of the received frame held in that buffer
+ */
+static void eth_xlnx_gem_rx_invd_buffer(const struct device *dev, uint8_t bd_idx,
+					uint32_t length)
+{
+#ifdef CONFIG_DCACHE
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	void *buffer = (void *)(dev_data->rx_bd_ring.first_bd[bd_idx].addr &
+				ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK);
+
+#ifdef CONFIG_ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS
+	size_t span = ETH_XLNX_GEM_CACHE_SPAN(length, dev_conf->rx_buffer_size);
+
+	sys_cache_data_invd_range(buffer, span);
+#else
+	ARG_UNUSED(length);
+	sys_cache_data_invd_range(buffer, dev_conf->rx_buffer_size);
+#endif
+#else
+	ARG_UNUSED(dev);
+	ARG_UNUSED(bd_idx);
+	ARG_UNUSED(length);
+#endif
+}
+
+/**
+ * @brief Writes back the cache lines holding a frame fragment to be sent.
+ * Cleans the cache lines covering the part of a TX buffer the send function
+ * has just written, so that the controller's DMA reads the data to be sent
+ * rather than the previous contents of that buffer.
+ *
+ * @param dev Pointer to the device data
+ * @param bd_idx Index of the TX buffer descriptor whose buffer is to be
+ *               flushed
+ * @param length Number of bytes of the frame to be sent held in that buffer
+ */
+static void eth_xlnx_gem_tx_flush_buffer(const struct device *dev, uint8_t bd_idx,
+					 uint32_t length)
+{
+#ifdef CONFIG_DCACHE
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	void *buffer = (void *)(dev_data->first_tx_buffer +
+				(dev_conf->tx_buffer_size * bd_idx));
+
+#ifdef CONFIG_ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS
+	size_t span = ETH_XLNX_GEM_CACHE_SPAN(length, dev_conf->tx_buffer_size);
+
+	sys_cache_data_flush_and_invd_range(buffer, span);
+#else
+	ARG_UNUSED(length);
+	sys_cache_data_flush_and_invd_range(buffer, dev_conf->tx_buffer_size);
+#endif
+#else
+	ARG_UNUSED(dev);
+	ARG_UNUSED(bd_idx);
+	ARG_UNUSED(length);
+#endif
+}
+
+/**
+ * @brief Acquires exclusive access to the current GEM instance's TX path.
+ * The single TX done semaphore can only report the completion of one
+ * transmission, so a second sender entering the send function while the
+ * first one waits for its confirmation would consume that confirmation.
+ * Where the driver is configured to recover from a confirmation timeout,
+ * senders are serialized so that the outstanding transmission is always
+ * the calling thread's own.
+ *
+ * @param dev Pointer to the device data
+ */
+static void eth_xlnx_gem_tx_lock(const struct device *dev)
+{
+#ifdef CONFIG_ETH_XLNX_GEM_TX_RECLAIM
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+
+	k_mutex_lock(&dev_data->tx_lock, K_FOREVER);
+#else
+	ARG_UNUSED(dev);
+#endif
+}
+
+/**
+ * @brief Releases exclusive access to the current GEM instance's TX path.
+ *
+ * @param dev Pointer to the device data
+ */
+static void eth_xlnx_gem_tx_unlock(const struct device *dev)
+{
+#ifdef CONFIG_ETH_XLNX_GEM_TX_RECLAIM
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+
+	k_mutex_unlock(&dev_data->tx_lock);
+#else
+	ARG_UNUSED(dev);
+#endif
+}
+
+#if defined(CONFIG_ETH_XLNX_GEM_TX_RECLAIM) && !defined(CONFIG_ETH_XLNX_GEM_TX_ASYNC)
+/**
+ * @brief Returns the descriptors of an abandoned transmission to the TX ring.
+ * Called when a transmission's completion notification has timed out, in which
+ * case the TX done handler will never account for the buffer descriptors the
+ * send function booked out for that transmission. Without this, every timeout
+ * permanently reduces the number of descriptors available for transmission
+ * until the ring is empty and the interface can no longer send anything.
+ *
+ * @param dev Pointer to the device data
+ * @param first_bd_idx Index of the first BD of the abandoned transmission
+ * @param bds_reqd Number of BDs the abandoned transmission booked out
+ */
+static void eth_xlnx_gem_tx_timeout_reclaim(const struct device *dev, uint8_t first_bd_idx,
+					    uint8_t bds_reqd)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	uint8_t curr_bd_idx = first_bd_idx;
+	uint8_t bd_iter;
+
+	/* Keep the TX done handler out while the ring's accounting is repaired */
+	sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
+	if (dev_conf->defer_txd_to_queue) {
+		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
+	}
+
+	/*
+	 * Transmission is serialized, so the abandoned frame is the only one
+	 * the controller can still own. If the TX done handler has not
+	 * advanced past the frame's first BD, its descriptors are still booked
+	 * out and are returned here; if it has, it has returned them already
+	 * and the ring needs no repair.
+	 */
+	if (dev_data->tx_bd_ring.next_to_process == first_bd_idx) {
+		for (bd_iter = 0; bd_iter < bds_reqd; bd_iter++) {
+			uint32_t reg_ctrl =
+				(uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+			uint32_t reg_val = sys_read32(reg_ctrl) & ETH_XLNX_GEM_TX_BD_WRAP_BIT;
+
+			sys_write32(reg_val | ETH_XLNX_GEM_TX_BD_USED_BIT, reg_ctrl);
+			curr_bd_idx = (curr_bd_idx + 1) % dev_conf->tx_bd_count;
+		}
+
+		dev_data->tx_bd_ring.next_to_process = curr_bd_idx;
+		dev_data->tx_bd_ring.free_bds += bds_reqd;
+	}
+
+	if (dev_conf->defer_txd_to_queue) {
+		k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
+	}
+
+	/*
+	 * Discard a confirmation that arrives after the timeout: it belongs to
+	 * the abandoned frame and would otherwise release the next sender
+	 * before that sender's own frame has been transmitted.
+	 */
+	k_sem_reset(&dev_data->tx_done_sem);
+	sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
+		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
+}
+#endif /* CONFIG_ETH_XLNX_GEM_TX_RECLAIM && !CONFIG_ETH_XLNX_GEM_TX_ASYNC */
+
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+/**
+ * @brief Returns the BDs of one finished transmission to the TX ring.
+ * Reclaims the transmission at the head of the ring, which is the oldest one
+ * still outstanding. The caller must hold the TX ring's protection.
+ *
+ * @param dev Pointer to the device data
+ * @param require_used Only reclaim if the controller has marked the
+ *                     transmission's first BD as used, which is how it
+ *                     reports that the frame has been transmitted
+ * @return Number of BDs returned to the ring, zero if nothing was reclaimed
+ */
+static uint8_t eth_xlnx_gem_tx_reclaim_frame(const struct device *dev, bool require_used)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	uint8_t outstanding = dev_conf->tx_bd_count - dev_data->tx_bd_ring.free_bds;
+	uint8_t curr_bd_idx = dev_data->tx_bd_ring.next_to_process;
+	uint8_t bds_processed = 0;
+	uint32_t reg_ctrl;
+	uint32_t reg_val;
+
+	if (outstanding == 0) {
+		return 0;
+	}
+
+	reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+	reg_val = sys_read32(reg_ctrl);
+	if (require_used && (reg_val & ETH_XLNX_GEM_TX_BD_USED_BIT) == 0) {
+		/* Still owned by the controller: not transmitted yet. */
+		return 0;
+	}
+
+	/*
+	 * Walk to the end of this transmission, resetting each BD's control
+	 * word to its 'wrap' bit plus 'used', which is the idle state the
+	 * send function expects to find. The walk is bounded by the number of
+	 * BDs actually outstanding, so a control word whose 'last' bit was
+	 * corrupted cannot take it into a later transmission.
+	 */
+	do {
+		++bds_processed;
+
+		/*
+		 * TODO Evaluate error flags from current BD control word
+		 * here for proper error handling
+		 */
+
+		sys_write32((reg_val & ETH_XLNX_GEM_TX_BD_WRAP_BIT) |
+			    ETH_XLNX_GEM_TX_BD_USED_BIT, reg_ctrl);
+
+		if ((reg_val & ETH_XLNX_GEM_TX_BD_LAST_BIT) != 0) {
+			break;
+		}
+
+		curr_bd_idx = (curr_bd_idx + 1) % dev_conf->tx_bd_count;
+		reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+		reg_val = sys_read32(reg_ctrl);
+	} while (bds_processed < outstanding);
+
+	dev_data->tx_bd_ring.next_to_process =
+		(dev_data->tx_bd_ring.next_to_process + bds_processed) % dev_conf->tx_bd_count;
+	dev_data->tx_bd_ring.free_bds += bds_processed;
+
+	return bds_processed;
+}
+
+/**
+ * @brief Returns the descriptors of a transmission that never completed.
+ * Nothing waits for an asynchronous transmission, so the controller reporting
+ * no completion for a whole timeout is the only sign that the transmission at
+ * the head of the ring is not going to finish. Returning its descriptors makes
+ * such a controller cost frames instead of the ring.
+ *
+ * Called from the send function, which holds the transmit lock, so no other
+ * thread is manipulating the ring; the TX done handler is kept out the same
+ * way the send function keeps it out of its own ring update.
+ *
+ * @param dev Pointer to the device data
+ * @return Number of BDs returned to the ring, zero if nothing was reclaimed
+ */
+static uint8_t eth_xlnx_gem_tx_age_reclaim(const struct device *dev)
+{
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(dev);
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	uint8_t reclaimed;
+
+	if (dev_conf->defer_txd_to_queue) {
+		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
+	} else {
+		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IDR_OFFSET);
+	}
+
+	reclaimed = eth_xlnx_gem_tx_reclaim_frame(dev, false);
+
+	if (dev_conf->defer_txd_to_queue) {
+		k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
+	} else {
+		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
+	}
+
+	if (reclaimed != 0) {
+		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
+#ifdef CONFIG_NET_STATISTICS_ETHERNET
+		dev_data->stats.tx_timeout_count++;
+#endif
+	}
+
+	return reclaimed;
+}
+
+#endif /* CONFIG_ETH_XLNX_GEM_TX_ASYNC */
 
 /**
  * @brief GEM data send function
@@ -343,7 +680,11 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 
 	uint32_t reg_ctrl;
 	uint32_t reg_val;
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+	bool aged = false;
+#else
 	int sem_status;
+#endif
 
 	tx_data_length = tx_data_remaining = net_pkt_get_len(pkt);
 	if (tx_data_length == 0) {
@@ -368,6 +709,11 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	bds_reqd = (uint8_t)((tx_data_length + (dev_conf->tx_buffer_size - 1)) /
 		   dev_conf->tx_buffer_size);
 
+	eth_xlnx_gem_tx_lock(dev);
+
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+claim_bds:
+#endif
 	if (dev_conf->defer_txd_to_queue) {
 		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
 	} else {
@@ -376,20 +722,49 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	}
 
 	if (bds_reqd > dev_data->tx_bd_ring.free_bds) {
-		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, packet length %hu requires "
-			"%hhu BDs, current free count = %hhu",
-			dev->name, tx_data_length, bds_reqd,
-			dev_data->tx_bd_ring.free_bds);
-
 		if (dev_conf->defer_txd_to_queue) {
 			k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
 		} else {
 			sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
 				    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
 		}
+
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+		/*
+		 * A full ring is the back pressure that bounds how many
+		 * transmissions this driver keeps in flight: wait for a
+		 * completion to return descriptors rather than drop the frame.
+		 * The transmit lock is still held, so senders queue behind this
+		 * one in the order in which they arrived.
+		 */
+		if (k_sem_take(&dev_data->tx_space_sem,
+			       K_MSEC(CONFIG_ETH_XLNX_GEM_TX_ASYNC_TIMEOUT_MS)) == 0) {
+			goto claim_bds;
+		}
+
+		/*
+		 * Not one completion in a whole timeout, which is the age at
+		 * which the blocking send function gives up on a transmission:
+		 * return the descriptors of the transmission at the head of
+		 * the ring and try once more. At most one transmission is
+		 * abandoned per call, so a wedged controller is unpicked one
+		 * frame at a time instead of this call taking the ring's worth
+		 * of timeouts.
+		 */
+		if (!aged && eth_xlnx_gem_tx_age_reclaim(dev) != 0) {
+			aged = true;
+			goto claim_bds;
+		}
+#endif
+
+		LOG_ERR_RATELIMIT_RATE(1000, "%s cannot TX, packet length %hu requires "
+			"%hhu BDs, current free count = %hhu",
+			dev->name, tx_data_length, bds_reqd,
+			dev_data->tx_bd_ring.free_bds);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.tx_dropped++;
 #endif
+		eth_xlnx_gem_tx_unlock(dev);
 		return -EIO;
 	}
 
@@ -453,11 +828,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	 */
 	reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
 	sys_write32(reg_val, reg_ctrl);
-#ifdef CONFIG_DCACHE
-	sys_cache_data_flush_and_invd_range((void *)(dev_data->first_tx_buffer +
-					    (dev_conf->tx_buffer_size * curr_bd_idx)),
-					    dev_conf->tx_buffer_size);
-#endif
+	eth_xlnx_gem_tx_flush_buffer(dev, curr_bd_idx, reg_val & ETH_XLNX_GEM_TX_BD_LEN_MASK);
 
 	while (curr_bd_idx != first_bd_idx) {
 		curr_bd_idx = (curr_bd_idx != 0) ? (curr_bd_idx - 1) :
@@ -466,11 +837,8 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 		reg_val = sys_read32(reg_ctrl);
 		reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
 		sys_write32(reg_val, reg_ctrl);
-#ifdef CONFIG_DCACHE
-		sys_cache_data_flush_and_invd_range((void *)(dev_data->first_tx_buffer +
-						    (dev_conf->tx_buffer_size * curr_bd_idx)),
-						    dev_conf->tx_buffer_size);
-#endif
+		eth_xlnx_gem_tx_flush_buffer(dev, curr_bd_idx,
+					     reg_val & ETH_XLNX_GEM_TX_BD_LEN_MASK);
 	}
 
 	/* Set the start TX bit in the gem.net_ctrl register */
@@ -483,6 +851,15 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 	dev_data->stats.pkts.tx++;
 #endif
 
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+	/*
+	 * The frame has been copied into this driver's own DMA buffers, so the
+	 * packet the caller handed in is no longer referenced and the caller
+	 * does not have to wait for the wire.
+	 */
+	eth_xlnx_gem_tx_unlock(dev);
+	return 0;
+#else
 	/* Block until TX has completed */
 	sem_status = k_sem_take(&dev_data->tx_done_sem, K_MSEC(100));
 	if (sem_status < 0) {
@@ -490,10 +867,16 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.tx_timeout_count++;
 #endif
+#if defined(CONFIG_ETH_XLNX_GEM_TX_RECLAIM) && !defined(CONFIG_ETH_XLNX_GEM_TX_ASYNC)
+		eth_xlnx_gem_tx_timeout_reclaim(dev, first_bd_idx, bds_reqd);
+#endif
+		eth_xlnx_gem_tx_unlock(dev);
 		return -EIO;
 	}
 
+	eth_xlnx_gem_tx_unlock(dev);
 	return 0;
+#endif /* CONFIG_ETH_XLNX_GEM_TX_ASYNC */
 }
 
 /**
@@ -1469,6 +1852,22 @@ static void eth_xlnx_gem_reset_rx_queue(const struct device *dev)
 }
 
 /**
+ * @brief Queues one of the current GEM instance's deferred work items.
+ * Submits to the work queue owned by this driver if one is configured,
+ * otherwise to the system work queue, which is the historical behaviour.
+ *
+ * @param work Pointer to the work item to be submitted
+ */
+static void eth_xlnx_gem_submit_work(struct k_work *work)
+{
+#ifdef CONFIG_ETH_XLNX_GEM_RX_THREAD
+	k_work_submit_to_queue(&eth_xlnx_gem_workq, work);
+#else
+	k_work_submit(work);
+#endif
+}
+
+/**
  * @brief GEM RX data pending handler wrapper for the work queue
  * Wraps the RX data pending handler, eth_xlnx_gem_handle_rx_pending,
  * for the scenario in which the current GEM device is configured
@@ -1610,21 +2009,18 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
 		 * by the controller.
 		 */
 		do {
+			uint32_t bd_data_length =
+				(rx_data_remaining < dev_conf->rx_buffer_size) ?
+				rx_data_remaining : dev_conf->rx_buffer_size;
+
 			if (pkt != NULL) {
-#ifdef CONFIG_DCACHE
-				sys_cache_data_invd_range(
-					(void *)(dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
-					ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK),
-					dev_conf->rx_buffer_size);
-#endif
+				eth_xlnx_gem_rx_invd_buffer(dev, curr_bd_idx, bd_data_length);
 				net_pkt_write(pkt, (const void *)
 					      (dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
 					      ETH_XLNX_GEM_RX_BD_BUFFER_ADDR_MASK),
-					      (rx_data_remaining < dev_conf->rx_buffer_size) ?
-					      rx_data_remaining : dev_conf->rx_buffer_size);
+					      bd_data_length);
 			}
-			rx_data_remaining -= (rx_data_remaining < dev_conf->rx_buffer_size) ?
-					     rx_data_remaining : dev_conf->rx_buffer_size;
+			rx_data_remaining -= bd_data_length;
 
 			/*
 			 * The entire packet data of the current BD has been
@@ -1731,6 +2127,57 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
 	if (dev_conf->defer_txd_to_queue) {
 		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
 	}
+
+#ifdef CONFIG_ETH_XLNX_GEM_TX_ASYNC
+	{
+		uint8_t frames = 0;
+
+		/*
+		 * Several transmissions can be in flight, and one completion
+		 * interrupt can cover more than one of them, so reclaim every
+		 * transmission the controller has marked as transmitted.
+		 */
+		while (eth_xlnx_gem_tx_reclaim_frame(dev, true) != 0) {
+			frames++;
+		}
+
+		if (dev_conf->defer_txd_to_queue) {
+			k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
+		}
+
+		sys_write32(0xFFFFFFFFU,
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXSR_OFFSET);
+		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
+
+		if (frames != 0) {
+			/* Release a sender waiting for room in the ring */
+			k_sem_give(&dev_data->tx_space_sem);
+		}
+		return;
+	}
+#endif
+
+#if defined(CONFIG_ETH_XLNX_GEM_TX_RECLAIM) && !defined(CONFIG_ETH_XLNX_GEM_TX_ASYNC)
+	if (dev_data->tx_bd_ring.free_bds == dev_conf->tx_bd_count) {
+		/*
+		 * No transmission is outstanding, so this confirmation belongs
+		 * to a frame whose descriptors eth_xlnx_gem_send() has already
+		 * returned to the ring after waiting for it timed out. Walking
+		 * the ring from here would reclaim descriptors that a later
+		 * transmission is using.
+		 */
+		if (dev_conf->defer_txd_to_queue) {
+			k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
+		}
+
+		sys_write32(0xFFFFFFFFU,
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_TXSR_OFFSET);
+		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
+			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_IER_OFFSET);
+		return;
+	}
+#endif
 
 	curr_bd_idx = first_bd_idx = dev_data->tx_bd_ring.next_to_process;
 	reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);

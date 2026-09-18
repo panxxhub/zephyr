@@ -10,7 +10,7 @@ menuconfig ETH_XLNX_GEM
 	bool "Xilinx GEM Ethernet driver"
 	default y
 	depends on DT_HAS_XLNX_GEM_ENABLED
-	depends on !QEMU_TARGET || (QEMU_TARGET && NET_QEMU_ETHERNET)
+	depends on !QEMU_TARGET || NET_QEMU_ETHERNET || NET_QEMU_NONE
 	select NOCACHE_MEMORY if ARCH_HAS_NOCACHE_MEMORY_SUPPORT
 	select CACHE_MANAGEMENT if DCACHE
 	select NET_CHECKSUM_OFFLOAD_SUPPORTED if NET_L2_ETHERNET
@@ -26,3 +26,163 @@ config ETH_NIC_MODEL
 	  Value of the -nic parameter to be used when starting QEMU.
 	  This parameter specifies which type of Ethernet controller
 	  shall be simulated by QEMU.
+
+if ETH_XLNX_GEM
+
+config ETH_XLNX_GEM_QEMU_NO_CHKSUM_OFFLOAD
+	bool "Disable GEM checksum offload on QEMU"
+	depends on QEMU_TARGET
+	default y
+	help
+	  Ignore the checksum offload the device tree asks for and report no
+	  offload at all, which is what a QEMU build has always done.
+
+	  Turn this off to build the configuration a board uses, so that what
+	  the driver reports and what the network stack does with it can be
+	  exercised under emulation. QEMU's controller model computes and
+	  checks the same checksums the controller does, but it is a model of
+	  the offload, not of the silicon.
+
+
+config ETH_XLNX_GEM_RX_THREAD
+	bool "Deferred GEM work on a driver-owned thread"
+	help
+	  Run the deferred receive handling of every GEM instance, and the
+	  transmit completion handling of those instances which defer it, on a
+	  work queue owned by this driver instead of the system work queue.
+
+	  The system work queue is shared with every other subsystem, so GEM
+	  receive processing both waits behind unrelated work items and delays
+	  them in turn. A driver-owned queue makes the receive cost of this
+	  driver schedulable and attributable on its own thread, named "gem_rx".
+
+	  All GEM instances share the one queue, so the order in which a single
+	  instance's work items run is unchanged.
+
+config ETH_XLNX_GEM_RX_THREAD_PRIORITY
+	int "Priority of the GEM work queue thread"
+	default SYSTEM_WORKQUEUE_PRIORITY
+	depends on ETH_XLNX_GEM_RX_THREAD
+	help
+	  Thread priority of the driver-owned GEM work queue. The default
+	  matches the system work queue, so enabling the thread on its own
+	  changes which thread runs the work, not at which priority.
+
+config ETH_XLNX_GEM_RX_THREAD_STACK_SIZE
+	int "Stack size of the GEM work queue thread"
+	default 2048
+	depends on ETH_XLNX_GEM_RX_THREAD
+	help
+	  Stack size of the driver-owned GEM work queue thread, in bytes.
+
+config ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS
+	bool "Size GEM cache maintenance to the frame length"
+	depends on DCACHE
+	help
+	  Invalidate and clean only the cache lines a frame actually occupies
+	  instead of the whole DMA buffer holding it.
+
+	  The driver reserves a buffer per descriptor, typically 1536 or 2048
+	  bytes, but most frames are far shorter, and on a Cortex-A9 with an
+	  outer L2 cache every maintenance operation is charged to the one
+	  global cache lock the other core shares. Sizing the operation to the
+	  frame cuts the work and the lock hold to what the transfer needs.
+
+	  A length is rounded up to the next cache line, so the operation still
+	  covers every byte the frame touches. Buffers start on a cache line
+	  boundary and their size is a multiple of the line size, which the
+	  driver asserts at build time, so the rounded-up span stays inside the
+	  buffer it belongs to.
+
+	  When this option is disabled, whole buffers are maintained, which is
+	  the historical behaviour.
+
+config ETH_XLNX_GEM_TX_DONE_WORKQ
+	bool "Reclaim GEM transmit descriptors outside the interrupt"
+	help
+	  Handle transmit completion on a work queue for every GEM instance,
+	  as if each of them had the handle-tx-in-workq device tree property
+	  set.
+
+	  Unless an instance defers it, the driver walks the buffer
+	  descriptors of a completed frame inside the interrupt service
+	  routine, which makes the cost of the interrupt proportional to the
+	  number of descriptors that frame occupies - up to the whole transmit
+	  ring. Deferring the walk leaves the service routine with a fixed
+	  number of register accesses and one work item submission.
+
+	  The reclamation then runs under the transmit ring semaphore, the
+	  protection the driver already uses for this path, rather than under
+	  the interrupt masking used when reclaiming inside the service
+	  routine. Enable CONFIG_ETH_XLNX_GEM_RX_THREAD as well to keep that
+	  work off the system work queue.
+
+	  When this option is disabled, only instances whose device tree asks
+	  for it defer transmit completion, which is the historical behaviour.
+
+config ETH_XLNX_GEM_TX_RECLAIM
+	bool "Serialize GEM transmission and recover from a confirmation timeout"
+	help
+	  Let only one thread at a time transmit through a GEM instance, and
+	  return the buffer descriptors of a transmission to the ring when its
+	  completion notification times out.
+
+	  An instance has a single transmit completion semaphore, which can
+	  report the completion of one transmission. A second sender entering
+	  the send function while the first waits for its confirmation consumes
+	  that confirmation, so the first sender times out although its frame
+	  was transmitted. The descriptors it booked out are then never
+	  accounted for again, and every such timeout permanently reduces the
+	  number of descriptors available until the interface can no longer
+	  transmit anything.
+
+	  With this option the send function holds a mutex for the whole
+	  transmission, so the outstanding transmission is always the calling
+	  thread's own, and a timeout returns exactly the descriptors that
+	  transmission booked out. A confirmation that arrives after the
+	  timeout is discarded rather than released to the next sender.
+
+	  When this option is disabled, the send function behaves as before.
+
+config ETH_XLNX_GEM_TX_ASYNC
+	bool "Return from a GEM transmission without waiting for the wire"
+	select ETH_XLNX_GEM_TX_RECLAIM
+	help
+	  Hand a frame to the controller and return, instead of blocking until
+	  the controller reports that it has been transmitted.
+
+	  The send function copies the frame into this driver's own DMA buffers
+	  and then waits for the completion interrupt of that very frame before
+	  returning. Only one transmission is ever in flight: every frame pays
+	  for its own wire time plus an interrupt, a semaphore wake and a
+	  context switch before the next one can be prepared, while the rest of
+	  the transmit ring stands idle. Measured on a Zynq-7000 this, rather
+	  than the cache maintenance or the descriptor walk, is where the time
+	  of a transmitted packet goes.
+
+	  With this option the send function returns as soon as the descriptors
+	  are handed to the controller. Nothing references the caller's packet
+	  by then, because its contents have been copied. Transmissions are
+	  still started in the order in which senders arrive, and completion
+	  reclaims descriptors for whichever transmissions have finished.
+
+	  A sender blocks only when the ring has no room, which is the back
+	  pressure that bounds how many transmissions are in flight. If no
+	  completion arrives while it waits, the sender returns the descriptors
+	  of the transmission at the head of the ring, so a controller that
+	  stops reporting completions costs frames rather than the ring.
+
+	  When this option is disabled, the send function blocks until the
+	  transmission completes, which is the historical behaviour.
+
+config ETH_XLNX_GEM_TX_ASYNC_TIMEOUT_MS
+	int "Age at which an unfinished GEM transmission is reclaimed"
+	default 100
+	depends on ETH_XLNX_GEM_TX_ASYNC
+	help
+	  How long a sender waits for room in a full ring, and therefore the age
+	  at which a transmission the controller has not reported as complete
+	  has its descriptors returned. The default matches the confirmation
+	  timeout of the blocking send function.
+
+endif # ETH_XLNX_GEM

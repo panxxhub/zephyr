@@ -168,6 +168,15 @@ config NET_QEMU_USER
 	  is implemented using "slirp", which provides a full TCP/IP stack within
 	  QEMU and uses that stack to implement a virtual NAT'd network.
 
+config NET_QEMU_NONE
+	bool "None"
+	help
+	  Do not connect the network interface to anything on the host. Qemu is
+	  started with "-net none" and no serial transport. This is for an
+	  emulated machine that instantiates a network controller itself, where
+	  a test drives that controller in its own loopback mode: the network
+	  stack runs, but there is no host connectivity.
+
 endchoice
 
 config NET_QEMU_USER_EXTRA_ARGS
