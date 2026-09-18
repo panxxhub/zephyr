@@ -156,6 +156,54 @@ ZTEST(xlnx_gem_loopback, test_frame_length_classes)
 	}
 }
 
+/*
+ * Frames queued back to back, without waiting for any of them, must reach the
+ * wire in the order in which they were queued and with their contents intact.
+ * This holds whether or not the send function waits for each transmission; the
+ * pipelining that CONFIG_ETH_XLNX_GEM_TX_ASYNC adds on top is established in
+ * the host harness, where the controller's reporting can be withheld.
+ */
+ZTEST(xlnx_gem_loopback, test_back_to_back_frames)
+{
+	static uint8_t sent[8][256];
+	static uint8_t received[256];
+	const uint16_t length = 256;
+	struct net_pkt *pkt;
+
+	drain();
+
+	for (int i = 0; i < (int)ARRAY_SIZE(sent); i++) {
+		fill(sent[i], length);
+		/* A tag that survives the round trip identifies the frame. */
+		sent[i][14] = (uint8_t)i;
+
+		pkt = net_pkt_alloc_with_buffer(fixture.iface, length, NET_AF_UNSPEC, 0,
+						K_SECONDS(1));
+		zassert_not_null(pkt, "no packet for frame %d", i);
+		zassert_ok(net_pkt_write(pkt, sent[i], length), "write of frame %d failed", i);
+		zassert_ok(fixture.api->send(fixture.dev, pkt), "send of frame %d failed", i);
+		net_pkt_unref(pkt);
+	}
+
+	for (int i = 0; i < (int)ARRAY_SIZE(sent); i++) {
+		pkt = net_promisc_mode_wait_data(K_MSEC(500));
+		zassert_not_null(pkt, "frame %d did not come back", i);
+		zassert_equal(net_pkt_get_len(pkt), length, "frame %d came back as %zu bytes",
+			      i, net_pkt_get_len(pkt));
+
+		net_pkt_cursor_init(pkt);
+		zassert_ok(net_pkt_read(pkt, received, length), "read back of frame %d failed",
+			   i);
+		net_pkt_unref(pkt);
+
+		zassert_equal(received[14], (uint8_t)i, "frame %d came back in position %u",
+			      received[14], i);
+		zassert_mem_equal(received, sent[i], length, "frame %d came back altered", i);
+	}
+
+	zassert_is_null(net_promisc_mode_wait_data(K_MSEC(100)), "more frames came back");
+}
+
 /* Repeating the longest frame must not consume buffer descriptors. */
 ZTEST(xlnx_gem_loopback, test_descriptors_are_returned)
 {

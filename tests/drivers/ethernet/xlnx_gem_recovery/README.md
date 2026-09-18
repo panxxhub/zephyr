@@ -91,6 +91,15 @@ them is the reverse control.
 | T33 | A second sender entering the send function while the first waits for its confirmation. The model admits it exactly when the driver does not hold the transmit lock. | Without the lock it is admitted, consumes the first sender's confirmation and leaks that sender's descriptors. |
 | T34 | With completion deferred, one interrupt carrying both receive and transmit indications submits both work items to the driver's own queue and performs no descriptor or cache work of its own. | Holds for the historical behaviour too; run as a control, not a reverse. |
 
+Asynchronous transmit is built separately, because it replaces the blocking
+send rather than adding to it.
+
+| Test | Evidence | Reverse |
+| --- | --- | --- |
+| T35 | Eight frames queued back to back, in both completion modes. All eight are outstanding at once, the controller picked them up in the order they were queued, and one completion interrupt reclaims every one of them. | The blocking send leaves one transmission outstanding at a time, so the free descriptor count fails. |
+| T36 | A ring filled to the last descriptor, then 128 further frames. Every one of them is accepted, the free count never exceeds the ring, the cursors stay in range, and all 192 frames reach the controller in order. | Replacing the production ring-full test with `if (false)` books descriptors the ring does not have and the free count overruns. |
+| T37 | 192 frames against a controller that never reports a completion: each sender waits, abandons the transmission at the head of the ring by age and proceeds. The ring is whole again as soon as the controller reports, and still transmits. | The blocking send returns an error instead. |
+
 The host model has no cache, no second core and no real scheduler: it
 establishes the spans, the accounting and the exclusion, not the cost of a
 PL310 operation or the latency of a thread. Those are hardware measurements.

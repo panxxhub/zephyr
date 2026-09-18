@@ -23,6 +23,7 @@
 #define K_FOREVER                   -1
 #define K_NO_WAIT                   0
 #define K_MSEC(n)                   (n)
+#define K_SEM_MAX_LIMIT             UINT32_MAX
 #define NET_AF_UNSPEC               0
 #define ARG_UNUSED(x)               ((void)(x))
 #define MIN(a, b)                   ((a) < (b) ? (a) : (b))
@@ -68,6 +69,7 @@ struct k_work_q {
 struct net_pkt {
 	uint32_t len;
 	uint32_t cursor;
+	uint8_t tag;
 };
 struct eth_xlnx_gem_bd {
 	uint32_t addr, ctrl;
@@ -88,6 +90,7 @@ struct eth_xlnx_gem_dev_data {
 	uint8_t *first_rx_buffer, *first_tx_buffer;
 	void *iface;
 	struct k_sem tx_done_sem;
+	struct k_sem tx_space_sem;
 	struct k_mutex tx_lock;
 	struct k_work rx_pend_work, tx_done_work;
 };
@@ -119,6 +122,11 @@ static uint32_t cache_op_count;
 /* Fake controller state. */
 static bool tx_confirm;
 static uint32_t tx_started;
+/* Order in which the controller picked frames off the ring, by payload tag. */
+static uint8_t wire[4 * TX_BD_COUNT];
+static uint32_t wire_count;
+static uint8_t wire_next;
+static uint32_t tx_tag;
 static bool tx_lock_held;
 static uint32_t tx_reentries_admitted;
 static bool reentry_pending;
@@ -133,11 +141,39 @@ static uint32_t sys_read32(uintptr_t addr)
 {
 	return *(uint32_t *)addr;
 }
+/*
+ * The controller takes every armed transmission off the ring in ring order and
+ * marks the first BD of each one used, which is how it reports that the frame
+ * has been transmitted. An armed BD it has already taken must never be armed
+ * again before the driver has reclaimed it.
+ */
+static void model_transmit(void)
+{
+	while ((tx[wire_next].ctrl & ETH_XLNX_GEM_TX_BD_USED_BIT) == 0U) {
+		uint8_t first = wire_next;
+		uint32_t bds = 0U;
+
+		if (wire_count < ARRAY_SIZE(wire)) {
+			wire[wire_count] = txbuf[(uint32_t)first * BUFFER_SIZE];
+		}
+		wire_count++;
+
+		while ((tx[wire_next].ctrl & ETH_XLNX_GEM_TX_BD_LAST_BIT) == 0U) {
+			wire_next = (uint8_t)((wire_next + 1U) % TX_BD_COUNT);
+			assert(++bds < TX_BD_COUNT);
+		}
+		wire_next = (uint8_t)((wire_next + 1U) % TX_BD_COUNT);
+		tx[first].ctrl |= ETH_XLNX_GEM_TX_BD_USED_BIT;
+		tx_started++;
+	}
+}
 static void sys_write32(uint32_t value, uintptr_t addr)
 {
 	if (addr == (uintptr_t)mmio + ETH_XLNX_GEM_NWCTRL_OFFSET &&
 	    (value & ETH_XLNX_GEM_NWCTRL_STARTTX_BIT) != 0U) {
-		tx_started++;
+		*(uint32_t *)addr = value;
+		model_transmit();
+		return;
 	}
 	if (addr == (uintptr_t)mmio + ETH_XLNX_GEM_IDR_OFFSET) {
 		mmio[ETH_XLNX_GEM_IMR_OFFSET / 4] |= value;
@@ -177,7 +213,9 @@ static void net_pkt_cursor_init(struct net_pkt *p)
 static int net_pkt_read(struct net_pkt *p, void *b, size_t n)
 {
 	for (size_t i = 0U; i < n; i++) {
-		((uint8_t *)b)[i] = (uint8_t)((p->cursor + i) & 0xFFU);
+		((uint8_t *)b)[i] = (p->cursor + i == 0U)
+					    ? p->tag
+					    : (uint8_t)((p->cursor + i) & 0xFFU);
 	}
 	p->cursor += (uint32_t)n;
 	return 0;
@@ -224,6 +262,10 @@ static void k_sem_give(struct k_sem *sem)
 {
 	sem->count++;
 }
+static void k_sem_init(struct k_sem *sem, unsigned int initial, unsigned int limit)
+{
+	sem->count = (int)initial;
+}
 static void k_sem_reset(struct k_sem *sem)
 {
 	sem->count = 0;
@@ -251,6 +293,25 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
 static int k_sem_take(struct k_sem *sem, int timeout)
 {
+	if (sem == &data.tx_space_sem && sem->count <= 0) {
+		/*
+		 * A sender waiting for room in the ring. The controller
+		 * reports its completions while the sender waits, or reports
+		 * nothing at all and the wait times out.
+		 */
+		if (!tx_confirm) {
+			return -EAGAIN;
+		}
+		mmio[ETH_XLNX_GEM_ISR_OFFSET / 4] |= ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT;
+		eth_xlnx_gem_isr(&device);
+		if (data.tx_done_work.pending) {
+			data.tx_done_work.pending = false;
+			eth_xlnx_gem_handle_tx_done(&device);
+		}
+		if (sem->count <= 0) {
+			return -EAGAIN;
+		}
+	}
 	if (sem == &data.tx_done_sem) {
 		/*
 		 * A second sender reaching eth_xlnx_gem_send() while this one
@@ -296,6 +357,9 @@ static void init(bool defer_txd)
 	data.first_rx_buffer = rxbuf;
 	data.first_tx_buffer = txbuf;
 	data.tx_bd_ring.ring_sem.count = 1;
+	wire_count = 0U;
+	wire_next = 0U;
+	tx_tag = 0U;
 	tx_lock_held = false;
 	k_mutex_init(&data.tx_lock);
 	cache_op_count = 0U;
@@ -350,7 +414,7 @@ static void frame_lengths_test(void)
 		uint32_t length = lengths[n];
 		uint32_t bds = (length + BUFFER_SIZE - 1U) / BUFFER_SIZE;
 		uint32_t remaining = length;
-		struct net_pkt pkt = {length, 0U};
+		struct net_pkt pkt = {length, 0U, 0U};
 		uint32_t maintained = 0U;
 
 		init(false);
@@ -422,7 +486,7 @@ static void frame_lengths_test(void)
 /* T31: a transmission whose confirmation never arrives must not leak BDs. */
 static void tx_timeout_test(bool defer_txd)
 {
-	struct net_pkt pkt = {1500U, 0U};
+	struct net_pkt pkt = {1500U, 0U, 0U};
 
 	init(defer_txd);
 	tx_confirm = false;
@@ -448,7 +512,7 @@ static void tx_timeout_test(bool defer_txd)
 /* T32: a late confirmation must not release the next sender or the ring. */
 static void tx_late_confirmation_test(void)
 {
-	struct net_pkt pkt = {1500U, 0U};
+	struct net_pkt pkt = {1500U, 0U, 0U};
 
 	init(false);
 	tx_confirm = false;
@@ -473,7 +537,7 @@ static void tx_late_confirmation_test(void)
 /* T33: a second sender must not consume the first sender's confirmation. */
 static void tx_reentry_test(void)
 {
-	struct net_pkt pkt = {1500U, 0U};
+	struct net_pkt pkt = {1500U, 0U, 0U};
 
 	init(false);
 	reentry_pkt.len = 1500U;
@@ -498,6 +562,100 @@ static void workq_test(void)
 	assert(data.tx_bd_ring.next_to_process == 0U);
 }
 
+/* Queue one frame, tagging its payload so its place on the wire is known. */
+static int queue_frame(uint32_t length)
+{
+	struct net_pkt pkt = {length, 0U, (uint8_t)tx_tag};
+
+	tx_tag++;
+	return eth_xlnx_gem_send(&device, &pkt);
+}
+
+/* T35: more than one transmission is in flight, and they keep their order. */
+static void tx_async_pipeline_test(bool defer_txd)
+{
+	const uint32_t frames = 8U;
+
+	init(defer_txd);
+	/* The controller reports completions only to a sender that waits. */
+	tx_confirm = true;
+
+	for (uint32_t n = 0U; n < frames; n++) {
+		assert(queue_frame(1500U) == 0);
+	}
+
+	/*
+	 * Historical behaviour waits for the completion of each frame before
+	 * returning, so the ring is empty again after every send and only one
+	 * transmission is ever outstanding.
+	 */
+	assert(data.tx_bd_ring.free_bds == TX_BD_COUNT - frames);
+	assert(wire_count == frames);
+	for (uint32_t n = 0U; n < frames; n++) {
+		assert(wire[n] == (uint8_t)n);
+	}
+
+	/* One completion interrupt reclaims every finished transmission. */
+	mmio[ETH_XLNX_GEM_ISR_OFFSET / 4] |= ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT;
+	eth_xlnx_gem_isr(&device);
+	if (data.tx_done_work.pending) {
+		data.tx_done_work.pending = false;
+		eth_xlnx_gem_handle_tx_done(&device);
+	}
+	assert(data.tx_bd_ring.free_bds == TX_BD_COUNT);
+	assert(data.tx_bd_ring.next_to_process == data.tx_bd_ring.next_to_use);
+}
+
+/* T36: a full ring holds the sender back instead of overrunning descriptors. */
+static void tx_async_backpressure_test(void)
+{
+	init(false);
+	tx_confirm = true;
+
+	/* Fill the ring: no completion is reported while nothing waits. */
+	for (uint32_t n = 0U; n < TX_BD_COUNT; n++) {
+		assert(queue_frame(1500U) == 0);
+		assert(data.tx_bd_ring.free_bds <= TX_BD_COUNT);
+	}
+	assert(data.tx_bd_ring.free_bds == 0U);
+
+	/* Further frames wait for room; none of them may overrun the ring. */
+	for (uint32_t n = 0U; n < 2U * TX_BD_COUNT; n++) {
+		assert(queue_frame(1500U) == 0);
+		assert(data.tx_bd_ring.free_bds <= TX_BD_COUNT);
+		assert(data.tx_bd_ring.next_to_use < TX_BD_COUNT);
+		assert(data.tx_bd_ring.next_to_process < TX_BD_COUNT);
+	}
+	assert(wire_count == 3U * TX_BD_COUNT);
+	for (uint32_t n = 0U; n < wire_count; n++) {
+		assert(wire[n] == (uint8_t)n);
+	}
+}
+
+/* T37: a controller that reports nothing costs frames, never the ring. */
+static void tx_async_age_reclaim_test(bool defer_txd)
+{
+	init(defer_txd);
+	/* Not one completion, ever. */
+	tx_confirm = false;
+
+	for (uint32_t n = 0U; n < 3U * TX_BD_COUNT; n++) {
+		assert(queue_frame(1500U) == 0);
+		assert(data.tx_bd_ring.free_bds <= TX_BD_COUNT);
+	}
+
+	/* The ring still works once the controller reports again. */
+	tx_confirm = true;
+	mmio[ETH_XLNX_GEM_ISR_OFFSET / 4] |= ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT;
+	eth_xlnx_gem_isr(&device);
+	if (data.tx_done_work.pending) {
+		data.tx_done_work.pending = false;
+		eth_xlnx_gem_handle_tx_done(&device);
+	}
+	assert(data.tx_bd_ring.free_bds == TX_BD_COUNT);
+	assert(queue_frame(1500U) == 0);
+}
+
 int main(int argc, char **argv)
 {
 	int test = (argc > 1) ? atoi(argv[1]) : 0;
@@ -518,6 +676,17 @@ int main(int argc, char **argv)
 		break;
 	case 34:
 		workq_test();
+		break;
+	case 35:
+		tx_async_pipeline_test(false);
+		tx_async_pipeline_test(true);
+		break;
+	case 36:
+		tx_async_backpressure_test();
+		break;
+	case 37:
+		tx_async_age_reclaim_test(false);
+		tx_async_age_reclaim_test(true);
 		break;
 	default:
 		return 1;

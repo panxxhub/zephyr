@@ -414,6 +414,13 @@ OPTIN_OPTIONS = (
     'CONFIG_ETH_XLNX_GEM_TX_RECLAIM',
 )
 
+# Asynchronous transmit replaces the blocking send, so its cases are built
+# separately from the four options above rather than on top of them.
+OPTIN_ASYNC_OPTIONS = OPTIN_OPTIONS + (
+    'CONFIG_ETH_XLNX_GEM_TX_ASYNC',
+    'CONFIG_ETH_XLNX_GEM_TX_ASYNC_TIMEOUT_MS 100',
+)
+
 OPTIN_NAMES = (
     'eth_xlnx_gem_configure_buffers',
     'eth_xlnx_gem_reset_rx_queue',
@@ -423,6 +430,8 @@ OPTIN_NAMES = (
     'eth_xlnx_gem_tx_lock',
     'eth_xlnx_gem_tx_unlock',
     'eth_xlnx_gem_tx_timeout_reclaim',
+    'eth_xlnx_gem_tx_reclaim_frame',
+    'eth_xlnx_gem_tx_age_reclaim',
     'eth_xlnx_gem_handle_tx_done',
     'eth_xlnx_gem_handle_rx_pending',
     'eth_xlnx_gem_send',
@@ -442,18 +451,32 @@ def gem_optin():
     )
     template = template.replace('/* FUNCTIONS */', functions)
 
-    enabled = template.replace(
-        '/* OPTIONS */', '\n'.join(f'#define {name} 1' for name in OPTIN_OPTIONS)
-    )
+    def define(options):
+        return template.replace(
+            '/* OPTIONS */',
+            '\n'.join('#define ' + (name if ' ' in name else name + ' 1') for name in options),
+        )
+
+    enabled = define(OPTIN_OPTIONS)
+    asynchronous = define(OPTIN_ASYNC_OPTIONS)
     disabled = template.replace('/* OPTIONS */', '')
 
-    cases = [30, 31, 32, 33, 34]
-    compile_run(enabled, 'gem_optin', cases)
+    compile_run(enabled, 'gem_optin', [30, 31, 32, 33, 34])
+    compile_run(asynchronous, 'gem_optin_async', [35, 36, 37])
     # Every case states a property one of the options provides, so the
     # historical behaviour has to fail it. Case 34 holds for both.
-    for case in [30, 31, 32, 33]:
+    for case in [30, 31, 32, 33, 35, 37]:
         compile_run(disabled, f'gem_optin_reverse_{case}', [case], reverse=True)
     compile_run(disabled, 'gem_optin_baseline_workq', [34])
+
+    # Removing the ring-full back pressure lets the send function book
+    # descriptors the ring does not have.
+    overrun = mutation(
+        asynchronous,
+        '\tif (bds_reqd > dev_data->tx_bd_ring.free_bds) {',
+        '\tif (false) {',
+    )
+    compile_run(overrun, 'gem_optin_reverse_backpressure', [36], reverse=True)
 
     # The span must round up: truncating it leaves part of the frame stale.
     truncating = mutation(
