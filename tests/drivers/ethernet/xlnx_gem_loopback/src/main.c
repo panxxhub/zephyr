@@ -18,11 +18,13 @@
 
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/drivers/ethernet/eth_xlnx_gem.h>
 #include <zephyr/kernel.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/net/promiscuous.h>
+#include <zephyr/sys/barrier.h>
 #include <zephyr/sys/sys_io.h>
 #include <zephyr/ztest.h>
 
@@ -455,5 +457,274 @@ ZTEST(xlnx_gem_loopback, test_driver_thread_exists)
 		     "the test is running on the driver's own thread");
 }
 #endif /* CONFIG_ETH_XLNX_GEM_RX_THREAD */
+
+/*
+ * The diagnostic counters of panxxhub/zephyr#70, read through the driver API
+ * that needs no network statistics subsystem. The counters are always compiled
+ * in, so every scenario of this suite exercises them.
+ */
+
+static struct eth_xlnx_gem_stats read_counters(void)
+{
+	struct eth_xlnx_gem_stats stats;
+
+	zassert_ok(eth_xlnx_gem_stats_get(fixture.dev, &stats), "the counters could not be read");
+	return stats;
+}
+
+/* The API refuses everything that is not this driver's own device. */
+ZTEST(xlnx_gem_loopback, test_stats_api_arguments)
+{
+	const struct device *phy = DEVICE_DT_GET(DT_PHANDLE(GEM_NODE, phy_handle));
+	struct eth_xlnx_gem_stats stats;
+
+	zassert_equal(eth_xlnx_gem_stats_get(NULL, &stats), -EINVAL, "a NULL device was accepted");
+	zassert_equal(eth_xlnx_gem_stats_get(fixture.dev, NULL), -EINVAL,
+		      "a NULL destination was accepted");
+	zassert_equal(eth_xlnx_gem_stats_get(phy, &stats), -ENOTSUP,
+		      "a device that is not a GEM was accepted");
+	zassert_ok(eth_xlnx_gem_stats_get(fixture.dev, &stats), "the GEM was refused");
+}
+
+/*
+ * The reverse control for every counter at once: frames that arrive and leave
+ * the way they are supposed to move none of them.
+ */
+ZTEST(xlnx_gem_loopback, test_counters_ignore_healthy_traffic)
+{
+	struct eth_xlnx_gem_stats before = read_counters();
+	struct eth_xlnx_gem_stats after;
+
+	for (int i = 0; i < (int)ARRAY_SIZE(frame_lengths); i++) {
+		drain();
+		round_trip(frame_lengths[i]);
+	}
+
+	after = read_counters();
+	zassert_mem_equal(&after, &before, sizeof(after),
+			  "healthy traffic moved a diagnostic counter");
+}
+
+/*
+ * Hand every receive descriptor back to the driver, so the controller finds no
+ * buffer for the next frame it receives and reports buffer-not-available. The
+ * driver's answer to that is a queue reset, which throws away whatever the ring
+ * was holding - which is the whole point of the counters.
+ */
+static void starve_rx_ring(uint32_t frames)
+{
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(fixture.dev);
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(fixture.dev);
+	unsigned int key = irq_lock();
+
+	for (uint32_t i = 0U; i < dev_conf->rx_bd_count; i++) {
+		uintptr_t addr = (uintptr_t)&dev_data->rx_bd_ring.first_bd[i].addr;
+		uintptr_t ctrl = (uintptr_t)&dev_data->rx_bd_ring.first_bd[i].ctrl;
+
+		sys_write32(sys_read32(addr) | ETH_XLNX_GEM_RX_BD_USED_BIT, addr);
+		/*
+		 * A descriptor's control word still holds the flags of the
+		 * frame it last carried, so the ones that are not to look like
+		 * an undelivered frame have to be cleared explicitly.
+		 */
+		sys_write32((i < frames) ? ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT : 0U, ctrl);
+	}
+	irq_unlock(key);
+}
+
+/* Wait until the driver has reset the queue, which it does from its handler. */
+static struct eth_xlnx_gem_stats wait_for_reset(uint32_t resets)
+{
+	struct eth_xlnx_gem_stats stats = read_counters();
+
+	for (int i = 0; i < 200 && stats.rx_queue_resets < resets; i++) {
+		k_msleep(10);
+		stats = read_counters();
+	}
+	return stats;
+}
+
+ZTEST(xlnx_gem_loopback, test_rx_starvation_counters)
+{
+	struct eth_xlnx_gem_stats before;
+	struct eth_xlnx_gem_stats after;
+	struct net_pkt *pkt;
+	static uint8_t frame[256];
+
+	drain();
+	before = read_counters();
+
+	starve_rx_ring(0U);
+	fill(frame, sizeof(frame));
+	pkt = net_pkt_alloc_with_buffer(fixture.iface, sizeof(frame), NET_AF_UNSPEC, 0,
+					K_SECONDS(1));
+	zassert_not_null(pkt, "no packet for the starving frame");
+	zassert_ok(net_pkt_write(pkt, frame, sizeof(frame)), "write failed");
+	zassert_ok(fixture.api->send(fixture.dev, pkt), "send failed");
+	net_pkt_unref(pkt);
+
+	after = wait_for_reset(before.rx_queue_resets + 1U);
+	zassert_true(after.rx_buffer_not_available > before.rx_buffer_not_available,
+		     "a starved ring did not count a buffer-not-available indication");
+	zassert_equal(after.rx_queue_resets, before.rx_queue_resets + 1U,
+		      "a starved ring did not cost exactly one queue reset");
+	/* The ring held no frame, so the reset threw none away. */
+	zassert_equal(after.rx_reset_discards, before.rx_reset_discards,
+		      "an empty ring reset discarded %u frames",
+		      after.rx_reset_discards - before.rx_reset_discards);
+	zassert_equal(after.tx_send_timeouts, before.tx_send_timeouts, "a transmit counter moved");
+	zassert_equal(after.tx_age_reclaims, before.tx_age_reclaims, "a transmit counter moved");
+	zassert_equal(after.tx_ring_full, before.tx_ring_full, "a transmit counter moved");
+
+	/* Again, this time with frames in the ring for the reset to discard. */
+	before = after;
+	starve_rx_ring(3U);
+	pkt = net_pkt_alloc_with_buffer(fixture.iface, sizeof(frame), NET_AF_UNSPEC, 0,
+					K_SECONDS(1));
+	zassert_not_null(pkt, "no packet for the second starving frame");
+	zassert_ok(net_pkt_write(pkt, frame, sizeof(frame)), "write failed");
+	zassert_ok(fixture.api->send(fixture.dev, pkt), "send failed");
+	net_pkt_unref(pkt);
+
+	after = wait_for_reset(before.rx_queue_resets + 1U);
+	zassert_equal(after.rx_queue_resets, before.rx_queue_resets + 1U,
+		      "the second starved ring did not cost exactly one queue reset");
+	zassert_equal(after.rx_reset_discards, before.rx_reset_discards + 3U,
+		      "the reset discarded %u frames, not the 3 that were in the ring",
+		      after.rx_reset_discards - before.rx_reset_discards);
+
+	/* The interface still receives once the driver has rebuilt the ring. */
+	drain();
+	round_trip(256);
+}
+
+/*
+ * A controller whose transmitter is switched off never reports a completion.
+ * That is what the transmit counters are there to distinguish: a sender that
+ * gives up on a frame, a sender held back by a full ring, and the descriptors
+ * an abandoned transmission leaves behind.
+ */
+/*
+ * Re-arm every transmit descriptor and restart the controller at descriptor
+ * zero, which is the state eth_xlnx_gem_configure_buffers() leaves behind.
+ * The transmitter must be off while the queue base is written.
+ */
+static void restore_tx_ring(uint32_t nwctrl)
+{
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(fixture.dev);
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(fixture.dev);
+
+	for (uint32_t i = 0U; i < dev_conf->tx_bd_count; i++) {
+		struct eth_xlnx_gem_bd *bd = &dev_data->tx_bd_ring.first_bd[i];
+		uint32_t ctrl = ETH_XLNX_GEM_TX_BD_USED_BIT;
+
+		if (i == (uint32_t)(dev_conf->tx_bd_count - 1U)) {
+			ctrl |= ETH_XLNX_GEM_TX_BD_WRAP_BIT;
+		}
+		sys_write32((uint32_t)dev_data->first_tx_buffer + (i * dev_conf->tx_buffer_size),
+			    (uintptr_t)&bd->addr);
+		sys_write32(ctrl, (uintptr_t)&bd->ctrl);
+	}
+	dev_data->tx_bd_ring.next_to_process = 0U;
+	dev_data->tx_bd_ring.next_to_use = 0U;
+	dev_data->tx_bd_ring.free_bds = dev_conf->tx_bd_count;
+
+	barrier_dmem_fence_full();
+	sys_write32((uint32_t)dev_data->tx_bd_ring.first_bd,
+		    DEVICE_MMIO_NAMED_GET(fixture.dev, mac) + ETH_XLNX_GEM_TXQBASE_OFFSET);
+	sys_write32(nwctrl, DEVICE_MMIO_NAMED_GET(fixture.dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+}
+
+ZTEST(xlnx_gem_loopback, test_tx_stall_counters)
+{
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(fixture.dev);
+	const struct eth_xlnx_gem_dev_cfg *dev_conf = DEV_CFG(fixture.dev);
+	struct eth_xlnx_gem_stats before;
+	struct eth_xlnx_gem_stats after;
+	static uint8_t frame[256];
+	uint32_t sent = 0U;
+	uint32_t nwctrl;
+
+	if (!IS_ENABLED(CONFIG_ETH_XLNX_GEM_TX_RECLAIM) &&
+	    !IS_ENABLED(CONFIG_ETH_XLNX_GEM_TX_ASYNC)) {
+		/* Without either option an abandoned frame costs the ring its
+		 * descriptors for good, which would break what follows.
+		 */
+		ztest_test_skip();
+	}
+
+	drain();
+	zassert_equal(dev_data->tx_bd_ring.free_bds, dev_conf->tx_bd_count,
+		      "the TX ring did not start out empty");
+	before = read_counters();
+
+	/* Switch the transmitter off: nothing leaves, nothing is confirmed. */
+	nwctrl = sys_read32(DEVICE_MMIO_NAMED_GET(fixture.dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+	sys_write32(nwctrl & ~ETH_XLNX_GEM_NWCTRL_TXEN_BIT,
+		    DEVICE_MMIO_NAMED_GET(fixture.dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+
+	fill(frame, sizeof(frame));
+	/*
+	 * One frame more than the ring holds. The blocking send function gives
+	 * up on each of them in turn; the asynchronous one queues them until
+	 * the ring is full and only then has to wait.
+	 */
+	for (uint32_t i = 0U; i <= dev_conf->tx_bd_count; i++) {
+		struct net_pkt *pkt = net_pkt_alloc_with_buffer(
+			fixture.iface, sizeof(frame), NET_AF_UNSPEC, 0, K_SECONDS(1));
+
+		zassert_not_null(pkt, "no packet for stalled frame %u", i);
+		zassert_ok(net_pkt_write(pkt, frame, sizeof(frame)), "write failed");
+		(void)fixture.api->send(fixture.dev, pkt);
+		net_pkt_unref(pkt);
+		sent++;
+		if (!IS_ENABLED(CONFIG_ETH_XLNX_GEM_TX_ASYNC)) {
+			/* Every blocking send has already timed out by now. */
+			break;
+		}
+	}
+
+	after = read_counters();
+	zassert_true(after.tx_send_timeouts > before.tx_send_timeouts,
+		     "a transmitter that never confirms cost no send timeout");
+	if (IS_ENABLED(CONFIG_ETH_XLNX_GEM_TX_ASYNC)) {
+		zassert_true(after.tx_ring_full > before.tx_ring_full,
+			     "a full ring held nobody back");
+		zassert_true(after.tx_age_reclaims > before.tx_age_reclaims,
+			     "no transmission was abandoned by age");
+	} else {
+		zassert_equal(after.tx_ring_full, before.tx_ring_full,
+			      "the ring was reported full although %u frames fit", sent);
+		zassert_equal(after.tx_age_reclaims, before.tx_age_reclaims,
+			      "the blocking send function reclaimed by age");
+	}
+	zassert_equal(after.rx_overruns, before.rx_overruns, "a receive counter moved");
+	zassert_equal(after.rx_queue_resets, before.rx_queue_resets, "a receive counter moved");
+
+	/*
+	 * Whatever the controller did, the accounting stayed inside the ring:
+	 * the reclaim paths of #68 return what an abandoned transmission left
+	 * behind. The blocking send function gives up on its one frame and the
+	 * ring is whole again; the asynchronous one keeps the ring full, since
+	 * every frame takes the descriptor the previous abandonment freed.
+	 */
+	zassert_true(dev_data->tx_bd_ring.free_bds <= dev_conf->tx_bd_count,
+		     "the TX ring overran: %u of %u descriptors free",
+		     dev_data->tx_bd_ring.free_bds, dev_conf->tx_bd_count);
+	if (!IS_ENABLED(CONFIG_ETH_XLNX_GEM_TX_ASYNC)) {
+		zassert_equal(dev_data->tx_bd_ring.free_bds, dev_conf->tx_bd_count,
+			      "the TX ring did not recover: %u of %u descriptors free",
+			      dev_data->tx_bd_ring.free_bds, dev_conf->tx_bd_count);
+	}
+
+	/*
+	 * The controller stopped part way through the ring, so put its cursor
+	 * and the ring back where the driver's initialisation leaves them
+	 * before switching the transmitter on again.
+	 */
+	restore_tx_ring(nwctrl);
+	drain();
+	round_trip(256);
+}
 
 ZTEST_SUITE(xlnx_gem_loopback, NULL, setup, NULL, NULL, teardown);
