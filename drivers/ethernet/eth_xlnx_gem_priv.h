@@ -447,7 +447,8 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 	.config_func			= eth_xlnx_gem##port##_irq_config,\
 	.pll_clock_frequency		= DT_INST_PROP(port, clock_frequency),\
 	.defer_rxp_to_queue		= !DT_INST_PROP(port, handle_rx_in_isr),\
-	.defer_txd_to_queue		= DT_INST_PROP(port, handle_tx_in_workq),\
+	.defer_txd_to_queue		= UTIL_OR(IS_ENABLED(CONFIG_ETH_XLNX_GEM_TX_DONE_WORKQ),\
+					  DT_INST_PROP(port, handle_tx_in_workq)),\
 	.ahb_burst_length		= (enum eth_xlnx_ahb_burst_length)\
 		(DT_INST_PROP(port, amba_ahb_burst_length)),\
 	.hw_rx_buffer_size		= (enum eth_xlnx_hwrx_buffer_size)\

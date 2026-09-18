@@ -82,4 +82,27 @@ config ETH_XLNX_GEM_FRAME_SIZED_CACHE_OPS
 	  When this option is disabled, whole buffers are maintained, which is
 	  the historical behaviour.
 
+config ETH_XLNX_GEM_TX_DONE_WORKQ
+	bool "Reclaim GEM transmit descriptors outside the interrupt"
+	help
+	  Handle transmit completion on a work queue for every GEM instance,
+	  as if each of them had the handle-tx-in-workq device tree property
+	  set.
+
+	  Unless an instance defers it, the driver walks the buffer
+	  descriptors of a completed frame inside the interrupt service
+	  routine, which makes the cost of the interrupt proportional to the
+	  number of descriptors that frame occupies - up to the whole transmit
+	  ring. Deferring the walk leaves the service routine with a fixed
+	  number of register accesses and one work item submission.
+
+	  The reclamation then runs under the transmit ring semaphore, the
+	  protection the driver already uses for this path, rather than under
+	  the interrupt masking used when reclaiming inside the service
+	  routine. Enable CONFIG_ETH_XLNX_GEM_RX_THREAD as well to keep that
+	  work off the system work queue.
+
+	  When this option is disabled, only instances whose device tree asks
+	  for it defer transmit completion, which is the historical behaviour.
+
 endif # ETH_XLNX_GEM
