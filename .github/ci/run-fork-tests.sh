@@ -25,6 +25,10 @@ python3 scripts/twister -p qemu_cortex_a9 \
   --build-only --inline-logs --post-build-checks -O twister-out/gem
 
 python3 scripts/twister -p qemu_cortex_a9 \
+  -T tests/drivers/ethernet/xlnx_gem_loopback \
+  --inline-logs --post-build-checks -O twister-out/gem-loopback
+
+python3 scripts/twister -p qemu_cortex_a9 \
   -T tests/arch/arm/irq_trace --inline-logs --post-build-checks \
   -O twister-out/irq-trace
 while IFS= read -r elf; do

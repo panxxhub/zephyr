@@ -1,0 +1,15 @@
+/*
+ * Copyright (c) 2026 Moton Technology Inc.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Buffers smaller than an Ethernet frame, so that an ordinary frame spans
+ * several buffer descriptors and the multi-descriptor receive and transmit
+ * paths are exercised. The sizes stay multiples of the cache line size, as
+ * the driver asserts at build time.
+ */
+
+&gem0 {
+	rx-buffer-size = <512>;
+	tx-buffer-size = <512>;
+};
