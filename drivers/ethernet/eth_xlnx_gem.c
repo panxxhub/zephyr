@@ -19,6 +19,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
+#include <zephyr/init.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/cache.h>
 
@@ -64,6 +65,7 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
 static void eth_xlnx_gem_set_mac_address(const struct device *dev);
 static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev);
 static void eth_xlnx_gem_configure_buffers(const struct device *dev);
+static void eth_xlnx_gem_submit_work(struct k_work *work);
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
 static void eth_xlnx_gem_tx_done_work(struct k_work *item);
@@ -75,6 +77,35 @@ static void eth_xlnx_gem_set_nwcfg_link_speed(const struct device *dev,
 static void eth_xlnx_gem_phy_cb(const struct device *phy,
 				struct phy_link_state *state,
 				void *eth_dev);
+
+#ifdef CONFIG_ETH_XLNX_GEM_RX_THREAD
+static K_KERNEL_STACK_DEFINE(eth_xlnx_gem_workq_stack,
+			     CONFIG_ETH_XLNX_GEM_RX_THREAD_STACK_SIZE);
+static struct k_work_q eth_xlnx_gem_workq;
+
+/**
+ * @brief Starts the work queue shared by all GEM instances.
+ *
+ * Runs before any interface is brought up, therefore before the first work
+ * item can be submitted from an interrupt.
+ *
+ * @retval 0 always
+ */
+static int eth_xlnx_gem_workq_start(void)
+{
+	struct k_work_queue_config queue_cfg = {
+		.name = "gem_rx",
+	};
+
+	k_work_queue_start(&eth_xlnx_gem_workq, eth_xlnx_gem_workq_stack,
+			   K_KERNEL_STACK_SIZEOF(eth_xlnx_gem_workq_stack),
+			   CONFIG_ETH_XLNX_GEM_RX_THREAD_PRIORITY, &queue_cfg);
+
+	return 0;
+}
+
+SYS_INIT(eth_xlnx_gem_workq_start, POST_KERNEL, CONFIG_ETH_INIT_PRIORITY);
+#endif /* CONFIG_ETH_XLNX_GEM_RX_THREAD */
 
 static const struct ethernet_api eth_xlnx_gem_apis = {
 	.iface_api.init   = eth_xlnx_gem_iface_init,
@@ -243,7 +274,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
  * @brief GEM interrupt service routine
  * GEM interrupt service routine. Checks for indications of errors
  * and either immediately handles RX pending / TX complete notifications
- * or defers them to the system work queue.
+ * or defers them to a work queue.
  *
  * @param dev Pointer to the device data
  */
@@ -280,7 +311,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
 			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 		if (dev_conf->defer_txd_to_queue) {
-			k_work_submit(&dev_data->tx_done_work);
+			eth_xlnx_gem_submit_work(&dev_data->tx_done_work);
 		} else {
 			eth_xlnx_gem_handle_tx_done(dev);
 		}
@@ -292,7 +323,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
 			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
 		if (dev_conf->defer_rxp_to_queue) {
-			k_work_submit(&dev_data->rx_pend_work);
+			eth_xlnx_gem_submit_work(&dev_data->rx_pend_work);
 		} else {
 			eth_xlnx_gem_handle_rx_pending(dev);
 		}
@@ -1466,6 +1497,22 @@ static void eth_xlnx_gem_reset_rx_queue(const struct device *dev)
 		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_RXQBASE_OFFSET);
 	sys_write32(ctrl, DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 	k_spin_unlock(&dev_data->nwcfg_lock, key);
+}
+
+/**
+ * @brief Queues one of the current GEM instance's deferred work items.
+ * Submits to the work queue owned by this driver if one is configured,
+ * otherwise to the system work queue, which is the historical behaviour.
+ *
+ * @param work Pointer to the work item to be submitted
+ */
+static void eth_xlnx_gem_submit_work(struct k_work *work)
+{
+#ifdef CONFIG_ETH_XLNX_GEM_RX_THREAD
+	k_work_submit_to_queue(&eth_xlnx_gem_workq, work);
+#else
+	k_work_submit(work);
+#endif
 }
 
 /**

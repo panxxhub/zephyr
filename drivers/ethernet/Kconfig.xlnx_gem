@@ -26,3 +26,38 @@ config ETH_NIC_MODEL
 	  Value of the -nic parameter to be used when starting QEMU.
 	  This parameter specifies which type of Ethernet controller
 	  shall be simulated by QEMU.
+
+if ETH_XLNX_GEM
+
+config ETH_XLNX_GEM_RX_THREAD
+	bool "Deferred GEM work on a driver-owned thread"
+	help
+	  Run the deferred receive handling of every GEM instance, and the
+	  transmit completion handling of those instances which defer it, on a
+	  work queue owned by this driver instead of the system work queue.
+
+	  The system work queue is shared with every other subsystem, so GEM
+	  receive processing both waits behind unrelated work items and delays
+	  them in turn. A driver-owned queue makes the receive cost of this
+	  driver schedulable and attributable on its own thread, named "gem_rx".
+
+	  All GEM instances share the one queue, so the order in which a single
+	  instance's work items run is unchanged.
+
+config ETH_XLNX_GEM_RX_THREAD_PRIORITY
+	int "Priority of the GEM work queue thread"
+	default SYSTEM_WORKQUEUE_PRIORITY
+	depends on ETH_XLNX_GEM_RX_THREAD
+	help
+	  Thread priority of the driver-owned GEM work queue. The default
+	  matches the system work queue, so enabling the thread on its own
+	  changes which thread runs the work, not at which priority.
+
+config ETH_XLNX_GEM_RX_THREAD_STACK_SIZE
+	int "Stack size of the GEM work queue thread"
+	default 2048
+	depends on ETH_XLNX_GEM_RX_THREAD
+	help
+	  Stack size of the driver-owned GEM work queue thread, in bytes.
+
+endif # ETH_XLNX_GEM
