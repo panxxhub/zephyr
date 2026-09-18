@@ -461,8 +461,8 @@ def gem_optin():
     asynchronous = define(OPTIN_ASYNC_OPTIONS)
     disabled = template.replace('/* OPTIONS */', '')
 
-    compile_run(enabled, 'gem_optin', [30, 31, 32, 33, 34])
-    compile_run(asynchronous, 'gem_optin_async', [35, 36, 37])
+    compile_run(enabled, 'gem_optin', [30, 31, 32, 33, 34, 40, 41, 42, 43, 47])
+    compile_run(asynchronous, 'gem_optin_async', [35, 36, 37, 44, 45, 46])
     # Every case states a property one of the options provides, so the
     # historical behaviour has to fail it. Case 34 holds for both.
     for case in [30, 31, 32, 33, 35, 37]:
@@ -485,6 +485,68 @@ def gem_optin():
         mmio_macro(header, 'ETH_XLNX_GEM_CACHE_SPAN').replace('ROUND_UP', 'ROUND_DOWN'),
     )
     compile_run(truncating, 'gem_optin_reverse_round_down', [30], reverse=True)
+
+    # The counters of #70. Each case claims that one counter moves when its
+    # event happens and that no other counter moves; deleting the increment
+    # the case is about is its reverse control.
+    counters = [
+        (
+            40,
+            enabled,
+            '\t\tdev_data->diag.rx_overruns++;\n',
+        ),
+        (
+            41,
+            enabled,
+            '\t\tdev_data->diag.rx_buffer_not_available++;\n',
+        ),
+        (
+            42,
+            enabled,
+            '\tdev_data->diag.rx_queue_resets++;\n',
+        ),
+        (
+            43,
+            enabled,
+            (
+                '\t\tif ((sys_read32((uintptr_t)&bd->addr) & '
+                'ETH_XLNX_GEM_RX_BD_USED_BIT) != 0U &&\n'
+                '\t\t    (sys_read32((uintptr_t)&bd->ctrl) &\n'
+                '\t\t     ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT) != 0U) {\n'
+                '\t\t\tdev_data->diag.rx_reset_discards++;\n'
+                '\t\t}\n'
+            ),
+        ),
+        (
+            44,
+            asynchronous,
+            '\t\tdev_data->diag.tx_send_timeouts++;\n\n\t\t/*\n',
+        ),
+        (
+            45,
+            asynchronous,
+            '\t\tdev_data->diag.tx_age_reclaims++;\n',
+        ),
+        (
+            46,
+            asynchronous,
+            '\t\tdev_data->diag.tx_ring_full++;\n',
+        ),
+        (
+            47,
+            enabled,
+            '\tif (sem_status < 0) {\n\t\tdev_data->diag.tx_send_timeouts++;\n',
+        ),
+    ]
+    for case, build, increment in counters:
+        replacement = '\n\t\t/*\n' if case == 44 else ''
+        replacement = '\tif (sem_status < 0) {\n' if case == 47 else replacement
+        compile_run(
+            mutation(build, increment, replacement),
+            f'gem_counter_reverse_{case}',
+            [case],
+            reverse=True,
+        )
     print('GEM opt-in options and reverse: PASS', flush=True)
 
 
@@ -609,6 +671,7 @@ def mmio_macro(source, name):
 
 def bringup():
     gem_header = (ROOT / 'drivers/ethernet/eth_xlnx_gem_priv.h').read_text()
+    gem_api = (ROOT / 'include/zephyr/drivers/ethernet/eth_xlnx_gem.h').read_text()
     mmio_header = (ROOT / 'include/zephyr/sys/device_mmio.h').read_text()
     mdio_source = (ROOT / 'drivers/ethernet/mdio/mdio_xlnx_gem.c').read_text()
     phy_source = (ROOT / 'drivers/ethernet/phy/phy_motorcomm_yt8531.c').read_text()
@@ -619,6 +682,7 @@ def bringup():
             mmio_macro(mmio_header, 'DEVICE_MMIO_NAMED_RAM'),
             mmio_macro(mmio_header, 'DEVICE_MMIO_RAM_PTR'),
             mmio_macro(mmio_header, 'DEVICE_MMIO_GET'),
+            declaration(gem_api, 'eth_xlnx_gem_stats'),
             declaration(gem_header, 'eth_xlnx_gem_dev_data'),
             declaration(mdio_source, 'xlnx_gem_mdio_data'),
             declaration(phy_source, 'mc_yt8531_config'),
