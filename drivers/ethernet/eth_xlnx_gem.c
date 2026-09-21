@@ -76,6 +76,9 @@ static void eth_xlnx_gem_submit_work(struct k_work *work);
 static uint8_t eth_xlnx_gem_tx_reclaim_frame(const struct device *dev, bool require_used);
 static uint8_t eth_xlnx_gem_tx_age_reclaim(const struct device *dev);
 #endif
+#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
+static void eth_xlnx_gem_refresh_vendor_stats(const struct device *dev);
+#endif
 static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
 static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
 static void eth_xlnx_gem_tx_done_work(struct k_work *item);
@@ -334,6 +337,17 @@ static void eth_xlnx_gem_isr(const struct device *dev)
 		} else {
 			eth_xlnx_gem_handle_tx_done(dev);
 		}
+	}
+	/*
+	 * Count what the controller is reporting before the indication is
+	 * acknowledged: these two bits are the only evidence that a frame was
+	 * lost between the wire and the receive ring.
+	 */
+	if ((reg_val & ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT) != 0) {
+		dev_data->diag.rx_overruns++;
+	}
+	if ((reg_val & ETH_XLNX_GEM_IXR_RX_USED_BIT) != 0) {
+		dev_data->diag.rx_buffer_not_available++;
 	}
 	if ((reg_val & (ETH_XLNX_GEM_IXR_FRAME_RX_BIT | ETH_XLNX_GEM_IXR_RX_USED_BIT |
 		       ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT)) != 0) {
@@ -638,6 +652,7 @@ static uint8_t eth_xlnx_gem_tx_age_reclaim(const struct device *dev)
 	}
 
 	if (reclaimed != 0) {
+		dev_data->diag.tx_age_reclaims++;
 		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.tx_timeout_count++;
@@ -722,6 +737,7 @@ claim_bds:
 	}
 
 	if (bds_reqd > dev_data->tx_bd_ring.free_bds) {
+		dev_data->diag.tx_ring_full++;
 		if (dev_conf->defer_txd_to_queue) {
 			k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
 		} else {
@@ -741,6 +757,7 @@ claim_bds:
 			       K_MSEC(CONFIG_ETH_XLNX_GEM_TX_ASYNC_TIMEOUT_MS)) == 0) {
 			goto claim_bds;
 		}
+		dev_data->diag.tx_send_timeouts++;
 
 		/*
 		 * Not one completion in a whole timeout, which is the age at
@@ -863,6 +880,7 @@ claim_bds:
 	/* Block until TX has completed */
 	sem_status = k_sem_take(&dev_data->tx_done_sem, K_MSEC(100));
 	if (sem_status < 0) {
+		dev_data->diag.tx_send_timeouts++;
 		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 		dev_data->stats.tx_timeout_count++;
@@ -1129,9 +1147,59 @@ static struct net_stats_eth *eth_xlnx_gem_get_stats(const struct device *dev,
 {
 	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
 
+#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
+	eth_xlnx_gem_refresh_vendor_stats(dev);
+#endif
 	return &dev_data->stats;
 }
 #endif
+
+#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
+/**
+ * @brief Publishes the driver's counters as vendor statistics.
+ * Copies the diagnostic counters into the vendor statistics array of the
+ * current controller, whose keys are declared alongside the device's run-time
+ * data. Called whenever the network statistics of the interface are read.
+ *
+ * @param dev Pointer to the device data
+ */
+static void eth_xlnx_gem_refresh_vendor_stats(const struct device *dev)
+{
+	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+	struct net_stats_eth_vendor *vendor = dev_data->stats.vendor;
+	const uint32_t values[] = {
+		dev_data->diag.rx_overruns,
+		dev_data->diag.rx_buffer_not_available,
+		dev_data->diag.rx_queue_resets,
+		dev_data->diag.rx_reset_discards,
+		dev_data->diag.tx_send_timeouts,
+		dev_data->diag.tx_age_reclaims,
+		dev_data->diag.tx_ring_full,
+	};
+
+	if (vendor == NULL) {
+		return;
+	}
+
+	for (size_t i = 0U; i < ARRAY_SIZE(values) && vendor[i].key != NULL; i++) {
+		vendor[i].value = values[i];
+	}
+}
+#endif /* CONFIG_NET_STATISTICS_ETHERNET_VENDOR */
+
+int eth_xlnx_gem_stats_get(const struct device *dev, struct eth_xlnx_gem_stats *stats)
+{
+	if (dev == NULL || stats == NULL) {
+		return -EINVAL;
+	}
+
+	if (dev->api != (const void *)&eth_xlnx_gem_apis) {
+		return -ENOTSUP;
+	}
+
+	*stats = DEV_DATA(dev)->diag;
+	return 0;
+}
 
 /**
  * @brief GEM Hardware reset function
@@ -1827,10 +1895,23 @@ static void eth_xlnx_gem_reset_rx_queue(const struct device *dev)
 		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
 	barrier_dmem_fence_full();
 
+	dev_data->diag.rx_queue_resets++;
+
 	for (uint32_t i = 0U; i < dev_conf->rx_bd_count; i++) {
 		uint32_t addr = (uint32_t)dev_data->first_rx_buffer +
 				(i * dev_conf->rx_buffer_size);
 		struct eth_xlnx_gem_bd *bd = &dev_data->rx_bd_ring.first_bd[i];
+
+		/*
+		 * A descriptor the controller has written and the driver has
+		 * not delivered is about to be thrown away. Counting the ones
+		 * that start a frame counts frames rather than buffers.
+		 */
+		if ((sys_read32((uintptr_t)&bd->addr) & ETH_XLNX_GEM_RX_BD_USED_BIT) != 0U &&
+		    (sys_read32((uintptr_t)&bd->ctrl) &
+		     ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT) != 0U) {
+			dev_data->diag.rx_reset_discards++;
+		}
 
 		addr &= ~(ETH_XLNX_GEM_RX_BD_USED_BIT | ETH_XLNX_GEM_RX_BD_WRAP_BIT);
 		if (i == (dev_conf->rx_bd_count - 1U)) {

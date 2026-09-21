@@ -17,6 +17,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/types.h>
+#include <zephyr/drivers/ethernet/eth_xlnx_gem.h>
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/irq.h>
 #include <zephyr/linker/section_tags.h>
@@ -492,11 +493,39 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
 	.enable_ahb_md_endian_swap	= DT_INST_PROP(port, ahb_md_endian_swap)\
 };
 
+/*
+ * Vendor statistics. The keys name the counters of struct eth_xlnx_gem_stats
+ * in the order eth_xlnx_gem_refresh_vendor_stats() copies them, and the array
+ * is terminated by an entry with a NULL key, as net_stats_eth requires. The
+ * key member is const, so the array is defined per controller rather than
+ * filled in at run-time.
+ */
+#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
+#define ETH_XLNX_GEM_VENDOR_STATS_DECL(port) \
+static struct net_stats_eth_vendor eth_xlnx_gem##port##_vendor_stats[] = {\
+	{ .key = "rx_overruns" },\
+	{ .key = "rx_buffer_not_available" },\
+	{ .key = "rx_queue_resets" },\
+	{ .key = "rx_reset_discards" },\
+	{ .key = "tx_send_timeouts" },\
+	{ .key = "tx_age_reclaims" },\
+	{ .key = "tx_ring_full" },\
+	{ .key = NULL } \
+};
+#define ETH_XLNX_GEM_VENDOR_STATS_INIT(port) \
+	.stats.vendor    = eth_xlnx_gem##port##_vendor_stats,
+#else
+#define ETH_XLNX_GEM_VENDOR_STATS_DECL(port)
+#define ETH_XLNX_GEM_VENDOR_STATS_INIT(port)
+#endif /* CONFIG_NET_STATISTICS_ETHERNET_VENDOR */
+
 /* Device run-time data declaration macro */
 #define ETH_XLNX_GEM_DEV_DATA(port) \
+ETH_XLNX_GEM_VENDOR_STATS_DECL(port)\
 static struct eth_xlnx_gem_dev_data eth_xlnx_gem##port##_dev_data = {\
 	.mac_addr        = DT_INST_PROP_OR(port, local_mac_address, {0}),\
 	.started         = 0,\
+	ETH_XLNX_GEM_VENDOR_STATS_INIT(port)\
 	.first_rx_buffer = NULL,\
 	.first_tx_buffer = NULL\
 };
@@ -762,6 +791,9 @@ struct eth_xlnx_gem_dev_data {
 #ifdef CONFIG_NET_STATISTICS_ETHERNET
 	struct net_stats_eth		stats;
 #endif
+
+	/* Always compiled: see struct eth_xlnx_gem_stats. */
+	struct eth_xlnx_gem_stats	diag;
 
 	bool				started;
 };
