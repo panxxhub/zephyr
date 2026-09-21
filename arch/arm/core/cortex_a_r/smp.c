@@ -176,7 +176,7 @@ static uint32_t cpu_map[CONFIG_MP_MAX_NUM_CPUS] = {
 extern int z_arm_mpu_init(void);
 extern void z_arm_configure_static_mpu_regions(void);
 #elif defined(CONFIG_ARM_AARCH32_MMU)
-extern int z_arm_mmu_init(void);
+extern int z_arm_mmu_init_secondary(void);
 #endif
 
 /* Called from Zephyr initialization */
@@ -276,7 +276,12 @@ void arch_secondary_cpu_init(void)
 	z_arm_mpu_init();
 	z_arm_configure_static_mpu_regions();
 #elif defined(CONFIG_ARM_AARCH32_MMU)
-	z_arm_mmu_init();
+	/*
+	 * Only point this CPU at the page tables the primary CPU built. They
+	 * are shared, and the primary CPU is translating through them right
+	 * now, so they must not be rebuilt from here.
+	 */
+	z_arm_mmu_init_secondary();
 #endif
 
 #ifdef CONFIG_SMP

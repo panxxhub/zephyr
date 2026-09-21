@@ -35,6 +35,10 @@ while IFS= read -r elf; do
   python3 tests/subsys/tracing/call_sites/check.py "${elf%/zephyr/zephyr.elf}"
 done < <(find twister-out/irq-trace -name zephyr.elf)
 
+python3 scripts/twister -p qemu_cortex_a9 \
+  -T tests/arch/arm/mmu_smp --inline-logs --post-build-checks \
+  -O twister-out/mmu-smp
+
 # Every scenario here is a two-CPU SMP image making assertions about elapsed
 # wall-clock time. Running all five at once puts ten vCPUs on a four-core
 # runner, where they starve each other; bound the concurrency instead.
