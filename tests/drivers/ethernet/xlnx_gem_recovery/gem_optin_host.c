@@ -84,8 +84,18 @@ struct eth_xlnx_gem_dev_cfg {
 	uint8_t rx_bd_count, tx_bd_count;
 	bool defer_rxp_to_queue, defer_txd_to_queue;
 };
+struct eth_xlnx_gem_stats {
+	uint32_t rx_overruns;
+	uint32_t rx_buffer_not_available;
+	uint32_t rx_queue_resets;
+	uint32_t rx_reset_discards;
+	uint32_t tx_send_timeouts;
+	uint32_t tx_age_reclaims;
+	uint32_t tx_ring_full;
+};
 struct eth_xlnx_gem_dev_data {
 	struct k_spinlock nwcfg_lock;
+	struct eth_xlnx_gem_stats diag;
 	struct ring rx_bd_ring, tx_bd_ring;
 	uint8_t *first_rx_buffer, *first_tx_buffer;
 	void *iface;
@@ -656,6 +666,205 @@ static void tx_async_age_reclaim_test(bool defer_txd)
 	assert(queue_frame(1500U) == 0);
 }
 
+/*
+ * The counters of panxxhub/zephyr#70. Every case provokes one event and states
+ * both halves of the claim: the counter of that event moves by exactly the
+ * number of times the event happened, and no other counter moves at all.
+ * Deleting an increment from the driver is the reverse control for its case.
+ */
+static void assert_counters(uint32_t overruns, uint32_t bna, uint32_t resets,
+			    uint32_t discards, uint32_t timeouts, uint32_t aged,
+			    uint32_t ring_full)
+{
+	assert(data.diag.rx_overruns == overruns);
+	assert(data.diag.rx_buffer_not_available == bna);
+	assert(data.diag.rx_queue_resets == resets);
+	assert(data.diag.rx_reset_discards == discards);
+	assert(data.diag.tx_send_timeouts == timeouts);
+	assert(data.diag.tx_age_reclaims == aged);
+	assert(data.diag.tx_ring_full == ring_full);
+}
+
+/* Raise one interrupt indication and run the interrupt handler over it. */
+static void raise_isr(uint32_t bits)
+{
+	mmio[ETH_XLNX_GEM_ISR_OFFSET / 4] |= bits;
+	eth_xlnx_gem_isr(&device);
+	/* Receive handling is deferred here, so the ISR is all that ran. */
+	data.rx_pend_work.pending = false;
+}
+
+/* T40: an overrun indication is counted; an ordinary receive is not. */
+static void rx_overrun_counter_test(void)
+{
+	init(true);
+	raise_isr(ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT);
+	assert_counters(1U, 0U, 0U, 0U, 0U, 0U, 0U);
+
+	raise_isr(ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT);
+	assert_counters(2U, 0U, 0U, 0U, 0U, 0U, 0U);
+
+	/* Reverse control: the event that is not an overrun moves nothing. */
+	init(true);
+	raise_isr(ETH_XLNX_GEM_IXR_FRAME_RX_BIT);
+	assert_counters(0U, 0U, 0U, 0U, 0U, 0U, 0U);
+}
+
+/* T41: a buffer-not-available indication is counted, and only that one. */
+static void rx_bna_counter_test(void)
+{
+	init(true);
+	raise_isr(ETH_XLNX_GEM_IXR_RX_USED_BIT);
+	assert_counters(0U, 1U, 0U, 0U, 0U, 0U, 0U);
+
+	/* Both at once: the controller reports two distinct conditions. */
+	raise_isr(ETH_XLNX_GEM_IXR_RX_USED_BIT | ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT);
+	assert_counters(1U, 2U, 0U, 0U, 0U, 0U, 0U);
+
+	/* Reverse control: a transmit completion moves nothing. */
+	init(true);
+	mmio[ETH_XLNX_GEM_ISR_OFFSET / 4] |= ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT;
+	eth_xlnx_gem_isr(&device);
+	data.tx_done_work.pending = false;
+	assert_counters(0U, 0U, 0U, 0U, 0U, 0U, 0U);
+}
+
+/*
+ * Mark the first @p frames descriptors as holding the start of a received
+ * frame the driver has not delivered, which is what a queue reset throws away.
+ */
+static void arm_received_frames(uint32_t frames)
+{
+	for (uint32_t i = 0U; i < frames; i++) {
+		rx[i].addr |= ETH_XLNX_GEM_RX_BD_USED_BIT;
+		rx[i].ctrl |= ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT;
+	}
+}
+
+/* T42: a queue reset is counted, and an empty ring discards nothing. */
+static void rx_queue_reset_counter_test(void)
+{
+	init(true);
+	/* A halted queue: the receive handler resets it without scanning. */
+	mmio[ETH_XLNX_GEM_RXSR_OFFSET / 4] |= ETH_XLNX_GEM_RXSR_BNA_BIT;
+	eth_xlnx_gem_handle_rx_pending(&device);
+	assert_counters(0U, 0U, 1U, 0U, 0U, 0U, 0U);
+
+	/* Reverse control: a quiet ring is not reset and counts nothing. */
+	init(true);
+	eth_xlnx_gem_handle_rx_pending(&device);
+	assert_counters(0U, 0U, 0U, 0U, 0U, 0U, 0U);
+}
+
+/* T43: the frames a reset throws away are counted, one per frame. */
+static void rx_reset_discard_counter_test(void)
+{
+	const uint32_t frames = 7U;
+
+	init(true);
+	arm_received_frames(frames);
+	mmio[ETH_XLNX_GEM_RXSR_OFFSET / 4] |= ETH_XLNX_GEM_RXSR_OVERRUN_BIT;
+	eth_xlnx_gem_handle_rx_pending(&device);
+	assert_counters(0U, 0U, 1U, frames, 0U, 0U, 0U);
+
+	/* The rebuilt ring holds nothing, so a second reset discards nothing. */
+	mmio[ETH_XLNX_GEM_RXSR_OFFSET / 4] |= ETH_XLNX_GEM_RXSR_OVERRUN_BIT;
+	eth_xlnx_gem_handle_rx_pending(&device);
+	assert_counters(0U, 0U, 2U, frames, 0U, 0U, 0U);
+}
+
+/* T47: a transmission whose confirmation never arrives is counted. */
+static void tx_send_timeout_counter_test(bool defer_txd)
+{
+	struct net_pkt pkt = {1500U, 0U, 0U};
+
+	init(defer_txd);
+	/* A confirmed transmission moves nothing. */
+	assert(eth_xlnx_gem_send(&device, &pkt) == 0);
+	assert_counters(0U, 0U, 0U, 0U, 0U, 0U, 0U);
+
+	/* Not one confirmation: the send function gives up on the frame. */
+	tx_confirm = false;
+	assert(eth_xlnx_gem_send(&device, &pkt) != 0);
+	assert_counters(0U, 0U, 0U, 0U, 1U, 0U, 0U);
+	assert(eth_xlnx_gem_send(&device, &pkt) != 0);
+	assert_counters(0U, 0U, 0U, 0U, 2U, 0U, 0U);
+}
+
+/* Queue frames until the ring holds no more free descriptors. */
+static void fill_tx_ring(void)
+{
+	while (data.tx_bd_ring.free_bds > 0U) {
+		assert(queue_frame(1500U) == 0);
+	}
+}
+
+/* T44: only a back-pressure wait that a confirmation never ends is a timeout. */
+static void tx_async_timeout_counter_test(void)
+{
+	init(false);
+	tx_confirm = true;
+
+	/* The ring fills without any sender ever having to wait. */
+	fill_tx_ring();
+	assert_counters(0U, 0U, 0U, 0U, 0U, 0U, 0U);
+
+	/*
+	 * Reverse control: this sender waits, but the controller confirms
+	 * while it waits, so its wait is not a timeout.
+	 */
+	assert(queue_frame(1500U) == 0);
+	assert_counters(0U, 0U, 0U, 0U, 0U, 0U, 1U);
+
+	/* Nothing is confirmed from here on, so the next wait does time out. */
+	fill_tx_ring();
+	tx_confirm = false;
+	assert(queue_frame(1500U) == 0);
+	assert_counters(0U, 0U, 0U, 0U, 1U, 1U, 2U);
+}
+
+/* T45: descriptors returned to the ring by age are counted, one per frame. */
+static void tx_age_reclaim_counter_test(void)
+{
+	const uint32_t extra = 5U;
+
+	init(false);
+	tx_confirm = true;
+	fill_tx_ring();
+	assert_counters(0U, 0U, 0U, 0U, 0U, 0U, 0U);
+
+	/*
+	 * Not one confirmation: every further frame finds the ring full, waits
+	 * a whole timeout and abandons the transmission at the head of the ring
+	 * to make room for itself.
+	 */
+	tx_confirm = false;
+	for (uint32_t n = 0U; n < extra; n++) {
+		assert(queue_frame(1500U) == 0);
+	}
+	assert_counters(0U, 0U, 0U, 0U, extra, extra, extra);
+}
+
+/* T46: a sender held back by a full ring is counted, once per wait. */
+static void tx_ring_full_counter_test(void)
+{
+	init(false);
+	tx_confirm = true;
+
+	for (uint32_t round = 0U; round < 3U; round++) {
+		/* Reverse control: a ring with room is never back pressure. */
+		fill_tx_ring();
+		assert_counters(0U, 0U, 0U, 0U, 0U, 0U, round);
+
+		/*
+		 * The ring is full: this sender waits, and the confirmation
+		 * that arrives while it waits returns the whole ring to it.
+		 */
+		assert(queue_frame(1500U) == 0);
+		assert_counters(0U, 0U, 0U, 0U, 0U, 0U, round + 1U);
+	}
+}
+
 int main(int argc, char **argv)
 {
 	int test = (argc > 1) ? atoi(argv[1]) : 0;
@@ -687,6 +896,31 @@ int main(int argc, char **argv)
 	case 37:
 		tx_async_age_reclaim_test(false);
 		tx_async_age_reclaim_test(true);
+		break;
+	case 40:
+		rx_overrun_counter_test();
+		break;
+	case 41:
+		rx_bna_counter_test();
+		break;
+	case 42:
+		rx_queue_reset_counter_test();
+		break;
+	case 43:
+		rx_reset_discard_counter_test();
+		break;
+	case 44:
+		tx_async_timeout_counter_test();
+		break;
+	case 45:
+		tx_age_reclaim_counter_test();
+		break;
+	case 46:
+		tx_ring_full_counter_test();
+		break;
+	case 47:
+		tx_send_timeout_counter_test(false);
+		tx_send_timeout_counter_test(true);
 		break;
 	default:
 		return 1;

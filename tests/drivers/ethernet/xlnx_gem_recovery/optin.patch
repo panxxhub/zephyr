@@ -4,7 +4,7 @@
 # Every deviation of the GEM driver and its private header from the minimal
 # driver of 82e9d825. test_recovery.py reverses this before hashing them.
 diff --git a/drivers/ethernet/eth_xlnx_gem.c b/drivers/ethernet/eth_xlnx_gem.c
-index 4de58a553e7..e4f2441bbcf 100644
+index 4de58a5..b75c8b2 100644
 --- a/drivers/ethernet/eth_xlnx_gem.c
 +++ b/drivers/ethernet/eth_xlnx_gem.c
 @@ -19,6 +19,7 @@
@@ -15,7 +15,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  #include <zephyr/sys/__assert.h>
  #include <zephyr/cache.h>
 
-@@ -64,6 +65,17 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
+@@ -64,6 +65,20 @@ static int eth_xlnx_gem_set_multicast_filter(const struct device *dev,
  static void eth_xlnx_gem_set_mac_address(const struct device *dev);
  static void eth_xlnx_gem_set_initial_dmacr(const struct device *dev);
  static void eth_xlnx_gem_configure_buffers(const struct device *dev);
@@ -30,10 +30,13 @@ index 4de58a553e7..e4f2441bbcf 100644
 +static uint8_t eth_xlnx_gem_tx_reclaim_frame(const struct device *dev, bool require_used);
 +static uint8_t eth_xlnx_gem_tx_age_reclaim(const struct device *dev);
 +#endif
++#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
++static void eth_xlnx_gem_refresh_vendor_stats(const struct device *dev);
++#endif
  static void eth_xlnx_gem_rx_pending_work(struct k_work *item);
  static void eth_xlnx_gem_handle_rx_pending(const struct device *dev);
  static void eth_xlnx_gem_tx_done_work(struct k_work *item);
-@@ -76,6 +88,35 @@ static void eth_xlnx_gem_phy_cb(const struct device *phy,
+@@ -76,6 +91,35 @@ static void eth_xlnx_gem_phy_cb(const struct device *phy,
  				struct phy_link_state *state,
  				void *eth_dev);
 
@@ -69,7 +72,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  static const struct ethernet_api eth_xlnx_gem_apis = {
  	.iface_api.init   = eth_xlnx_gem_iface_init,
  	.get_capabilities = eth_xlnx_gem_get_capabilities,
-@@ -109,7 +150,10 @@ BUILD_ASSERT((DT_INST_PROP(port, rx_buffer_size) % CONFIG_DCACHE_LINE_SIZE) == 0
+@@ -109,7 +153,10 @@ BUILD_ASSERT((DT_INST_PROP(port, rx_buffer_size) % CONFIG_DCACHE_LINE_SIZE) == 0
  	     "instance " #port);\
  BUILD_ASSERT((DT_INST_PROP(port, tx_buffer_size) % CONFIG_DCACHE_LINE_SIZE) == 0,\
  	     "TX buffer size is not a multiple of the dcache line size for GEM "\
@@ -81,7 +84,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 
  DT_INST_FOREACH_STATUS_OKAY(ETH_XLNX_GEM_BUFFER_SIZE_CHECK)
 
-@@ -225,6 +269,12 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
+@@ -225,6 +272,12 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
  	/* Initialize TX-related semaphores */
  	k_sem_init(&dev_data->tx_done_sem, 0, 1);
  	k_sem_init(&dev_data->tx_bd_ring.ring_sem, 1, 1);
@@ -94,7 +97,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 
  	/* Initialize the device's interrupt */
  	dev_conf->config_func(dev);
-@@ -243,7 +293,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
+@@ -243,7 +296,7 @@ static void eth_xlnx_gem_iface_init(struct net_if *iface)
   * @brief GEM interrupt service routine
   * GEM interrupt service routine. Checks for indications of errors
   * and either immediately handles RX pending / TX complete notifications
@@ -103,7 +106,7 @@ index 4de58a553e7..e4f2441bbcf 100644
   *
   * @param dev Pointer to the device data
   */
-@@ -280,7 +330,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
+@@ -280,11 +333,22 @@ static void eth_xlnx_gem_isr(const struct device *dev)
  		sys_write32(ETH_XLNX_GEM_IXR_TX_COMPLETE_BIT,
  			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
  		if (dev_conf->defer_txd_to_queue) {
@@ -112,7 +115,22 @@ index 4de58a553e7..e4f2441bbcf 100644
  		} else {
  			eth_xlnx_gem_handle_tx_done(dev);
  		}
-@@ -292,7 +342,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
+ 	}
++	/*
++	 * Count what the controller is reporting before the indication is
++	 * acknowledged: these two bits are the only evidence that a frame was
++	 * lost between the wire and the receive ring.
++	 */
++	if ((reg_val & ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT) != 0) {
++		dev_data->diag.rx_overruns++;
++	}
++	if ((reg_val & ETH_XLNX_GEM_IXR_RX_USED_BIT) != 0) {
++		dev_data->diag.rx_buffer_not_available++;
++	}
+ 	if ((reg_val & (ETH_XLNX_GEM_IXR_FRAME_RX_BIT | ETH_XLNX_GEM_IXR_RX_USED_BIT |
+ 		       ETH_XLNX_GEM_IXR_RX_OVERRUN_BIT)) != 0) {
+ 		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
+@@ -292,7 +356,7 @@ static void eth_xlnx_gem_isr(const struct device *dev)
  		sys_write32(ETH_XLNX_GEM_IXR_FRAME_RX_BIT,
  			    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
  		if (dev_conf->defer_rxp_to_queue) {
@@ -121,7 +139,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  		} else {
  			eth_xlnx_gem_handle_rx_pending(dev);
  		}
-@@ -312,6 +362,293 @@ static void eth_xlnx_gem_isr(const struct device *dev)
+@@ -312,6 +376,294 @@ static void eth_xlnx_gem_isr(const struct device *dev)
  		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_ISR_OFFSET);
  }
 
@@ -401,6 +419,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 +	}
 +
 +	if (reclaimed != 0) {
++		dev_data->diag.tx_age_reclaims++;
 +		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
 +#ifdef CONFIG_NET_STATISTICS_ETHERNET
 +		dev_data->stats.tx_timeout_count++;
@@ -415,7 +434,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  /**
   * @brief GEM data send function
   * GEM data send function. Blocks until a TX complete notification has been
-@@ -343,7 +680,11 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
+@@ -343,7 +695,11 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
 
  	uint32_t reg_ctrl;
  	uint32_t reg_val;
@@ -427,7 +446,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 
  	tx_data_length = tx_data_remaining = net_pkt_get_len(pkt);
  	if (tx_data_length == 0) {
-@@ -368,6 +709,11 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
+@@ -368,6 +724,11 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
  	bds_reqd = (uint8_t)((tx_data_length + (dev_conf->tx_buffer_size - 1)) /
  		   dev_conf->tx_buffer_size);
 
@@ -439,7 +458,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  	if (dev_conf->defer_txd_to_queue) {
  		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
  	} else {
-@@ -376,20 +722,49 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
+@@ -376,20 +737,51 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
  	}
 
  	if (bds_reqd > dev_data->tx_bd_ring.free_bds) {
@@ -448,6 +467,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 -			dev->name, tx_data_length, bds_reqd,
 -			dev_data->tx_bd_ring.free_bds);
 -
++		dev_data->diag.tx_ring_full++;
  		if (dev_conf->defer_txd_to_queue) {
  			k_sem_give(&(dev_data->tx_bd_ring.ring_sem));
  		} else {
@@ -467,6 +487,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 +			       K_MSEC(CONFIG_ETH_XLNX_GEM_TX_ASYNC_TIMEOUT_MS)) == 0) {
 +			goto claim_bds;
 +		}
++		dev_data->diag.tx_send_timeouts++;
 +
 +		/*
 +		 * Not one completion in a whole timeout, which is the age at
@@ -494,7 +515,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  		return -EIO;
  	}
 
-@@ -453,11 +828,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
+@@ -453,11 +845,7 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
  	 */
  	reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
  	sys_write32(reg_val, reg_ctrl);
@@ -507,7 +528,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 
  	while (curr_bd_idx != first_bd_idx) {
  		curr_bd_idx = (curr_bd_idx != 0) ? (curr_bd_idx - 1) :
-@@ -466,11 +837,8 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
+@@ -466,11 +854,8 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
  		reg_val = sys_read32(reg_ctrl);
  		reg_val &= ~ETH_XLNX_GEM_TX_BD_USED_BIT;
  		sys_write32(reg_val, reg_ctrl);
@@ -521,7 +542,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  	}
 
  	/* Set the start TX bit in the gem.net_ctrl register */
-@@ -483,6 +851,15 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
+@@ -483,17 +868,33 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
  	dev_data->stats.pkts.tx++;
  #endif
 
@@ -537,7 +558,8 @@ index 4de58a553e7..e4f2441bbcf 100644
  	/* Block until TX has completed */
  	sem_status = k_sem_take(&dev_data->tx_done_sem, K_MSEC(100));
  	if (sem_status < 0) {
-@@ -490,10 +867,16 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
++		dev_data->diag.tx_send_timeouts++;
+ 		LOG_ERR_RATELIMIT_RATE(1000, "%s TX confirmation timed out", dev->name);
  #ifdef CONFIG_NET_STATISTICS_ETHERNET
  		dev_data->stats.tx_timeout_count++;
  #endif
@@ -554,7 +576,93 @@ index 4de58a553e7..e4f2441bbcf 100644
  }
 
  /**
-@@ -1468,6 +1851,22 @@ static void eth_xlnx_gem_reset_rx_queue(const struct device *dev)
+@@ -746,10 +1147,60 @@ static struct net_stats_eth *eth_xlnx_gem_get_stats(const struct device *dev,
+ {
+ 	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
+
++#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
++	eth_xlnx_gem_refresh_vendor_stats(dev);
++#endif
+ 	return &dev_data->stats;
+ }
+ #endif
+
++#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
++/**
++ * @brief Publishes the driver's counters as vendor statistics.
++ * Copies the diagnostic counters into the vendor statistics array of the
++ * current controller, whose keys are declared alongside the device's run-time
++ * data. Called whenever the network statistics of the interface are read.
++ *
++ * @param dev Pointer to the device data
++ */
++static void eth_xlnx_gem_refresh_vendor_stats(const struct device *dev)
++{
++	struct eth_xlnx_gem_dev_data *dev_data = DEV_DATA(dev);
++	struct net_stats_eth_vendor *vendor = dev_data->stats.vendor;
++	const uint32_t values[] = {
++		dev_data->diag.rx_overruns,
++		dev_data->diag.rx_buffer_not_available,
++		dev_data->diag.rx_queue_resets,
++		dev_data->diag.rx_reset_discards,
++		dev_data->diag.tx_send_timeouts,
++		dev_data->diag.tx_age_reclaims,
++		dev_data->diag.tx_ring_full,
++	};
++
++	if (vendor == NULL) {
++		return;
++	}
++
++	for (size_t i = 0U; i < ARRAY_SIZE(values) && vendor[i].key != NULL; i++) {
++		vendor[i].value = values[i];
++	}
++}
++#endif /* CONFIG_NET_STATISTICS_ETHERNET_VENDOR */
++
++int eth_xlnx_gem_stats_get(const struct device *dev, struct eth_xlnx_gem_stats *stats)
++{
++	if (dev == NULL || stats == NULL) {
++		return -EINVAL;
++	}
++
++	if (dev->api != (const void *)&eth_xlnx_gem_apis) {
++		return -ENOTSUP;
++	}
++
++	*stats = DEV_DATA(dev)->diag;
++	return 0;
++}
++
+ /**
+  * @brief GEM Hardware reset function
+  * Resets the current GEM device. Called from within the device
+@@ -1444,11 +1895,24 @@ static void eth_xlnx_gem_reset_rx_queue(const struct device *dev)
+ 		    DEVICE_MMIO_NAMED_GET(dev, mac) + ETH_XLNX_GEM_NWCTRL_OFFSET);
+ 	barrier_dmem_fence_full();
+
++	dev_data->diag.rx_queue_resets++;
++
+ 	for (uint32_t i = 0U; i < dev_conf->rx_bd_count; i++) {
+ 		uint32_t addr = (uint32_t)dev_data->first_rx_buffer +
+ 				(i * dev_conf->rx_buffer_size);
+ 		struct eth_xlnx_gem_bd *bd = &dev_data->rx_bd_ring.first_bd[i];
+
++		/*
++		 * A descriptor the controller has written and the driver has
++		 * not delivered is about to be thrown away. Counting the ones
++		 * that start a frame counts frames rather than buffers.
++		 */
++		if ((sys_read32((uintptr_t)&bd->addr) & ETH_XLNX_GEM_RX_BD_USED_BIT) != 0U &&
++		    (sys_read32((uintptr_t)&bd->ctrl) &
++		     ETH_XLNX_GEM_RX_BD_START_OF_FRAME_BIT) != 0U) {
++			dev_data->diag.rx_reset_discards++;
++		}
++
+ 		addr &= ~(ETH_XLNX_GEM_RX_BD_USED_BIT | ETH_XLNX_GEM_RX_BD_WRAP_BIT);
+ 		if (i == (dev_conf->rx_bd_count - 1U)) {
+ 			addr |= ETH_XLNX_GEM_RX_BD_WRAP_BIT;
+@@ -1468,6 +1932,22 @@ static void eth_xlnx_gem_reset_rx_queue(const struct device *dev)
  	k_spin_unlock(&dev_data->nwcfg_lock, key);
  }
 
@@ -577,7 +685,7 @@ index 4de58a553e7..e4f2441bbcf 100644
  /**
   * @brief GEM RX data pending handler wrapper for the work queue
   * Wraps the RX data pending handler, eth_xlnx_gem_handle_rx_pending,
-@@ -1610,21 +2009,18 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
+@@ -1610,21 +2090,18 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
  		 * by the controller.
  		 */
  		do {
@@ -606,7 +714,7 @@ index 4de58a553e7..e4f2441bbcf 100644
 
  			/*
  			 * The entire packet data of the current BD has been
-@@ -1732,6 +2128,57 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
+@@ -1732,6 +2209,57 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
  		k_sem_take(&(dev_data->tx_bd_ring.ring_sem), K_FOREVER);
  	}
 
@@ -665,10 +773,17 @@ index 4de58a553e7..e4f2441bbcf 100644
  	reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
  	reg_val  = sys_read32(reg_ctrl);
 diff --git a/drivers/ethernet/eth_xlnx_gem_priv.h b/drivers/ethernet/eth_xlnx_gem_priv.h
-index c62ae41e41e..c7692e9fe96 100644
+index c62ae41..7204264 100644
 --- a/drivers/ethernet/eth_xlnx_gem_priv.h
 +++ b/drivers/ethernet/eth_xlnx_gem_priv.h
-@@ -23,6 +23,26 @@
+@@ -17,12 +17,33 @@
+
+ #include <zephyr/kernel.h>
+ #include <zephyr/types.h>
++#include <zephyr/drivers/ethernet/eth_xlnx_gem.h>
+ #include <zephyr/net/net_pkt.h>
+ #include <zephyr/irq.h>
+ #include <zephyr/linker/section_tags.h>
  #include <zephyr/sys/device_mmio.h>
 
  #define ETH_XLNX_BUFFER_ALIGNMENT			4 /* RX/TX buffer alignment (in bytes) */
@@ -695,7 +810,7 @@ index c62ae41e41e..c7692e9fe96 100644
 
  /* Buffer descriptor (BD) related defines */
 
-@@ -427,7 +447,8 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
+@@ -427,7 +448,8 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
  	.config_func			= eth_xlnx_gem##port##_irq_config,\
  	.pll_clock_frequency		= DT_INST_PROP(port, clock_frequency),\
  	.defer_rxp_to_queue		= !DT_INST_PROP(port, handle_rx_in_isr),\
@@ -705,7 +820,7 @@ index c62ae41e41e..c7692e9fe96 100644
  	.ahb_burst_length		= (enum eth_xlnx_ahb_burst_length)\
  		(DT_INST_PROP(port, amba_ahb_burst_length)),\
  	.hw_rx_buffer_size		= (enum eth_xlnx_hwrx_buffer_size)\
-@@ -448,8 +469,9 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
+@@ -448,8 +470,9 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
  	.enable_sgmii_mode		= DT_INST_PROP(port, sgmii_mode),\
  	.disable_reject_fcs_crc_errors	= DT_INST_PROP(port, disable_reject_fcs_crc_errors),\
  	.enable_rx_halfdup_while_tx	= DT_INST_PROP(port, rx_halfdup_while_tx),\
@@ -717,7 +832,7 @@ index c62ae41e41e..c7692e9fe96 100644
  	.disable_pause_copy		= DT_INST_PROP(port, disable_pause_copy),\
  	.discard_rx_fcs			= DT_INST_PROP(port, discard_rx_fcs),\
  	.discard_rx_length_errors	= DT_INST_PROP(port, discard_rx_length_errors),\
-@@ -462,8 +484,9 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
+@@ -462,18 +485,47 @@ static const struct eth_xlnx_gem_dev_cfg eth_xlnx_gem##port##_dev_cfg = {\
  	.disable_bcast			= DT_INST_PROP(port, reject_broadcast),\
  	.discard_non_vlan		= DT_INST_PROP(port, discard_non_vlan),\
  	.disc_rx_ahb_unavail		= DT_INST_PROP(port, discard_rx_frame_ahb_unavail),\
@@ -729,7 +844,45 @@ index c62ae41e41e..c7692e9fe96 100644
  	.tx_buffer_size_full		= DT_INST_PROP(port, hw_tx_buffer_size_full),\
  	.enable_ahb_packet_endian_swap	= DT_INST_PROP(port, ahb_packet_endian_swap),\
  	.enable_ahb_md_endian_swap	= DT_INST_PROP(port, ahb_md_endian_swap)\
-@@ -515,7 +538,7 @@ struct eth_xlnx_gem##port##_dma_area_layout {\
+ };
+
++/*
++ * Vendor statistics. The keys name the counters of struct eth_xlnx_gem_stats
++ * in the order eth_xlnx_gem_refresh_vendor_stats() copies them, and the array
++ * is terminated by an entry with a NULL key, as net_stats_eth requires. The
++ * key member is const, so the array is defined per controller rather than
++ * filled in at run-time.
++ */
++#ifdef CONFIG_NET_STATISTICS_ETHERNET_VENDOR
++#define ETH_XLNX_GEM_VENDOR_STATS_DECL(port) \
++static struct net_stats_eth_vendor eth_xlnx_gem##port##_vendor_stats[] = {\
++	{ .key = "rx_overruns" },\
++	{ .key = "rx_buffer_not_available" },\
++	{ .key = "rx_queue_resets" },\
++	{ .key = "rx_reset_discards" },\
++	{ .key = "tx_send_timeouts" },\
++	{ .key = "tx_age_reclaims" },\
++	{ .key = "tx_ring_full" },\
++	{ .key = NULL } \
++};
++#define ETH_XLNX_GEM_VENDOR_STATS_INIT(port) \
++	.stats.vendor    = eth_xlnx_gem##port##_vendor_stats,
++#else
++#define ETH_XLNX_GEM_VENDOR_STATS_DECL(port)
++#define ETH_XLNX_GEM_VENDOR_STATS_INIT(port)
++#endif /* CONFIG_NET_STATISTICS_ETHERNET_VENDOR */
++
+ /* Device run-time data declaration macro */
+ #define ETH_XLNX_GEM_DEV_DATA(port) \
++ETH_XLNX_GEM_VENDOR_STATS_DECL(port)\
+ static struct eth_xlnx_gem_dev_data eth_xlnx_gem##port##_dev_data = {\
+ 	.mac_addr        = DT_INST_PROP_OR(port, local_mac_address, {0}),\
+ 	.started         = 0,\
++	ETH_XLNX_GEM_VENDOR_STATS_INIT(port)\
+ 	.first_rx_buffer = NULL,\
+ 	.first_tx_buffer = NULL\
+ };
+@@ -515,7 +567,7 @@ struct eth_xlnx_gem##port##_dma_area_layout {\
  /* DMA memory area instantiation macro */
  #define ETH_XLNX_GEM_DMA_AREA_INST(port) \
  static struct eth_xlnx_gem##port##_dma_area_layout eth_xlnx_gem##port##_dma_area\
@@ -738,7 +891,7 @@ index c62ae41e41e..c7692e9fe96 100644
 
  /* Interrupt configuration function macro */
  #define ETH_XLNX_GEM_CONFIG_IRQ_FUNC(port) \
-@@ -719,6 +742,14 @@ struct eth_xlnx_gem_dev_data {
+@@ -719,6 +771,14 @@ struct eth_xlnx_gem_dev_data {
  	struct k_work			tx_done_work;
  	struct k_work			rx_pend_work;
  	struct k_sem			tx_done_sem;
@@ -753,3 +906,13 @@ index c62ae41e41e..c7692e9fe96 100644
 
  	uint8_t				*first_rx_buffer;
  	uint8_t				*first_tx_buffer;
+@@ -732,6 +792,9 @@ struct eth_xlnx_gem_dev_data {
+ 	struct net_stats_eth		stats;
+ #endif
+
++	/* Always compiled: see struct eth_xlnx_gem_stats. */
++	struct eth_xlnx_gem_stats	diag;
++
+ 	bool				started;
+ };
+
