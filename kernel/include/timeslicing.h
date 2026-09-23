@@ -7,6 +7,9 @@
 #ifndef ZEPHYR_INCLUDE_KERNEL_TIMESLICING_H
 #define ZEPHYR_INCLUDE_KERNEL_TIMESLICING_H
 
+#include <stdbool.h>
+
+bool z_time_slice_pending(void);
 void z_time_slice(void);
 void z_time_slice_reset(struct k_thread *curr);
 
