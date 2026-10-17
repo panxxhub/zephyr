@@ -9,8 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[4]
 source = (ROOT / "drivers/spi/spi_xlnx_zynq_qspi.c").read_text()
-registers = source[source.index("#define QSPI_CR"):source.index("/* ── Structures")]
-transfer = source[source.index("#define QSPI_FIFO_DEPTH"):source.index("/* ── Transceive")]
+registers = source[source.index("#define QSPI_CR") : source.index("/* ── Structures")]
+transfer = source[source.index("#define QSPI_FIFO_DEPTH") : source.index("/* ── Transceive")]
 harness = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -112,9 +112,21 @@ with tempfile.TemporaryDirectory(prefix="zynq-qspi-fifo-") as tmp:
     c_file = path / "test.c"
     c_file.write_text(harness + registers + transfer + model)
     binary = path / "test"
-    subprocess.run([
-        "cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-g",
-        "-fsanitize=address,undefined", "-fno-pie", "-no-pie",
-        str(c_file), "-o", str(binary),
-    ], check=True)
+    subprocess.run(
+        [
+            "cc",
+            "-std=c11",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-g",
+            "-fsanitize=address,undefined",
+            "-fno-pie",
+            "-no-pie",
+            str(c_file),
+            "-o",
+            str(binary),
+        ],
+        check=True,
+    )
     subprocess.run([str(binary)], check=True)
