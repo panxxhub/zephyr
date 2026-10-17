@@ -14,8 +14,9 @@
  * Throughput model: the controller has a 63-deep × 32-bit TX FIFO and a
  * matching RX FIFO. transceive() chunks each transaction into bursts of
  * up to 252 bytes (63 slots × 4 bytes via TXD0). Each burst writes all
- * slots into the TX FIFO, fires a single MANSTARTCOM, then drains the
- * RX FIFO. This amortises the per-byte register-write overhead across
+ * full words into the TX FIFO, fires MANSTARTCOM, then drains the
+ * RX FIFO. A partial word uses a separate start after the full words
+ * drain. This amortises the per-byte register-write overhead across
  * the burst — the previous TXD1 byte-at-a-time path required one
  * MANSTARTCOM + one ISR poll per byte.
  */
@@ -271,49 +272,43 @@ static inline int zynq_qspi_drain_slot(const struct device *dev,
 	return 0;
 }
 
-/* Run a single burst of `chunk` bytes (1..QSPI_BURST_MAX): plan slot
- * widths (TXD0 for full 4-byte slots, plus a 1/2/3-byte tail if needed),
- * fill TX FIFO, fire one MANSTARTCOM, drain RX FIFO. Caller stages TX
- * bytes in `tx_stage` and (optionally) receives into `rx_stage`.
+/* Run `chunk` bytes (1..QSPI_BURST_MAX), batching full TXD0 words and
+ * sending a partial tail only after draining that batch. UG585 requires
+ * TxFIFO empty between accesses involving TXD1/2/3; only consecutive TXD0
+ * writes may be queued together. CS stays asserted across both starts.
  */
 static int zynq_qspi_burst_xfer(const struct device *dev,
 				const uint8_t *tx_stage, uint8_t *rx_stage,
 				size_t chunk)
 {
-	uint8_t widths[QSPI_FIFO_DEPTH];
-	size_t slots = 0;
 	size_t pos = 0;
 
 	while (pos < chunk) {
-		size_t w = (chunk - pos >= 4U) ? 4U : (chunk - pos);
+		size_t remaining = chunk - pos;
+		uint8_t width = remaining >= 4U ? 4U : (uint8_t)remaining;
+		size_t slots = remaining / width;
 
-		widths[slots++] = (uint8_t)w;
-		pos += w;
-	}
-
-	/* Fill TX FIFO. With CR_MANSTARTEN=1 these queue without firing. */
-	pos = 0;
-	for (size_t s = 0; s < slots; s++) {
-		zynq_qspi_txd_write(dev, &tx_stage[pos], widths[s]);
-		pos += widths[s];
-	}
-
-	/* Single trigger drains the entire TX FIFO; CS stays asserted. */
-	uint32_t cr = qspi_read(dev, QSPI_CR);
-
-	qspi_write(dev, QSPI_CR, cr | CR_MANSTARTCOM);
-
-	/* Drain RX FIFO — one entry per TXDn slot, same widths. */
-	pos = 0;
-	for (size_t s = 0; s < slots; s++) {
-		int rc = zynq_qspi_drain_slot(dev,
-					      rx_stage ? &rx_stage[pos] : NULL,
-					      widths[s]);
-
-		if (rc != 0) {
-			return rc;
+		for (size_t s = 0; s < slots; s++) {
+			zynq_qspi_txd_write(dev, &tx_stage[pos + s * width], width);
 		}
-		pos += widths[s];
+
+		uint32_t cr = qspi_read(dev, QSPI_CR);
+
+		qspi_write(dev, QSPI_CR, cr | CR_MANSTARTCOM);
+
+		/* Receiving every slot also proves TxFIFO has drained before
+		 * the next group can select another TXDn width.
+		 */
+		for (size_t s = 0; s < slots; s++) {
+			int rc = zynq_qspi_drain_slot(dev,
+						    rx_stage != NULL ? &rx_stage[pos] : NULL,
+						    width);
+
+			if (rc != 0) {
+				return rc;
+			}
+			pos += width;
+		}
 	}
 	return 0;
 }
