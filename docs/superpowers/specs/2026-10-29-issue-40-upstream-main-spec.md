@@ -61,3 +61,27 @@ The configured `/home/xpan/zephyrproject/.venv/bin/west` is absent on this
 host. No ARM compiler or QEMU was found on PATH. CMake 4.2.3 and .NET are
 available. Recover or provision an isolated build environment and establish
 baseline results before attributing failures to this upgrade.
+
+## Validation outcome (2026-10-29)
+
+PR #75 merged as `64191cadc7323f352b478642790cab72de188a2e`. The
+upstream integration is PR #76; firmware compatibility is zephyr-servo
+PR #1279. The existing SDK 1.0.1 and west environment were found under
+`/home/xpan/moton_ws/`; the earlier missing-path observation is resolved.
+
+The fork gate passes: 90 Cortex-A9 cases, 89 Cortex-R5 cases, 76 GEM
+loopback cases, 5 IRQ-tracing cases, the MMU SMP case, 19 timer cases, and
+the GEM filter build. QSPI passes all 506 cases. GEM/PHY/MDIO/CoAP host
+regressions and defect reverse controls pass.
+
+Gen2 production, debug, encoder, census and native SW/HW PDO builds pass
+with firmware compatibility edits. Linked RT no-log/lock, stack-budget,
+thread-affinity (including omitted-GEM reverse), census, logging, debug
+resource and embedded-SII gates pass. Seven SMP isolation configurations
+pass their expected positive and negative outcomes.
+
+The full control-loop suite has identical results on the old and new
+kernels: 969 cases, 955 pass and 14 fail, with no changed case outcome.
+These are existing failures, not a clean suite. Local compliance passes
+change-specific checks; full Kconfig scanning lacks optional module symbols,
+and Gitlint requires the author's DCO sign-off. Hardware has not been run.

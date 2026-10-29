@@ -16,26 +16,26 @@
 
 - [x] Audit live fork PRs, version tags, upstream head and history divergence.
 - [x] Simulate the merge without modifying the firmware or kernel checkouts.
-- [ ] Obtain owner review of this spec and plan, then commit them and open
+- [x] Obtain owner review of this spec and plan, then commit them and open
   a draft fork PR with the #75 dependency explicit.
-- [ ] Recover an isolated west/SDK/QEMU environment. Establish baseline
+- [x] Recover an isolated west/SDK/QEMU environment. Establish baseline
   builds and test results using the current firmware and pinned kernel.
-- [ ] Integrate the audited upstream snapshot without rewriting published
+- [x] Integrate the audited upstream snapshot without rewriting published
   history, following the fork-sync strategy recorded in issue #40.
-- [ ] Resolve `.github/workflows/doc-build.yml` and `.gitignore`, preserving
+- [x] Resolve `.github/workflows/doc-build.yml` and `.gitignore`, preserving
   the fork's CI adaptations and current upstream requirements.
-- [ ] Reconcile `arch/arm/core/cortex_a_r/smp.c` and the auto-merged
+- [x] Reconcile `arch/arm/core/cortex_a_r/smp.c` and the auto-merged
   `arch/arm/core/mmu/arm_mmu.c`. Keep both necessary headers, the per-core
   boot hooks and the primary-only page-table construction contract. Review
   MMU test wrappers for the changed signature.
-- [ ] Resolve `drivers/ethernet/Kconfig.xlnx_gem` and `eth_xlnx_gem.c`,
+- [x] Resolve `drivers/ethernet/Kconfig.xlnx_gem` and `eth_xlnx_gem.c`,
   preserving the driver thread, asynchronous TX, frame-sized cache work,
   checksum test behavior and MDIO setup while adopting current interfaces.
-- [ ] Reconcile `dts/arm/xilinx/zynq7000.dtsi` by node identity; the automatic
+- [x] Reconcile `dts/arm/xilinx/zynq7000.dtsi` by node identity; the automatic
   merge misplaces downstream GEM properties next to new upstream I2C nodes.
-- [ ] Review all other overlapping changes and module revisions. Make only
+- [x] Review all other overlapping changes and module revisions. Make only
   compatibility fixes needed for the shipping configuration and its tests.
-- [ ] Prepare a separate firmware issue branch/PR for required compatibility
+- [x] Prepare a separate firmware issue branch/PR for required compatibility
   edits, SMP deferred-start migration and the eventual immutable kernel pin.
 - [ ] Run the validation below, update PR descriptions with results and
   limitations, and leave merging to the owner.
@@ -77,3 +77,7 @@ than substituting source-only checks for linked-image coverage.
 - #75's human DCO requirement remains with its author; do not synthesize it.
 - Source upgrade and test preparation are authorized; production deployment
   and merging remain separate owner actions.
+
+Local validation is complete with the limitations recorded in the spec.
+Kernel PR #76 and firmware PR #1279 await CI/owner review. The firmware
+manifest remains pinned to #75 until the kernel integration is merged.
