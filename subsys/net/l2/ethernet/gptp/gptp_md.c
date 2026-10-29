@@ -163,7 +163,8 @@ static int gptp_set_md_sync_receive(int port,
 
 	sync_rcv->upstream_tx_time -= delay_asymmetry_rated;
 
-	sync_rcv->rate_ratio = net_ntohl(fup->tlv.cumulative_scaled_rate_offset);
+	sync_rcv->rate_ratio =
+		(double)(int32_t)net_ntohl((uint32_t)fup->tlv.cumulative_scaled_rate_offset);
 	sync_rcv->rate_ratio /= GPTP_POW2_41;
 	sync_rcv->rate_ratio += 1;
 
@@ -174,7 +175,7 @@ static int gptp_set_md_sync_receive(int port,
 	sync_rcv->last_gm_phase_change.low =
 		net_ntohll(fup->tlv.last_gm_phase_change.low);
 	sync_rcv->last_gm_freq_change =
-		net_ntohl(fup->tlv.scaled_last_gm_freq_change);
+		(double)(int32_t)net_ntohl((uint32_t)fup->tlv.scaled_last_gm_freq_change);
 
 	return 0;
 }
@@ -845,7 +846,8 @@ static void gptp_md_sync_receive_state_machine(int port)
 	}
 }
 
-static void gptp_md_sync_send_state_machine(int port)
+IF_DISABLED(CONFIG_ZTEST, (static))
+void gptp_md_sync_send_state_machine(int port)
 {
 	struct gptp_port_ds *port_ds;
 	struct gptp_sync_send_state *state;
@@ -920,6 +922,22 @@ static void gptp_md_sync_send_state_machine(int port)
 			net_pkt_unref(state->sync_ptr);
 			state->sync_ptr = NULL;
 
+			state->state = GPTP_SYNC_SEND_SEND_SYNC;
+		} else if (state->rcvd_md_sync) {
+			/* A queued Sync can lose its TX timestamp during a short
+			 * link outage without asCapable clearing. Do not let that
+			 * packet block synchronization forever: a fresh MDSync
+			 * supersedes it. Remove its callback before releasing the
+			 * reference, as on port disable, and send the fresh sample
+			 * on the next state-machine pass. The callback may
+			 * have fired after the check above, so clear its flag
+			 * too, or the next Sync would get a Follow_Up with this
+			 * stale timestamp before it is transmitted.
+			 */
+			gptp_sync_timestamp_cb_unregister(port);
+			net_pkt_unref(state->sync_ptr);
+			state->sync_ptr = NULL;
+			state->md_sync_timestamp_avail = false;
 			state->state = GPTP_SYNC_SEND_SEND_SYNC;
 		}
 

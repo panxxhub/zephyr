@@ -21,8 +21,12 @@ procpu_dram0_end = SRAM2_DRAM_END;
 procpu_dram0_org = SRAM2_DRAM_USER_START + CONFIG_ESP32_BT_RESERVE_DRAM;
 procpu_dram0_len = SRAM2_DRAM_USER_SIZE - CONFIG_ESP32_BT_RESERVE_DRAM;
 
-procpu_dram1_org = SRAM1_DRAM_USER_START;
-procpu_dram1_len = SRAM1_DRAM_USER_SIZE;
+/* The APPCPU image loads its DRAM segment at SRAM1_DRAM_USER_START while
+ * its IRAM segment lands in SRAM0, so only APPCPU_DRAM_SIZE is carved out
+ * of this region.
+ */
+procpu_dram1_org = SRAM1_DRAM_USER_START + APPCPU_DRAM_SIZE;
+procpu_dram1_len = SRAM1_DRAM_USER_SIZE - APPCPU_DRAM_SIZE;
 
 procpu_irom_org = ICACHE0_START;
 procpu_irom_len = ICACHE0_SIZE;
@@ -175,7 +179,7 @@ SECTIONS
      */
     LONG(ADDR(.rtc.text))
     LONG(LOADADDR(.rtc.text))
-    LONG(SIZEOF(.rtc.text))
+    LONG(LOADADDR(.rtc.force_fast) + SIZEOF(.rtc.force_fast) - LOADADDR(.rtc.text))
 
     /* RTC_DRAM metadata:
      * 11. Destination address (VMA) for RTC_DRAM region
@@ -184,7 +188,7 @@ SECTIONS
      */
     LONG(ADDR(.rtc.data))
     LONG(LOADADDR(.rtc.data))
-    LONG(SIZEOF(.rtc.data))
+    LONG(LOADADDR(.rtc.force_slow) + SIZEOF(.rtc.force_slow) - LOADADDR(.rtc.data))
 
     /* IROM metadata:
      * 14. Destination address (VMA) for IROM region
@@ -211,7 +215,7 @@ SECTIONS
 
   /* --- RTC BEGIN --- */
 
-  .rtc.text :
+  .rtc.text : ALIGN_WITH_INPUT
   {
     . = ALIGN(4);
     *(.rtc.literal .rtc.literal.*)
@@ -219,20 +223,21 @@ SECTIONS
     . = ALIGN(4);
   } GROUP_DATA_LINK_IN(rtc_iram_seg, ROMABLE_REGION)
 
-  /*
-    This section is required to skip rtc.text area because rtc_iram_seg and
-    rtc_data_seg reflect the same address space on different buses.
-  */
-  .rtc.dummy :
+  /* This section is required to skip rtc.text area because rtc_iram_seg and
+   * rtc_data_seg reflect the same address space on different buses. It is
+   * NOLOAD so the flash image keeps .rtc.text and .rtc.force_fast adjacent,
+   * letting one load descriptor place both through the instruction bus alias.
+   */
+  .rtc.dummy (NOLOAD) :
   {
     . = SIZEOF(.rtc.text);
-  } GROUP_DATA_LINK_IN(rtc_data_seg, ROMABLE_REGION)
+  } GROUP_LINK_IN(rtc_data_seg)
 
   /* This section located in RTC FAST Memory area.
      It holds data marked with RTC_FAST_ATTR attribute.
      See the file "esp_attr.h" for more information.
   */
-  .rtc.force_fast :
+  .rtc.force_fast : ALIGN_WITH_INPUT
   {
     . = ALIGN(4);
     *(.rtc.force_fast .rtc.force_fast.*)
@@ -244,13 +249,25 @@ SECTIONS
      named rtc_wake_stub*.c and the data marked with
      RTC_DATA_ATTR, RTC_RODATA_ATTR attributes.
   */
-  .rtc.data :
+  .rtc.data : ALIGN_WITH_INPUT
   {
     . = ALIGN(4);
     _rtc_data_start = ABSOLUTE(.);
     *(.rtc.data .rtc.data.*)
     *(.rtc.rodata .rtc.rodata.*)
     . = ALIGN(4);
+  } GROUP_DATA_LINK_IN(rtc_slow_seg, ROMABLE_REGION)
+
+  /* This section located in RTC SLOW Memory area.
+   * It holds data marked with RTC_SLOW_ATTR attribute.
+   * See the file "esp_attr.h" for more information.
+   */
+  .rtc.force_slow : ALIGN_WITH_INPUT
+  {
+    . = ALIGN(4);
+    *(.rtc.force_slow .rtc.force_slow.*)
+    . = ALIGN(4) ;
+    _rtc_force_slow_end = ABSOLUTE(.);
   } GROUP_DATA_LINK_IN(rtc_slow_seg, ROMABLE_REGION)
 
   .rtc.bss (NOLOAD) :
@@ -265,21 +282,10 @@ SECTIONS
     . = ALIGN(4);
     *(.rtc_noinit .rtc_noinit.*)
     . = ALIGN(4) ;
+    _rtc_noinit_end = ABSOLUTE(.);
  } GROUP_LINK_IN(rtc_slow_seg)
 
-  /* This section located in RTC SLOW Memory area.
-   * It holds data marked with RTC_SLOW_ATTR attribute.
-   * See the file "esp_attr.h" for more information.
-   */
-  .rtc.force_slow :
-  {
-    . = ALIGN(4);
-    *(.rtc.force_slow .rtc.force_slow.*)
-    . = ALIGN(4) ;
-    _rtc_force_slow_end = ABSOLUTE(.);
-  } GROUP_DATA_LINK_IN(rtc_slow_seg, ROMABLE_REGION)
-
-  _rtc_slow_length = (_rtc_force_slow_end - _rtc_data_start);
+  _rtc_slow_length = (_rtc_noinit_end - _rtc_data_start);
 
   /**
    * This section holds RTC SLOW data that should have fixed addresses.
@@ -298,6 +304,21 @@ SECTIONS
   _rtc_slow_reserved_length = 0;
 #endif
   _rtc_reserved_length = _rtc_slow_reserved_length;
+
+  /* The RTC_IRAM load descriptor above spans .rtc.text through .rtc.force_fast,
+   * copying both through the instruction bus alias of RTC FAST memory, and the
+   * RTC_DRAM one spans .rtc.data through .rtc.force_slow. The bootloader can
+   * only place those sections correctly while the physical and LMA layouts of
+   * each span agree. ALIGN_WITH_INPUT on the loadable RTC sections keeps them
+   * in step; this catches any future change that reintroduces a skew.
+   */
+  ASSERT((LOADADDR(.rtc.force_fast) + SIZEOF(.rtc.force_fast) - LOADADDR(.rtc.text)) ==
+         ((ADDR(.rtc.force_fast) - rtc_data_org) + SIZEOF(.rtc.force_fast) -
+          (ADDR(.rtc.text) - rtc_iram_org)),
+         "RTC FAST loadable sections must stay contiguous across the bus alias")
+  ASSERT((LOADADDR(.rtc.force_slow) + SIZEOF(.rtc.force_slow) - LOADADDR(.rtc.data)) ==
+         (ADDR(.rtc.force_slow) + SIZEOF(.rtc.force_slow) - ADDR(.rtc.data)),
+         "RTC SLOW loadable sections must be contiguous with equal VMA and LMA offsets")
   ASSERT((_rtc_reserved_length <= CONFIG_RESERVE_RTC_MEM),
          "RTC reserved segment does not fit CONFIG_RESERVE_RTC_MEM.")
 
@@ -349,6 +370,8 @@ SECTIONS
     _iram_text_start = ABSOLUTE(.);
     *(.iram1 .iram1.*)
     *(.iram0.literal .iram.literal .iram.text.literal .iram0.text .iram.text)
+    /* Input sections named with zephyr_linker_sources(RAMFUNC_SECTION ...) */
+    #include <snippets-ramfunc-section.ld>
     *libarch__xtensa__core.a:(.literal .text .literal.* .text.*)
     *libarch__common.a:(.literal .text .literal.* .text.*)
     *libkernel.a:(.literal .text .literal.* .text.*)
@@ -992,7 +1015,6 @@ SECTIONS
     *(.dynamic)
     *(.gnu.version_d)
     . = ALIGN(4);
-    __rodata_region_end = ABSOLUTE(.);
     /* Literals are also RO data. */
     _lit4_start = ABSOLUTE(.);
     *(*.lit4)
@@ -1031,6 +1053,11 @@ SECTIONS
 
     _rodata_end = ABSOLUTE(.);
     _rodata_reserved_end = ABSOLUTE(.);
+    /* The read-only region must span the linker-collected rom sections too:
+     * device API structures live there, and a pointer into one reaches a
+     * syscall as an argument, where it is checked against this region.
+     */
+    __rodata_region_end = .;
   } GROUP_DATA_LINK_IN(RODATA_REGION, ROMABLE_REGION)
 
   /* --- RODATA END --- */

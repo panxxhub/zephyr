@@ -15,6 +15,7 @@ supported:
   - adc
   - bluetooth
   - clock_control
+  - counter
   - dma
   - gpio
   - hwinfo
@@ -29,3 +30,7 @@ supported:
   - comparator
   - dmic
   - i2c
+  - counter
+  - pwm
+  - dac
+  - opamp

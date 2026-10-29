@@ -49,7 +49,12 @@ if version.parse(elftools.__version__) < version.parse('0.24'):
 
 # Job server only works on Linux for now.
 if sys.platform == 'linux':
-    from twisterlib.jobserver import GNUMakeJobClient, GNUMakeJobServer, JobClient
+    from twisterlib.jobserver import (
+        GNUMakeJobClient,
+        GNUMakeJobServer,
+        JobClient,
+        fifo_supported,
+    )
 
 from domains import Domains
 from twisterlib.coverage import run_coverage_instance
@@ -357,7 +362,7 @@ class CMake:
             if log_msg:
                 pattern = (
                     r"region `(FLASH|ROM|RAM|ICCM|DCCM|SRAM|"
-                    r"dram\d_\d_seg|iram\d_\d_seg)' "
+                    r"dram\d_\d_seg|iram\d_\d_seg|sram\d_\d_seg)' "
                     "overflowed by"
                 )
                 overflow_found = re.findall(pattern, log_msg)
@@ -397,8 +402,10 @@ class CMake:
             gen_edt_args = ""
 
         warning_command = 'CONFIG_COMPILER_WARNINGS_AS_ERRORS'
+        kconfig_deprecation_command = 'CONFIG_DEPRECATED_KCONFIGS_AS_ERRORS'
         if self.instance.sysbuild:
             warning_command = 'SB_' + warning_command
+            kconfig_deprecation_command = 'SB_' + kconfig_deprecation_command
 
         logger.debug(f"Running cmake on {self.source_dir} for {self.platform.name}")
         cmake_args = [
@@ -406,6 +413,7 @@ class CMake:
             f'-DTC_RUNID={self.instance.run_id}',
             f'-DTC_NAME={self.instance.testsuite.name}',
             f'-D{warning_command}={warnings_as_errors}',
+            f'-D{kconfig_deprecation_command}={warnings_as_errors}',
             f'-DEXTRA_GEN_EDT_ARGS={gen_edt_args}',
             f'-G{self.env.generator}',
             f'-DPython3_EXECUTABLE={pathlib.Path(sys.executable).as_posix()}'
@@ -724,6 +732,12 @@ class ProjectBuilder(FilterBuilder):
             self.log_info(f"{script_log}", inline_logs, log_only_failed=True)
         elif os.path.exists(h_log) and os.path.getsize(h_log) > 0:
             self.log_info(f"{h_log}", inline_logs)
+            # What the process wrote to stderr (a loader or sanitizer
+            # message, QEMU refusing to start) explains a console log
+            # that stops short; show it with the console output like the
+            # JSON report does.
+            if os.path.exists(he_log) and os.path.getsize(he_log) > 0:
+                self.log_info(f"{he_log}", inline_logs)
         elif os.path.exists(he_log) and os.path.getsize(he_log) > 0:
             self.log_info(f"{he_log}", inline_logs)
         elif os.path.exists(d_log) and os.path.getsize(d_log) > 0:
@@ -1545,7 +1559,10 @@ class ProjectBuilder(FilterBuilder):
                 if self.instance.platform.arch == cond_args[1]:
                     args.append(cond_args[2])
             elif cond_args[0] == "platform" and len(cond_args) == 3:
-                if cond_args[1] in self.instance.platform.name:
+                if (
+                    cond_args[1] in self.instance.platform.name
+                    or cond_args[1] in self.instance.platform.aliases
+                ):
                     args.append(cond_args[2])
             elif cond_args[0] == "simulation" and len(cond_args) == 3:
                 if self.instance.platform.simulation == cond_args[1]:
@@ -1654,6 +1671,10 @@ class ProjectBuilder(FilterBuilder):
         if instance.handler.ready:
             logger.debug(f"Reset instance status from '{instance.status}' to None before run.")
             instance.status = TwisterStatus.NONE
+            # The handler only fills in a reason of its own, such as the exit
+            # code, when none is set: drop whatever a loaded test plan or an
+            # earlier retry iteration left behind.
+            instance.reason = None
 
             if(self.options.seed is not None and instance.platform.name.startswith("native_")):
                 self.parse_generated()
@@ -2002,7 +2023,14 @@ class TwisterRunner:
             if os.name == 'posix':
                 self.jobserver = GNUMakeJobClient.from_environ(jobs=self.options.jobs)
                 if not self.jobserver:
-                    self.jobserver = GNUMakeJobServer(self.jobs)
+                    # One job server serves every build, so any suite counts
+                    cmake_args = list(self.options.extra_args)
+                    for instance in self.instances.values():
+                        cmake_args.extend(instance.testsuite.extra_args)
+                    self.jobserver = GNUMakeJobServer(
+                        self.jobs,
+                        fifo=fifo_supported(self.env.generator_cmd, cmake_args),
+                    )
                 elif self.jobserver.jobs:
                     self.jobs = self.jobserver.jobs
             # TODO: Implement this on windows/mac also
@@ -2255,7 +2283,7 @@ class TwisterRunner:
         # Remove brackets
         filt = filt.replace("(", "")
         filt = filt.replace(")", "")
-        # Splite by whitespaces
+        # Split by whitespaces
         filt = filt.split()
         for expression in filt:
             if expression.startswith("dt_"):

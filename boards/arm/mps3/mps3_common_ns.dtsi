@@ -1,5 +1,6 @@
 /*
  * Copyright 2025 Leica Geosystem AG
+ * Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com>
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -7,7 +8,7 @@
 / {
 	flash_controller: flash-controller@28000000 {
 		reg = <0x28000000 DT_SIZE_M(8)>;
-		ranges;
+		ranges = <0x0 0x28000000 DT_SIZE_M(8)>;
 		#address-cells = <1>;
 		#size-cells = <1>;
 
@@ -21,9 +22,9 @@
 			#size-cells = <1>;
 
 			partitions {
+				ranges;
 				#address-cells = <1>;
 				#size-cells = <1>;
-				ranges;
 
 				/* This code memory region must match what the TF-M
 				 * project has defined for that board - the multi image

@@ -15,6 +15,8 @@ menuconfig ETH_XLNX_GEM
 	select CACHE_MANAGEMENT if DCACHE
 	select NET_CHECKSUM_OFFLOAD_SUPPORTED if NET_L2_ETHERNET
 	select MDIO if DT_HAS_XLNX_GEM_MDIO_ENABLED
+	select ETH_PHY_DRIVER
+	select ETH_NIC_MODEL_ONBOARD
 	help
 	  Enable Xilinx GEM Ethernet driver.
 

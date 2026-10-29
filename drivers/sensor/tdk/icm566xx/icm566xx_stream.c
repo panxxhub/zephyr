@@ -184,13 +184,13 @@ static void icm566xx_event_handler(const struct device *dev)
 {
 	struct icm566xx_data *data = dev->data;
 	const struct icm566xx_config *cfg = dev->config;
-	const struct sensor_read_config *read_cfg = data->stream.iodev_sqe->sqe.iodev->data;
+	const struct sensor_read_config *read_cfg;
 	uint8_t val = 0;
 	uint64_t cycles;
 	int err;
 
 	if (!data->stream.iodev_sqe ||
-	    FIELD_GET(RTIO_SQE_CANCELED, data->stream.iodev_sqe->sqe.flags)) {
+	    rtio_iodev_sqe_is_canceled(data->stream.iodev_sqe)) {
 		LOG_WRN("Callback triggered with no streaming submission - Disabling interrupts");
 		(void)atomic_set(&data->stream.state, ICM566XX_STREAM_OFF);
 		(void)gpio_pin_interrupt_configure_dt(&cfg->int_gpio, GPIO_INT_DISABLE);
@@ -208,6 +208,8 @@ static void icm566xx_event_handler(const struct device *dev)
 		data->stream.settings.enabled.fifo_full = false;
 		return;
 	}
+
+	read_cfg = data->stream.iodev_sqe->sqe.iodev->data;
 
 	if (atomic_cas(&data->stream.state, ICM566XX_STREAM_ON, ICM566XX_STREAM_BUSY) == false) {
 		LOG_WRN("Event handler triggered while a stream is in progress! Ignoring");

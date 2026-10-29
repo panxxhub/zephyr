@@ -6,12 +6,12 @@
 
 /dts-v1/;
 
-#include <espressif/esp32p4/esp32p4_lpcore_n16.dtsi>
+#include <espressif/esp32p4/esp32p4_lpcore.dtsi>
 #include <espressif/partitions_0x2000_default_16M.dtsi>
 
 / {
-	model = "Waveshare ESP32-P4-WIFI6-Dev-Kit LP Core";
 	compatible = "espressif,esp32p4";
+	model = "Waveshare ESP32-P4-WIFI6-Dev-Kit LP Core";
 
 	chosen {
 		zephyr,sram = &sramlp;
@@ -22,8 +22,12 @@
 	};
 };
 
+&flash0 {
+	reg = <0x0 DT_SIZE_M(16)>;
+	ranges = <0x0 0x0 DT_SIZE_M(16)>;
+};
+
 &lp_uart {
-	status = "okay";
 	current-speed = <115200>;
 
 	/* SoC default GPIO14/15 are wired to the ESP32-C6 SDIO interface;
@@ -31,4 +35,5 @@
 	 */
 	tx-pin = <5>;
 	rx-pin = <4>;
+	status = "okay";
 };

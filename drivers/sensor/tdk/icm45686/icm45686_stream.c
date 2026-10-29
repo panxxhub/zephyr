@@ -191,6 +191,8 @@ static void icm45686_complete_handler(struct rtio *ctx, const struct rtio_sqe *s
 			icm45686_stream_result(dev, -ENOMEM);
 			return;
 		}
+		rtio_submit(data->bus.rtio.ctx, 0);
+
 		icm45686_stream_result(dev, 0);
 		return;
 	}
@@ -226,7 +228,7 @@ static void icm45686_event_handler(const struct device *dev)
 		return;
 	}
 
-	if (FIELD_GET(RTIO_SQE_CANCELED, data->stream.iodev_sqe->sqe.flags)) {
+	if (rtio_iodev_sqe_is_canceled(data->stream.iodev_sqe)) {
 		LOG_WRN("Callback triggered with no streaming submission - Disabling interrupts");
 		(void)atomic_set(&data->stream.state, ICM45686_STREAM_OFF);
 		(void)gpio_pin_interrupt_configure_dt(&cfg->int_gpio, GPIO_INT_DISABLE);
@@ -244,6 +246,8 @@ static void icm45686_event_handler(const struct device *dev)
 		data->stream.settings.enabled.fifo_full = false;
 		return;
 	}
+	read_cfg = data->stream.iodev_sqe->sqe.iodev->data;
+
 	read_cfg = data->stream.iodev_sqe->sqe.iodev->data;
 
 	if (atomic_cas(&data->stream.state, ICM45686_STREAM_ON, ICM45686_STREAM_BUSY) == false) {

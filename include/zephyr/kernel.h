@@ -955,7 +955,7 @@ struct _static_thread_data {
 #define Z_THREAD_INIT_DELAY_INITIALIZER(ms) .init_delay_ms = (ms)
 #define Z_THREAD_INIT_DELAY(thread) SYS_TIMEOUT_MS((thread)->init_delay_ms)
 #else
-#define Z_THREAD_INIT_DELAY_INITIALIZER(ms) .init_delay = SYS_TIMEOUT_MS_INIT(ms)
+#define Z_THREAD_INIT_DELAY_INITIALIZER(ms) .init_delay = SYS_TIMEOUT_MS(ms)
 #define Z_THREAD_INIT_DELAY(thread) (thread)->init_delay
 #endif
 
@@ -1851,8 +1851,6 @@ struct k_timer {
 	/* user-specific data, also used to support legacy features */
 	void *user_data;
 
-	SYS_PORT_TRACING_TRACKING_FIELD(k_timer)
-
 #ifdef CONFIG_OBJ_CORE_TIMER
 	struct k_obj_core  obj_core;
 #endif
@@ -2334,7 +2332,9 @@ struct k_queue {
 
 	Z_DECL_POLL_EVENT
 
-	SYS_PORT_TRACING_TRACKING_FIELD(k_queue)
+#ifdef CONFIG_OBJ_CORE_QUEUE
+	struct k_obj_core  obj_core;
+#endif
 /**
  * INTERNAL_HIDDEN @endcond
  */
@@ -2653,8 +2653,7 @@ struct k_futex {
  *	     should check the futex's value on wakeup to determine if it needs
  *	     to block again.
  */
-__syscall int k_futex_wait(struct k_futex *futex, int expected,
-			   k_timeout_t timeout);
+__syscall int k_futex_wait(struct k_futex *futex, atomic_val_t expected, k_timeout_t timeout);
 
 /**
  * @brief Wake one/all threads pending on a futex
@@ -2699,8 +2698,6 @@ struct k_event {
 	_wait_q_t         wait_q;
 	uint32_t          events;
 	struct k_spinlock lock;
-
-	SYS_PORT_TRACING_TRACKING_FIELD(k_event)
 
 #ifdef CONFIG_OBJ_CORE_EVENT
 	struct k_obj_core obj_core;
@@ -2826,6 +2823,9 @@ __syscall uint32_t k_event_clear(struct k_event *event, uint32_t events);
  * @param timeout Waiting period for the desired set of events or one of the
  *                special values K_NO_WAIT and K_FOREVER.
  *
+ * @note If @p events is zero, this function returns 0 immediately. If @p reset is true,
+ *       the events currently tracked by the event object are reset before returning.
+ *
  * @retval non-zero set of matching events upon success
  * @retval 0 if matching events were not received within the specified time
  */
@@ -2853,6 +2853,9 @@ __syscall uint32_t k_event_wait(struct k_event *event, uint32_t events,
  * @param timeout Waiting period for the desired set of events or one of the
  *                special values K_NO_WAIT and K_FOREVER.
  *
+ * @note If @p events is zero, this function returns 0 immediately. If @p reset is true,
+ *       the events currently tracked by the event object are reset before returning.
+ *
  * @retval non-zero set of matching events upon success
  * @retval 0 if matching events were not received within the specified time
  */
@@ -2875,6 +2878,9 @@ __syscall uint32_t k_event_wait_all(struct k_event *event, uint32_t events,
  * @param timeout Waiting period for the desired set of events or one of the
  *                special values K_NO_WAIT and K_FOREVER.
  *
+ * @note If @p events is zero, this function returns 0 immediately. If @p reset is true,
+ *       the events currently tracked by the event object are reset before returning.
+ *
  * @retval non-zero set of matching events upon success
  * @retval 0 if no matching event was received within the specified time
  */
@@ -2896,6 +2902,9 @@ __syscall uint32_t k_event_wait_safe(struct k_event *event, uint32_t events,
  *              before waiting. If false, do not clear the events.
  * @param timeout Waiting period for the desired set of events or one of the
  *                special values K_NO_WAIT and K_FOREVER.
+ *
+ * @note If @p events is zero, this function returns 0 immediately. If @p reset is true,
+ *       the events currently tracked by the event object are reset before returning.
  *
  * @retval non-zero set of matching events upon success
  * @retval 0 if all matching events were not received within the specified time
@@ -3342,8 +3351,6 @@ struct k_stack {
 
 	uint8_t flags;
 
-	SYS_PORT_TRACING_TRACKING_FIELD(k_stack)
-
 #ifdef CONFIG_OBJ_CORE_STACK
 	struct k_obj_core  obj_core;
 #endif
@@ -3506,8 +3513,6 @@ struct k_mutex {
 	sys_snode_t held_node;
 #endif /* Z_MUTEX_PI_ENABLED */
 
-	SYS_PORT_TRACING_TRACKING_FIELD(k_mutex)
-
 #ifdef CONFIG_OBJ_CORE_MUTEX
 	struct k_obj_core obj_core;
 #endif
@@ -3575,6 +3580,12 @@ __syscall int k_mutex_init(struct k_mutex *mutex);
  * completes immediately and the lock count is increased by 1.
  *
  * Mutexes may not be locked in ISRs.
+ *
+ * A mutex must not be freed, or have its memory reused, while it is locked
+ * or while threads are waiting on it. A mutex embedded in a dynamically
+ * allocated object must be unlocked before that object is released;
+ * otherwise the owning thread is left tracking a mutex in memory that no
+ * longer belongs to it.
  *
  * @param mutex Address of the mutex.
  * @param timeout Waiting period to lock the mutex,
@@ -3732,8 +3743,6 @@ struct k_sem {
 	unsigned int limit;
 
 	Z_DECL_POLL_EVENT
-
-	SYS_PORT_TRACING_TRACKING_FIELD(k_sem)
 
 #ifdef CONFIG_OBJ_CORE_SEM
 	struct k_obj_core  obj_core;
@@ -5272,8 +5281,6 @@ struct k_msgq {
 	/** Message queue */
 	uint8_t flags;
 
-	SYS_PORT_TRACING_TRACKING_FIELD(k_msgq)
-
 #ifdef CONFIG_OBJ_CORE_MSGQ
 	struct k_obj_core  obj_core;
 #endif
@@ -5668,8 +5675,6 @@ struct k_mbox {
 	_wait_q_t rx_msg_queue;
 	struct k_spinlock lock;
 
-	SYS_PORT_TRACING_TRACKING_FIELD(k_mbox)
-
 #ifdef CONFIG_OBJ_CORE_MAILBOX
 	struct k_obj_core  obj_core;
 #endif
@@ -5835,7 +5840,6 @@ struct k_pipe {
 #ifdef CONFIG_OBJ_CORE_PIPE
 	struct k_obj_core  obj_core;
 #endif
-	SYS_PORT_TRACING_TRACKING_FIELD(k_pipe)
 /**
  * INTERNAL_HIDDEN @endcond
  */
@@ -5892,6 +5896,7 @@ struct k_pipe {
  * @retval -EAGAIN if no data could be written before the timeout expired
  * @retval -ECANCELED if the write was interrupted by k_pipe_reset(..)
  * @retval -EPIPE if the pipe was closed
+ * @retval -EOVERFLOW if @a len is greater than INT_MAX
  */
 __syscall int k_pipe_write(struct k_pipe *pipe, const uint8_t *data, size_t len,
 			   k_timeout_t timeout);
@@ -5910,6 +5915,7 @@ __syscall int k_pipe_write(struct k_pipe *pipe, const uint8_t *data, size_t len,
  * @retval -EAGAIN if no data could be read before the timeout expired
  * @retval -ECANCELED if the read was interrupted by k_pipe_reset(..)
  * @retval -EPIPE if the pipe was closed
+ * @retval -EOVERFLOW if @a len is greater than INT_MAX
  */
 __syscall int k_pipe_read(struct k_pipe *pipe, uint8_t *data, size_t len,
 			  k_timeout_t timeout);
@@ -5928,8 +5934,10 @@ __syscall void k_pipe_reset(struct k_pipe *pipe);
 /**
  * @brief Close a pipe
  *
- * This routine closes a pipe. Any threads that were blocked on the pipe
- * will be unblocked and receive an error code.
+ * This routine closes a pipe. Threads blocked in k_pipe_read() or
+ * k_pipe_write() are unblocked and receive an error. Threads waiting in
+ * k_poll() for K_POLL_TYPE_PIPE_DATA_AVAILABLE are woken as well: a
+ * closed pipe is treated as readable so k_pipe_read() can return -EPIPE.
  *
  * @param pipe Address of the pipe.
  */
@@ -5954,8 +5962,6 @@ struct k_mem_slab {
 	char *buffer;
 	char *free_list;
 	struct k_mem_slab_info info;
-
-	SYS_PORT_TRACING_TRACKING_FIELD(k_mem_slab)
 
 #ifdef CONFIG_OBJ_CORE_MEM_SLAB
 	struct k_obj_core  obj_core;

@@ -12,9 +12,13 @@ ram: 128
 supported:
   - clock_control
   - dma
+  - flash
   - gpio
+  - hwinfo
   - i2c
   - pinctrl
+  - reset
+  - spi
   - uart
   - watchdog
 vendor: microchip

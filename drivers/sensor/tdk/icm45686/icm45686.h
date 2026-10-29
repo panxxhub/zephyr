@@ -175,18 +175,21 @@ struct icm45686_config {
 			uint8_t fs: 4;
 			uint8_t odr: 4;
 			uint8_t lpf: 3;
+			bool aaf: 1;
 		} accel;
 		struct {
 			uint8_t pwr_mode: 2;
 			uint8_t fs: 4;
 			uint8_t odr: 4;
 			uint8_t lpf: 3;
+			bool aaf: 1;
 		} gyro;
 		uint16_t fifo_watermark;
 		bool fifo_watermark_equals: 1;
 	} settings;
 	struct gpio_dt_spec int_gpio;
 	uint8_t apex;
+	uint8_t whoami;
 };
 
 static inline void icm45686_accel_ms(uint8_t fs, int32_t in, bool high_res, int32_t *out_ms,

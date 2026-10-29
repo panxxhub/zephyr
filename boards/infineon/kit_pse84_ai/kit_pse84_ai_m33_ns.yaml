@@ -13,7 +13,9 @@ toolchain:
   - zephyr
 supported:
   - clock_control
+  - counter
   - gpio
   - pinctrl
   - bluetooth
   - wifi
+  - flash

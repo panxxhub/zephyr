@@ -134,6 +134,7 @@
 #ifndef ZEPHYR_DRIVERS_TIMER_SYSTEM_TIMER_GENERIC_H_
 #define ZEPHYR_DRIVERS_TIMER_SYSTEM_TIMER_GENERIC_H_
 
+#include <zephyr/drivers/timer/system_timer_lpm.h>
 #include <zephyr/drivers/timer/system_timer.h>
 #include <zephyr/sys/clock.h>
 #include <zephyr/sys/util.h>
@@ -210,7 +211,7 @@ BUILD_ASSERT(TIMER_CORE_CYC_PER_TICK != 0, "timer counter rate is below the tick
  * 64-bit mask on a 32-bit counter underflows once the baseline passes 2^32.
  */
 #if !defined(TIMER_CORE_COUNTER_WIDTH)
-#define TIMER_CORE_COUNTER_WIDTH __LONG_WIDTH__
+#define TIMER_CORE_COUNTER_WIDTH (__SIZEOF_LONG__ * 8)
 #endif
 
 /* Wrap mask for the counter. */
@@ -286,9 +287,32 @@ typedef uint64_t timer_core_cycles_t;
  * counter can resolve. A deadline beyond this is walked to over several arms,
  * each announcing nothing until the last.
  */
+#define TIMER_CORE_HW_MAX_ARM_CYCLES                                                               \
+	MIN((uint64_t)TIMER_CORE_COUNTER_SAFE_SPAN, (uint64_t)TIMER_CORE_ALARM_MAX_CYCLES)
+
+/*
+ * QEMU's icount mode without sleep advances the virtual clock straight to the
+ * next armed deadline whenever the guest idles, and its timer models have no
+ * unarmed state: any comparator value is a deadline. With nothing pending the
+ * kernel asks for SYS_CLOCK_MAX_WAIT ticks, 248 days at 100 Hz, and a few
+ * hundred such idle periods saturate QEMU's signed 64-bit nanosecond clock,
+ * after which no timer fires again. Bound one arm to a second of the counter
+ * there: an idle guest then costs one wakeup per virtual second, and the clock
+ * takes days of wall time to saturate instead of milliseconds. With icount off
+ * or sleeping, virtual time advances on its own and that wakeup buys nothing,
+ * so the hardware reach stands.
+ *
+ * This is emulator policy, not a hardware limit, which is why it lives here
+ * rather than in TIMER_CORE_ALARM_MAX_CYCLES: folded in below, a driver's own
+ * smaller arming range still wins.
+ */
+#if defined(CONFIG_QEMU_ICOUNT) && !defined(CONFIG_QEMU_ICOUNT_SLEEP)
 #define TIMER_CORE_MAX_ARM_CYCLES                                                                  \
-	((timer_core_cycles_t)MIN((uint64_t)TIMER_CORE_COUNTER_SAFE_SPAN,                          \
-				  (uint64_t)TIMER_CORE_ALARM_MAX_CYCLES))
+	((timer_core_cycles_t)MIN(TIMER_CORE_HW_MAX_ARM_CYCLES,                                    \
+				  (uint64_t)TIMER_CORE_CYCLES_PER_SEC))
+#else
+#define TIMER_CORE_MAX_ARM_CYCLES ((timer_core_cycles_t)TIMER_CORE_HW_MAX_ARM_CYCLES)
+#endif
 
 /*
  * Announce baseline, private to this translation unit.
@@ -856,6 +880,9 @@ static inline void timer_core_smp_prime(void)
  */
 static inline void timer_core_init(void)
 {
+#ifndef CONFIG_SYSTEM_TIMER_LPM_COMPANION_NONE
+	z_sys_clock_lpm_init();
+#endif /* !CONFIG_SYSTEM_TIMER_LPM_COMPANION_NONE */
 #ifdef TIMER_CORE_PRECOMPUTE_CYC_PER_TICK
 	/* Rate is known only now (the driver has brought the counter up), so
 	 * fix the cycles-per-tick the tick math will divide by.
@@ -868,7 +895,11 @@ static inline void timer_core_init(void)
 	 * non-zero check the constant case gets at build time happens here instead.
 	 */
 	__ASSERT(TIMER_CORE_CYC_PER_TICK != 0, "timer counter rate is below the tick rate");
-	__ASSERT(TIMER_CORE_COUNTER_SAFE_SPAN >= TIMER_CORE_CYC_PER_TICK,
+	/* Both sides are widened so the comparison is not typed against the
+	 * runtime rate's uint32_t, which a 64-bit counter's span cannot reach
+	 * and which the compiler would then flag as always true.
+	 */
+	__ASSERT((uint64_t)TIMER_CORE_COUNTER_SAFE_SPAN >= (uint64_t)TIMER_CORE_CYC_PER_TICK,
 		 "a tick is longer than the counter can span");
 #endif
 	/* The counter read is inside the counter's width, so the tick count it

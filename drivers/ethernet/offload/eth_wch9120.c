@@ -20,6 +20,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(eth_ch9120, LOG_LEVEL_INF);
 
@@ -114,6 +115,9 @@ static bool ch9120_is_tcp_connected(void)
 
 static void ch9120_tcp_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins)
 {
+	ARG_UNUSED(port);
+	ARG_UNUSED(pins);
+
 	struct ch9120_runtime *data = CONTAINER_OF(cb, struct ch9120_runtime, tcp_cb_data);
 	struct ch9120_socket *sck = &data->sock;
 
@@ -154,7 +158,7 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg, uint8_t cmd, co
 	uint8_t ack;
 	int ret = -EIO;
 	k_timepoint_t deadline;
-	uint8_t header[3] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
+	uint8_t header[] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
 	struct uart_config current_cfg;
 	const struct device *uart_dev = cfg->uart_dev;
 
@@ -173,7 +177,7 @@ static int ch9120_send_cmd_wait(const struct ch9120_config *cfg, uint8_t cmd, co
 
 	ch9120_uart_flush(uart_dev);
 
-	for (int i = 0; i < 3; i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(header); i++) {
 		uart_poll_out(uart_dev, header[i]);
 	}
 
@@ -219,7 +223,7 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg, uint8_t cmd, co
 {
 	size_t indx;
 	k_timepoint_t deadline;
-	uint8_t header[3] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
+	uint8_t header[] = {CH9120_HDR_0, CH9120_HDR_1, cmd};
 	struct uart_config current_cfg;
 	const struct device *uart_dev = cfg->uart_dev;
 
@@ -238,7 +242,7 @@ static int ch9120_send_cmd_read(const struct ch9120_config *cfg, uint8_t cmd, co
 
 	ch9120_uart_flush(uart_dev);
 
-	for (int i = 0; i < 3; i++) {
+	for (size_t i = 0; i < ARRAY_SIZE(header); i++) {
 		uart_poll_out(uart_dev, header[i]);
 	}
 
@@ -386,16 +390,16 @@ static int ch9120_close(void *obj)
 
 static int ch9120_ioctl(void *obj, unsigned int request, va_list args)
 {
+	ARG_UNUSED(obj);
+	ARG_UNUSED(args);
+
 	switch (request) {
 	case ZFD_IOCTL_POLL_PREPARE:
 	case ZFD_IOCTL_POLL_UPDATE:
-		errno = EXDEV;
-		return -1;
+		return -EXDEV;
 	default:
-		errno = EINVAL;
+		return -EINVAL;
 	}
-
-	return -1;
 }
 
 static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_socklen_t addrlen)
@@ -414,7 +418,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		return -1;
 	}
 
-	if (addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
+	if (addr == NULL || addrlen < sizeof(struct net_sockaddr_in)) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -441,7 +445,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 		mode = CH9120_MODE_TCP_CLIENT;
 	}
 
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE, &mode, 1, K_MSEC(1000));
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_MODE, &mode, sizeof(mode), K_MSEC(1000));
 	if (ret < 0) {
 		LOG_ERR("Failed to set mode : %d", ret);
 		goto err;
@@ -450,15 +454,17 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	dst_port = net_ntohs(net_sin(addr)->sin_port);
 	sys_put_le16(dst_port, port_bytes);
 
-	memcpy(dst_ip, &net_sin(addr)->sin_addr.s_addr, 4);
+	memcpy(dst_ip, &net_sin(addr)->sin_addr.s_addr, sizeof(dst_ip));
 
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_TARGET_IP, dst_ip, 4, K_MSEC(1000));
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_TARGET_IP, dst_ip, sizeof(dst_ip),
+				   K_MSEC(1000));
 	if (ret < 0) {
 		LOG_ERR("Failed to send destination IP :%d", ret);
 		goto err;
 	}
 
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_TARGET_PORT, port_bytes, 2, K_MSEC(1000));
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_TARGET_PORT, port_bytes, sizeof(port_bytes),
+				   K_MSEC(1000));
 	if (ret < 0) {
 		LOG_ERR("Failed to set dst port: %d", ret);
 		goto err;
@@ -489,7 +495,7 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 	sck->state = CH9120_SOCK_CONNECTED;
 	k_mutex_unlock(&sck->lock);
 
-	memcpy(&sck->dst, addr, addrlen);
+	memcpy(&sck->dst, addr, sizeof(struct net_sockaddr_in));
 
 	uart_irq_rx_enable(cfg->uart_dev);
 
@@ -497,11 +503,10 @@ static int ch9120_connect(void *obj, const struct net_sockaddr *addr, net_sockle
 
 err:
 	k_mutex_lock(&sck->lock, K_FOREVER);
-	sck->in_use = false;
 	sck->state = CH9120_SOCK_OPEN;
 	k_mutex_unlock(&sck->lock);
 
-	return ret;
+	return -1;
 }
 
 static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
@@ -515,7 +520,7 @@ static ssize_t ch9120_sendto(void *obj, const void *buf, size_t len, int flags,
 	ARG_UNUSED(addr);
 	ARG_UNUSED(addrlen);
 
-	if (!buf || len == 0) {
+	if (buf == NULL || len == 0) {
 		errno = EINVAL;
 		return -1;
 	}
@@ -549,6 +554,11 @@ static ssize_t ch9120_recvfrom(void *obj, void *buf, size_t len, int flags,
 	int ret;
 
 	ARG_UNUSED(flags);
+
+	if (buf == NULL || len == 0) {
+		errno = EINVAL;
+		return -1;
+	}
 
 	if (addr != NULL && addrlen != NULL) {
 		*addrlen = sizeof(sck->dst);
@@ -736,7 +746,8 @@ static int ch9120_init(const struct device *dev)
 	k_msleep(500);
 
 	enable_flag = 0x01;
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DHCP, &enable_flag, 1, K_MSEC(1000));
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_DHCP, &enable_flag, sizeof(enable_flag),
+				   K_MSEC(1000));
 	if (ret < 0) {
 		LOG_ERR("Failed to set dhcp:%d", ret);
 		return -1;
@@ -744,7 +755,8 @@ static int ch9120_init(const struct device *dev)
 	k_msleep(500);
 
 	sys_put_le32(target_baud, baud_bytes);
-	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_BAUD, baud_bytes, 4, K_MSEC(1000));
+	ret = ch9120_send_cmd_wait(cfg, CH9120_CMD_SET_BAUD, baud_bytes, sizeof(baud_bytes),
+				   K_MSEC(1000));
 	if (ret < 0) {
 		LOG_ERR("Failed to set baud rate: %d", ret);
 		return ret;
@@ -838,5 +850,5 @@ static const struct socket_op_vtable ch9120_socket_fd_op_vtable = {
 NET_DEVICE_DT_INST_OFFLOAD_DEFINE(0, ch9120_init, NULL, &ch9120_runtime_data, &ch9120_config_data,
 				  CONFIG_ETH_INIT_PRIORITY, &ch9120_if_apis, NET_ETH_MTU);
 
-NET_SOCKET_OFFLOAD_REGISTER(ch9120, CONFIG_NET_SOCKETS_OFFLOAD_PRIORITY, AF_INET,
+NET_SOCKET_OFFLOAD_REGISTER(ch9120, CONFIG_NET_SOCKETS_OFFLOAD_PRIORITY, NET_AF_INET,
 			    ch9120_socket_is_supported, ch9120_socket_create);

@@ -5,7 +5,9 @@
 
 menuconfig ETH_PHY_DRIVER
 	bool "Ethernet PHY drivers"
-	default y
+	help
+	  Enable Ethernet PHY drivers. Ethernet drivers that need a PHY
+	  driver should select this.
 
 if ETH_PHY_DRIVER
 
@@ -55,6 +57,15 @@ config PHY_GENERIC_FIXED_LINK
 	  communicate with the PHY using the MDIO bus. Can be used as a placeholder
 	  when the ethernet driver requires a PHY but there is no interface to configure
 	  the PHY.
+
+config PHY_ADIN1140
+	bool "ADIN1140 PHY driver"
+	default y
+	depends on DT_HAS_ADI_ADIN1140_PHY_ENABLED
+	select MDIO
+	select ETH_PHY_API_PLCA
+	help
+	  Enable ADIN1140 PHY driver.
 
 config PHY_ADIN2111
 	bool "ADIN2111 PHY driver"

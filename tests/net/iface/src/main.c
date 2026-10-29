@@ -13,6 +13,7 @@
 LOG_MODULE_REGISTER(net_test, NET_LOG_LEVEL);
 
 #include <zephyr/types.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
@@ -28,6 +29,8 @@ LOG_MODULE_REGISTER(net_test, NET_LOG_LEVEL);
 #include <zephyr/net_buf.h>
 #include <zephyr/net/net_ip.h>
 #include <zephyr/net/net_if.h>
+#include <zephyr/net/net_mgmt.h>
+#include <zephyr/net/net_stats.h>
 
 #define NET_LOG_ENABLED 1
 #include "net_private.h"
@@ -256,7 +259,7 @@ static int eth_fake_set_config(const struct device *dev,
 		break;
 
 	default:
-		return -EINVAL;
+		return -ENOTSUP;
 	}
 
 	return 0;
@@ -395,9 +398,11 @@ static void *iface_setup(void)
 		      "Invalid operational state (%d)",
 		      net_if_oper_state(iface1));
 
-	/* Mark the device ready and take the interface up */
-	dev->state->init_res = 0;
+	/* Make the device ready and take the interface up */
 	device_ok = true;
+	ret = device_init(dev);
+	zassert_equal(ret, 0, "Device init failed (%d)", ret);
+	zassert_true(device_is_ready(dev), "Device %s (%p) is not ready!", dev->name, dev);
 
 	/* The interface init was skipped because device was not ready during
 	 * system initialization. Now that the device is ready, we need to
@@ -679,6 +684,30 @@ ZTEST(net_iface, test_send_iface3)
 	zassert_true(ret, "iface 3");
 }
 
+ZTEST(net_iface, test_send_bytes_sent)
+{
+	struct net_stats_bytes before;
+	struct net_stats_bytes after;
+	int ret;
+
+	ret = net_mgmt(NET_REQUEST_STATS_GET_BYTES, iface2, &before, sizeof(before));
+	zassert_equal(ret, 0, "Cannot read the statistics (%d)", ret);
+
+	zassert_true(send_iface(iface2, 2, false), "iface 2");
+
+	/* The driver signals the test before net_if_tx() has updated the
+	 * statistics, so give the TX thread time to finish.
+	 */
+	k_msleep(WAIT_TIME);
+
+	ret = net_mgmt(NET_REQUEST_STATS_GET_BYTES, iface2, &after, sizeof(after));
+	zassert_equal(ret, 0, "Cannot read the statistics (%d)", ret);
+
+	/* send_iface() sends a 5 byte packet */
+	zexpect_equal(after.sent - before.sent, 5U, "Wrong sent byte count %" PRIu64,
+		      after.sent - before.sent);
+}
+
 static void send_iface1_down(void)
 {
 	bool ret;
@@ -873,6 +902,71 @@ ZTEST(net_iface, test_v4_addr_add_rm)
 	v4_addr_rm();
 }
 
+static struct net_in_addr my_ipv4_addr_in_use = { { { 10, 0, 0, 3 } } };
+
+ZTEST(net_iface, test_v4_addr_rm_in_use)
+{
+	struct net_if_addr *ifaddr;
+	int ret;
+
+	ifaddr = net_if_ipv4_addr_add(iface1, &my_ipv4_addr_in_use,
+				      NET_ADDR_MANUAL, 0);
+	zassert_not_null(ifaddr, "Cannot add IPv4 address");
+	ifaddr->addr_state = NET_ADDR_PREFERRED;
+
+	/* Hold the address the way an active connection does. */
+	zassert_equal(net_if_addr_ref(iface1, NET_AF_INET, &my_ipv4_addr_in_use),
+		      ifaddr, "Cannot reference IPv4 address");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 2, "Wrong ref count");
+
+	/* Removal is deferred and the address is no longer a valid source. */
+	zassert_false(net_if_ipv4_addr_rm(iface1, &my_ipv4_addr_in_use),
+		      "Removal of referenced address not deferred");
+	zassert_false(ifaddr->is_added, "Address still marked as added");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_DEPRECATED,
+		      "Address not deprecated");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 1, "Wrong ref count");
+	zassert_equal(net_if_ipv4_addr_lookup(&my_ipv4_addr_in_use, NULL),
+		      ifaddr, "Referenced address freed");
+
+	/* A repeat removal must leave the remaining reference alone. */
+	zassert_false(net_if_ipv4_addr_rm(iface1, &my_ipv4_addr_in_use),
+		      "Repeat removal succeeded");
+	zassert_true(ifaddr->is_used, "Referenced address freed");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 1,
+		      "Repeat removal consumed a reference");
+
+	/* Re-adding restores the address as a valid source. */
+	zassert_equal(net_if_ipv4_addr_add(iface1, &my_ipv4_addr_in_use,
+					   NET_ADDR_MANUAL, 0),
+		      ifaddr, "Cannot re-add IPv4 address");
+	zassert_true(ifaddr->is_added, "Address not marked as added");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_PREFERRED,
+		      "Address not preferred");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 2, "Wrong ref count");
+
+	/* An address still in ACD stays tentative across removal and re-add. */
+	ifaddr->addr_state = NET_ADDR_TENTATIVE;
+	zassert_false(net_if_ipv4_addr_rm(iface1, &my_ipv4_addr_in_use),
+		      "Removal of referenced address not deferred");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_TENTATIVE,
+		      "Removal changed the tentative state");
+	zassert_equal(net_if_ipv4_addr_add(iface1, &my_ipv4_addr_in_use,
+					   NET_ADDR_MANUAL, 0),
+		      ifaddr, "Cannot re-add IPv4 address");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_TENTATIVE,
+		      "Re-add changed the tentative state");
+	ifaddr->addr_state = NET_ADDR_PREFERRED;
+
+	/* Remove again, then let the last user release the address. */
+	zassert_false(net_if_ipv4_addr_rm(iface1, &my_ipv4_addr_in_use),
+		      "Removal of referenced address not deferred");
+	ret = net_if_addr_unref(iface1, NET_AF_INET, &my_ipv4_addr_in_use, NULL);
+	zassert_equal(ret, 0, "Address not freed (%d)", ret);
+	zassert_is_null(net_if_ipv4_addr_lookup(&my_ipv4_addr_in_use, NULL),
+			"Address still present");
+}
+
 ZTEST(net_iface, test_v4_addr_lookup_by_iface)
 {
 	struct net_if_addr *ifaddr;
@@ -1008,6 +1102,84 @@ ZTEST(net_iface, test_v6_addr_add_rm)
 	v6_addr_add_mcast_twice();
 	v6_addr_lookup();
 	v6_addr_rm();
+}
+
+static struct net_in6_addr my_ipv6_addr_in_use = { { { 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0,
+						  0, 0, 0, 0, 0, 0, 0, 0, 0x66 } } };
+
+ZTEST(net_iface, test_v6_addr_rm_in_use)
+{
+	struct net_if_addr *ifaddr;
+	int ret;
+
+	ifaddr = net_if_ipv6_addr_add(iface1, &my_ipv6_addr_in_use,
+				      NET_ADDR_MANUAL, 3600);
+	zassert_not_null(ifaddr, "Cannot add IPv6 address");
+	ifaddr->addr_state = NET_ADDR_PREFERRED;
+
+	/* Hold the address the way an active connection does. */
+	zassert_equal(net_if_addr_ref(iface1, NET_AF_INET6, &my_ipv6_addr_in_use),
+		      ifaddr, "Cannot reference IPv6 address");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 2, "Wrong ref count");
+
+	/* Removal is deferred and the address is no longer a valid source. */
+	zassert_false(net_if_ipv6_addr_rm(iface1, &my_ipv6_addr_in_use),
+		      "Removal of referenced address not deferred");
+	zassert_false(ifaddr->is_added, "Address still marked as added");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_DEPRECATED,
+		      "Address not deprecated");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 1, "Wrong ref count");
+	zassert_equal(net_if_ipv6_addr_lookup(&my_ipv6_addr_in_use, NULL),
+		      ifaddr, "Referenced address freed");
+
+	/* A lifetime update, as done for a re-advertised prefix, must not
+	 * make the address preferred again.
+	 */
+	net_if_ipv6_addr_update_lifetime(ifaddr, 3600);
+	zassert_equal(ifaddr->addr_state, NET_ADDR_DEPRECATED,
+		      "Lifetime update made the address preferred");
+
+	/* A repeat removal must leave the remaining reference alone. */
+	zassert_false(net_if_ipv6_addr_rm(iface1, &my_ipv6_addr_in_use),
+		      "Repeat removal succeeded");
+	zassert_true(ifaddr->is_used, "Referenced address freed");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 1,
+		      "Repeat removal consumed a reference");
+
+	/* Re-adding restores the address as a valid source. */
+	zassert_equal(net_if_ipv6_addr_add(iface1, &my_ipv6_addr_in_use,
+					   NET_ADDR_MANUAL, 3600),
+		      ifaddr, "Cannot re-add IPv6 address");
+	zassert_true(ifaddr->is_added, "Address not marked as added");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_PREFERRED,
+		      "Address not preferred");
+	zassert_equal(atomic_get(&ifaddr->atomic_ref), 2, "Wrong ref count");
+
+	/* An address still in DAD stays tentative across removal, re-add
+	 * and a lifetime update.
+	 */
+	ifaddr->addr_state = NET_ADDR_TENTATIVE;
+	zassert_false(net_if_ipv6_addr_rm(iface1, &my_ipv6_addr_in_use),
+		      "Removal of referenced address not deferred");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_TENTATIVE,
+		      "Removal changed the tentative state");
+	zassert_equal(net_if_ipv6_addr_add(iface1, &my_ipv6_addr_in_use,
+					   NET_ADDR_MANUAL, 3600),
+		      ifaddr, "Cannot re-add IPv6 address");
+	zassert_equal(ifaddr->addr_state, NET_ADDR_TENTATIVE,
+		      "Re-add changed the tentative state");
+	net_if_ipv6_addr_update_lifetime(ifaddr, 3600);
+	zassert_equal(ifaddr->addr_state, NET_ADDR_TENTATIVE,
+		      "Lifetime update changed the tentative state");
+	ifaddr->addr_state = NET_ADDR_PREFERRED;
+
+	/* Remove again, then let the last user release the address. */
+	zassert_false(net_if_ipv6_addr_rm(iface1, &my_ipv6_addr_in_use),
+		      "Removal of referenced address not deferred");
+	ret = net_if_addr_unref(iface1, NET_AF_INET6, &my_ipv6_addr_in_use, NULL);
+	zassert_equal(ret, 0, "Address not freed (%d)", ret);
+	zassert_is_null(net_if_ipv6_addr_lookup(&my_ipv6_addr_in_use, NULL),
+			"Address still present");
 }
 
 static K_SEM_DEFINE(global_lock_taken, 0, 1);
@@ -1525,15 +1697,20 @@ ZTEST(net_iface, test_ipv6_iid_stable)
 #if defined(CONFIG_NET_IPV6_IID_STABLE)
 	struct net_in6_addr iid_addr = { };
 	struct net_in6_addr expected_addr = { };
+	struct net_in6_addr again_addr = { };
 
 	generate_iid(eth_iface, &expected_addr, &iid_addr);
 
-	/* Make sure that EUI-64 bytes are not there */
-	zassert_not_equal(iid_addr.s6_addr[11], 0xff);
-	zassert_not_equal(iid_addr.s6_addr[12], 0xfe);
-
+	/* The IID is random, so compare the whole IID; any single byte can
+	 * match the EUI-64 pattern by chance.
+	 */
 	zassert_true(memcmp(&expected_addr, &iid_addr, sizeof(struct net_in6_addr)) != 0,
 		     "IID is EUI-64 instead of randomized");
+
+	generate_iid(eth_iface, &expected_addr, &again_addr);
+
+	zassert_mem_equal(&iid_addr, &again_addr, sizeof(struct net_in6_addr),
+			  "IID is not stable for the same inputs");
 #else
 	ztest_test_skip();
 #endif
@@ -1565,6 +1742,12 @@ ZTEST(net_iface, test_ipv6_config_put)
 			 "Cannot add IPv6 multicast address");
 	zassert_not_null(net_if_ipv6_prefix_add(iface3, &prefix, 64, 3600),
 			 "Cannot add IPv6 prefix");
+
+	/* Leave the address removed but still referenced. */
+	zassert_not_null(net_if_addr_ref(iface3, NET_AF_INET6, &addr),
+			 "Cannot reference IPv6 address");
+	zassert_false(net_if_ipv6_addr_rm(iface3, &addr),
+		      "Removal of referenced address not deferred");
 
 	net_if_ipv6_set_hop_limit(iface3, 42);
 
@@ -1639,6 +1822,12 @@ ZTEST(net_iface, test_ipv4_config_put)
 			 "Cannot add IPv4 address");
 	zassert_not_null(net_if_ipv4_maddr_add(iface3, &maddr),
 			 "Cannot add IPv4 multicast address");
+
+	/* Leave the address removed but still referenced. */
+	zassert_not_null(net_if_addr_ref(iface3, NET_AF_INET, &addr),
+			 "Cannot reference IPv4 address");
+	zassert_false(net_if_ipv4_addr_rm(iface3, &addr),
+		      "Removal of referenced address not deferred");
 
 	net_if_ipv4_set_gw(iface3, &gw);
 	net_if_ipv4_set_ttl(iface3, 13);

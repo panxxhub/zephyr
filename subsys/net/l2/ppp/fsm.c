@@ -176,7 +176,7 @@ void ppp_fsm_init(struct ppp_fsm *fsm, uint16_t protocol)
 {
 	fsm->protocol = protocol;
 	fsm->state = PPP_INITIAL;
-	fsm->flags = 0U;
+	fsm->flags = FSM_RESTART;
 
 	k_work_init_delayable(&fsm->timer, ppp_fsm_timeout);
 }
@@ -321,6 +321,10 @@ void ppp_fsm_lower_up(struct ppp_fsm *fsm)
 
 	switch (fsm->state) {
 	case PPP_CLOSED:
+	case PPP_STOPPED:
+		/* Nothing to do,
+		 * ppp_fsm_open() drives the STOPPED/CLOSED -> REQUEST_SENT restart.
+		 */
 		break;
 
 	case PPP_INITIAL:
@@ -1130,14 +1134,55 @@ enum net_verdict ppp_fsm_input(struct ppp_fsm *fsm, uint16_t proto,
 	return NET_DROP;
 }
 
+static struct ppp_fsm *ppp_proto_fsm(struct ppp_context *ctx, uint16_t protocol)
+{
+	switch (protocol) {
+#if defined(CONFIG_NET_IPV4)
+	case PPP_IPCP:
+		return &ctx->ipcp.fsm;
+#endif
+#if defined(CONFIG_NET_IPV6)
+	case PPP_IPV6CP:
+		return &ctx->ipv6cp.fsm;
+#endif
+#if defined(CONFIG_NET_L2_PPP_PAP)
+	case PPP_PAP:
+		return &ctx->pap.fsm;
+#endif
+	default:
+		return NULL;
+	}
+}
+
 enum net_verdict ppp_fsm_recv_protocol_rej(struct ppp_fsm *fsm,
 					   uint8_t id,
 					   struct net_pkt *pkt)
 {
+	struct ppp_fsm *rejected_fsm;
+	uint16_t protocol;
+
 	NET_DBG("[%s/%p] Current state %s (%d)", fsm->name, fsm,
 		ppp_state_str(fsm->state), fsm->state);
 
-	return NET_DROP;
+	/* RFC 1661 chapter 5.7 - discard outside LCP Opened, don't Code-Reject */
+	if (fsm->state != PPP_OPENED) {
+		return NET_OK;
+	}
+
+	if (net_pkt_read_be16(pkt, &protocol) < 0) {
+		return NET_OK;
+	}
+
+	NET_DBG("[%s/%p] Peer rejected protocol %s (0x%04x)", fsm->name, fsm,
+		ppp_proto2str(protocol), protocol);
+
+	/* RFC 1661 chapter 4.2 - RXJ+: LCP stays up, rejected protocol must stop */
+	rejected_fsm = ppp_proto_fsm(ppp_fsm_ctx(fsm), protocol);
+	if (rejected_fsm != NULL && rejected_fsm->cb.proto_reject != NULL) {
+		rejected_fsm->cb.proto_reject(rejected_fsm);
+	}
+
+	return NET_OK;
 }
 
 enum net_verdict ppp_fsm_recv_echo_req(struct ppp_fsm *fsm,

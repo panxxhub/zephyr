@@ -29,6 +29,7 @@
 #include <ksched.h>
 #include <kthread.h>
 #include <ipi.h>
+#include <ksmp.h>
 #include <zephyr/sys/dlist.h>
 #include <kernel_internal.h>
 #include <zephyr/drivers/entropy.h>
@@ -146,8 +147,6 @@ K_KERNEL_STACK_ARRAY_DEFINE(z_interrupt_stacks,
 extern void idle(void *unused1, void *unused2, void *unused3);
 
 #ifdef CONFIG_OBJ_CORE_SYSTEM
-static struct k_obj_type obj_type_cpu;
-
 #ifdef CONFIG_OBJ_CORE_STATS_SYSTEM
 static struct k_obj_core_stats_desc  cpu_stats_desc = {
 	.raw_size = sizeof(struct k_cycle_stats),
@@ -382,10 +381,7 @@ static void init_idle_thread(int i)
 			  NULL, NULL, K_IDLE_PRIO, K_ESSENTIAL,
 			  tname);
 	z_mark_thread_as_not_sleeping(thread);
-
-#ifdef CONFIG_SMP
-	thread->base.is_idle = 1U;
-#endif /* CONFIG_SMP */
+	z_smp_thread_mark_idle(thread);
 }
 
 void z_init_cpu(int id)
@@ -419,9 +415,7 @@ void z_init_cpu(int id)
 #endif
 #endif
 
-#ifdef CONFIG_SCHED_IPI_SUPPORTED
-	sys_dlist_init(&_kernel.cpus[id].ipi_workq);
-#endif
+	z_smp_cpu_init(&_kernel.cpus[id]);
 }
 
 /**
@@ -568,9 +562,7 @@ FUNC_NORETURN void z_cstart(void)
 
 	/* perform basic hardware initialization */
 	z_sys_init_run_level(INIT_LEVEL_PRE_KERNEL_1);
-#if defined(CONFIG_SMP)
-	arch_smp_init();
-#endif
+	z_smp_arch_init();
 	z_sys_init_run_level(INIT_LEVEL_PRE_KERNEL_2);
 
 #ifdef CONFIG_REQUIRES_STACK_CANARIES

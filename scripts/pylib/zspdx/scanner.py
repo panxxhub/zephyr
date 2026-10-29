@@ -6,10 +6,12 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
+from reuse.global_licensing import NestedReuseTOML, ReuseTOML
 from reuse.project import Project
 
-from .licenses import LICENSES
+from .licenses import get_license_ids
 from .util import get_hashes
 
 _logger = logging.getLogger(__name__)
@@ -36,8 +38,8 @@ class ScannerConfig:
     # note that SHA1 hashes are mandatory, per SPDX 2.3
     do_sha256: bool = True
 
-    # should we calculate MD5 hashes for each Component's Files?
-    do_md5: bool = False
+    # should we calculate SHA512 hashes for each Component's Files?
+    do_sha512: bool = True
 
 
 def split_expression(expression):
@@ -69,7 +71,7 @@ def check_license_valid(lic, sbom_graph):
         - lic: detected license ID
         - sbom_graph: SBOMGraph
     """
-    if lic not in LICENSES:
+    if lic not in get_license_ids():
         sbom_graph.custom_license_ids.add(lic)
 
 
@@ -117,6 +119,21 @@ def normalize_expression(lics_concluded):
         else:
             revised.append(lic)
     return " AND ".join(revised)
+
+
+def make_reuse_project(base_dir, file_paths):
+    # A REUSE.toml only applies to files in its own directory tree, so only
+    # check the directories between base_dir and each file, instead of
+    # letting Project.from_directory() search all of base_dir.
+    root = Path(base_dir)
+    dirs = {d for f in file_paths for d in Path(f).parents if d.is_relative_to(root)}
+    tomls = [ReuseTOML.from_file(d / "REUSE.toml") for d in dirs if (d / "REUSE.toml").is_file()]
+    global_licensing = NestedReuseTOML(reuse_tomls=tomls, source=str(root)) if tomls else None
+    return Project(
+        root,
+        vcs_strategy=Project._detect_vcs_strategy(root),
+        global_licensing=global_licensing,
+    )
 
 
 def get_reuse_info(project, file_path):
@@ -173,7 +190,9 @@ def scan_sbom_graph(cfg, sbom_graph):
         reuse_project = None
         if component.files and component.base_dir:
             try:
-                reuse_project = Project.from_directory(str(component.base_dir))
+                reuse_project = make_reuse_project(
+                    component.base_dir, [f.path for f in component.files.values()]
+                )
             except Exception:
                 _logger.warning(
                     "Error building REUSE project for %s", component.base_dir, exc_info=True
@@ -189,13 +208,13 @@ def scan_sbom_graph(cfg, sbom_graph):
             if not hashes:
                 _logger.warning("unable to get hashes for file %s; skipping", f.path)
                 continue
-            h_sha1, h_sha256, h_md5 = hashes
+            h_sha1, h_sha256, h_sha512 = hashes
             f.size = os.path.getsize(f.path)
             f.hashes["SHA1"] = h_sha1
             if cfg.do_sha256:
                 f.hashes["SHA256"] = h_sha256
-            if cfg.do_md5:
-                f.hashes["MD5"] = h_md5
+            if cfg.do_sha512:
+                f.hashes["SHA512"] = h_sha512
 
             # if the file is a module blob, cross-check it against the
             # checksum its module declares for it
@@ -231,16 +250,3 @@ def scan_sbom_graph(cfg, sbom_graph):
         if cfg.should_conclude_component_license:
             component.concluded_license = normalize_expression(lics_concluded)
         component.license_info_from_files = lics_from_files
-
-
-# Backward compatibility alias (deprecated)
-def scan_document(cfg, doc):
-    """
-    Deprecated: Use scan_sbom_graph instead.
-    This function is kept for backward compatibility during migration.
-    """
-    # This would need to convert Document to SBOMGraph, but since we're
-    # migrating away from Document, this should not be called in new code.
-    raise NotImplementedError(
-        "scan_document is deprecated. Use scan_sbom_graph with SBOMGraph instead."
-    )

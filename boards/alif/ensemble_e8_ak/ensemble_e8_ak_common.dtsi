@@ -81,19 +81,35 @@
 };
 
 &gpio7 {
-	status = "okay";
-	pinctrl-0 = <&pinctrl_gpio7>;
+	pinctrl-0 = <&gpio7_default>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &gpio12 {
-	status = "okay";
-	pinctrl-0 = <&pinctrl_gpio12>;
+	pinctrl-0 = <&gpio12_default>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &lpgpio {
-	status = "okay";
-	pinctrl-0 = <&pinctrl_lpgpio>;
+	pinctrl-0 = <&lpgpio_default>;
 	pinctrl-names = "default";
+	status = "okay";
+};
+
+&lptimer0 {
+	status = "okay";
+};
+
+&lptimer1 {
+	status = "okay";
+};
+
+&lptimer2 {
+	status = "okay";
+};
+
+&lptimer3 {
+	status = "okay";
 };

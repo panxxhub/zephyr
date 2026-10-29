@@ -22,8 +22,8 @@ nvic: &cpuapp_nvic {};
 
 	soc {
 		compatible = "simple-bus";
-		interrupt-parent = <&cpuapp_nvic>;
 		ranges;
+		interrupt-parent = <&cpuapp_nvic>;
 
 		/* Cached memory-mapped aperture for MSPI. */
 		memmap_aperture_cached: memory@2000000 {
@@ -32,27 +32,25 @@ nvic: &cpuapp_nvic {};
 	};
 
 	rng: rng {
-		status = "okay";
 		compatible = "nordic,nrf-cracen-ctrdrbg";
+		status = "okay";
 	};
 
 	psa_rng: psa-rng {
 		compatible = "zephyr,psa-crypto-rng";
 		status = "disabled";
 	};
+
+	vbat_monitor: vbat_monitor {
+		compatible = "nordic,nrf-vbat";
+		io-channels = <&adc 0>;
+		divider-ratio = <11 2>;
+		invert-voltage;
+		status = "disabled";
+	};
 };
 
 &cpuflpr_vpr {
-	cpuapp_vevif_rx: mailbox@1 {
-		compatible = "nordic,nrf-vevif-event-rx";
-		reg = <0x1 0x1000>;
-		status = "disabled";
-		interrupts = <76 NRF_DEFAULT_IRQ_PRIORITY>;
-		#mbox-cells = <1>;
-		nordic,events = <1>;
-		nordic,events-mask = <0x00100000>;
-	};
-
 	cpuapp_vevif_tx: mailbox@0 {
 		compatible = "nordic,nrf-vevif-task-tx";
 		reg = <0x0 0x1000>;
@@ -61,11 +59,36 @@ nvic: &cpuapp_nvic {};
 		nordic,tasks-mask = <0x007f0000>;
 		status = "disabled";
 	};
+
+	cpuapp_vevif_rx: mailbox@1 {
+		compatible = "nordic,nrf-vevif-event-rx";
+		reg = <0x1 0x1000>;
+		interrupts = <76 NRF_DEFAULT_IRQ_PRIORITY>;
+		#mbox-cells = <1>;
+		nordic,events = <1>;
+		nordic,events-mask = <0x00100000>;
+		status = "disabled";
+	};
 };
 
 &cpuapp_ppb {
 	compatible = "simple-bus";
 	ranges;
+};
+
+&adc {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1_2";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,input-positive = <NRF_SAADC_AVSS>;
+		zephyr,input-negative = <NRF_SAADC_VBAT>;
+		zephyr,resolution = <10>;
+	};
 };
 
 &grtc {

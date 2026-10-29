@@ -10,13 +10,13 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/pwm/pwm.h>
 #include <zephyr/dt-bindings/input/esp32-touch-sensor-input.h>
-#include <espressif/esp32s3/esp32s3_wroom_n16.dtsi>
+#include <espressif/esp32s3/esp32s3.dtsi>
 #include <espressif/partitions_0x0_amp_16M.dtsi>
 #include "matouch_mtro128g-pinctrl.dtsi"
 
 / {
-	model = "Makerfabs Matouch MTRO128G PROCPU";
 	compatible = "espressif,esp32s3";
+	model = "Makerfabs Matouch MTRO128G PROCPU";
 
 	aliases {
 		i2c-0 = &i2c0;
@@ -71,16 +71,15 @@
 
 	mipi_dbi {
 		compatible = "zephyr,mipi-dbi-spi";
-		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <0>;
 		spi-dev = <&spi2>;
 		dc-gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
 		write-only;
+		status = "okay";
 
 		gc9a01: gc9a01@0 {
-			status = "okay";
 			compatible = "galaxycore,gc9x01x";
 			reg = <0>;
 			mipi-max-frequency = <DT_FREQ_M(100)>;
@@ -88,8 +87,14 @@
 			display-inversion;
 			width = <240>;
 			height = <240>;
+			status = "okay";
 		};
 	};
+};
+
+&flash0 {
+	reg = <0x0 DT_SIZE_M(16)>;
+	ranges = <0x0 0x0 DT_SIZE_M(16)>;
 };
 
 &usb_serial {
@@ -97,10 +102,10 @@
 };
 
 &uart0 {
-	status = "okay";
 	current-speed = <115200>;
 	pinctrl-0 = <&uart0_default>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &gpio0 {
@@ -134,11 +139,11 @@
 };
 
 &ledc0 {
-	status = "okay";
 	pinctrl-0 = <&ledc0_default>;
 	pinctrl-names = "default";
 	#address-cells = <1>;
 	#size-cells = <0>;
+	status = "okay";
 
 	channel0@0 {
 		reg = <0x0>;
@@ -149,9 +154,9 @@
 &pcnt {
 	pinctrl-0 = <&pcnt0_default>;
 	pinctrl-names = "default";
-	status = "okay";
 	#address-cells = <1>;
 	#size-cells = <0>;
+	status = "okay";
 
 	unit0@0 {
 		reg = <0>;
@@ -172,17 +177,17 @@
 &spi2 {
 	#address-cells = <1>;
 	#size-cells = <0>;
-	status = "okay";
 	pinctrl-0 = <&spim2_default>;
 	pinctrl-names = "default";
+	status = "okay";
 };
 
 &spi3 {
 	#address-cells = <1>;
 	#size-cells = <0>;
-	status = "okay";
 	pinctrl-0 = <&spim3_default>;
 	pinctrl-names = "default";
+	status = "okay";
 
 	sdhc0_spi: sdhc@0 {
 		compatible = "zephyr,sdhc-spi-slot";

@@ -180,7 +180,10 @@ static int os_mgmt_echo(struct smp_streamer *ctxt)
 
 	ok = zcbor_map_decode_bulk(zsd, echo_decode, ARRAY_SIZE(echo_decode), &decoded) == 0;
 
-	if (!ok) {
+	/* No "d" key leaves data a zero-length string with no buffer;
+	 * echoing it back would hand zcbor_tstr_encode() a NULL pointer.
+	 */
+	if (!ok || decoded == 0) {
 		return MGMT_ERR_EINVAL;
 	}
 
@@ -245,7 +248,7 @@ os_mgmt_taskstat_encode_stack_info(zcbor_state_t *zse,
 	stack_size = thread->stack_info.size / 4;
 
 #ifdef CONFIG_INIT_STACKS
-	unsigned int stack_unused;
+	size_t stack_unused;
 
 	if (k_thread_stack_space_get(thread, &stack_unused) == 0) {
 		stack_used = (thread->stack_info.size - stack_unused) / 4;
@@ -306,9 +309,9 @@ static inline bool
 os_mgmt_taskstat_encode_priority(zcbor_state_t *zse, const struct k_thread *thread)
 {
 	return (zcbor_tstr_put_lit(zse, "prio")					&&
-		IS_ENABLED(CONFIG_MCUMGR_GRP_OS_TASKSTAT_SIGNED_PRIORITY) ?
+		(IS_ENABLED(CONFIG_MCUMGR_GRP_OS_TASKSTAT_SIGNED_PRIORITY) ?
 		zcbor_int32_put(zse, (int)thread->base.prio) :
-		zcbor_uint32_put(zse, (unsigned int)thread->base.prio) & 0xff);
+		zcbor_uint32_put(zse, (unsigned int)thread->base.prio & 0xff)));
 }
 
 /**
@@ -387,6 +390,13 @@ static int os_mgmt_mpstat_read(struct smp_streamer *ctxt)
 
 	heap_elements = sys_heap_array_get(&heap);
 
+	ok = zcbor_tstr_put_lit(zse, "mpools") &&
+	     zcbor_map_start_encode(zse, heap_elements);
+
+	if (!ok) {
+		goto end;
+	}
+
 	while (i < heap_elements) {
 		struct sys_memory_stats heap_stats;
 		uint32_t heap_total_size;
@@ -425,6 +435,10 @@ static int os_mgmt_mpstat_read(struct smp_streamer *ctxt)
 		}
 
 		++i;
+	}
+
+	if (ok) {
+		ok = zcbor_map_end_encode(zse, heap_elements);
 	}
 
 end:

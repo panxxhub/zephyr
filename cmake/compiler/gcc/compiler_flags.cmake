@@ -200,6 +200,7 @@ set_compiler_property(PROPERTY security_canaries -fstack-protector)
 set_compiler_property(PROPERTY security_canaries_strong -fstack-protector-strong)
 set_compiler_property(PROPERTY security_canaries_all -fstack-protector-all)
 set_compiler_property(PROPERTY security_canaries_explicit -fstack-protector-explicit)
+set_compiler_property(PROPERTY security_canaries_none -fno-stack-protector)
 
 # Only a valid option with GCC 7.x and above, so let's do check and set.
 if(CONFIG_STACK_CANARIES_TLS)
@@ -312,3 +313,6 @@ set_compiler_property(PROPERTY func_instrumentation_exclude_function_list
   "-finstrument-functions-exclude-function-list=${CONFIG_INSTRUMENTATION_EXCLUDE_FUNCTION_LIST}")
 set_compiler_property(PROPERTY func_instrumentation_exclude_file_list
   "-finstrument-functions-exclude-file-list=${CONFIG_INSTRUMENTATION_EXCLUDE_FILE_LIST}")
+
+# Compiler flag to let compiler use __aeabi_read_tp for setting thread pointer for TLS
+check_set_compiler_property(APPEND PROPERTY thread_local_storage -mtp=soft)

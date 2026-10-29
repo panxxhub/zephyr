@@ -98,7 +98,7 @@ static void bmm350_event_handler(const struct device *dev)
 	int err;
 
 	CHECKIF(!data->stream.iodev_sqe ||
-		FIELD_GET(RTIO_SQE_CANCELED, iodev_sqe->sqe.flags)) {
+		rtio_iodev_sqe_is_canceled(iodev_sqe)) {
 
 		LOG_WRN("Callback triggered with no streaming submission - Disabling interrupts");
 
@@ -145,6 +145,11 @@ static void bmm350_event_handler(const struct device *dev)
 	read_sqe->flags |= RTIO_SQE_CHAINED;
 
 	cb_sqe = rtio_sqe_acquire(cfg->bus.rtio.ctx);
+	if (cb_sqe == NULL) {
+		rtio_sqe_drop_all(cfg->bus.rtio.ctx);
+		bmm350_stream_result(dev, -ENOMEM);
+		return;
+	}
 
 	rtio_sqe_prep_callback_no_cqe(cb_sqe, bmm350_stream_event_complete,
 				      iodev_sqe, (void *)dev);

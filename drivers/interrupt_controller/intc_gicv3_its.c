@@ -79,7 +79,7 @@ static inline int fls_z(unsigned int x)
 	return 0;
 }
 
-/* wait 500ms & wakeup every millisecond */
+/* Poll for up to 500ms. */
 #define WAIT_QUIESCENT 500
 
 static int its_force_quiescent(struct gicv3_its_data *data)
@@ -103,7 +103,7 @@ static int its_force_quiescent(struct gicv3_its_data *data)
 			return -EBUSY;
 		}
 
-		k_msleep(1);
+		k_busy_wait(USEC_PER_MSEC);
 		reg = sys_read32(data->base + GITS_CTLR);
 	}
 
@@ -194,7 +194,7 @@ static int its_alloc_tables(struct gicv3_its_data *data)
 				 * entry size.
 				 */
 				lvl2_width = fls_z(page_size / entry_size) - 1;
-				device_ids -= lvl2_width + 1;
+				device_ids -= lvl2_width;
 
 				entry_size = GITS_LVL1_ENTRY_SIZE;
 
@@ -209,6 +209,11 @@ static int its_alloc_tables(struct gicv3_its_data *data)
 			break;
 		default:
 			continue;
+		}
+
+		if (page_cnt > GITS_BASER_SIZE_MASK + 1UL) {
+			LOG_ERR("ITS table requires too many pages: %zu", page_cnt);
+			return -EINVAL;
 		}
 
 		LOG_INF("Allocating %s table of %ldx%ldK pages (%ld bytes entry)",
@@ -532,7 +537,7 @@ static int gicv3_its_init_device_id(const struct device *dev, uint32_t device_id
 		size_t offset = device_id >> data->indirect_dev_lvl2_width;
 
 		/* Check if DeviceID can fit in the Level 1 table */
-		if (offset > (1 << data->indirect_dev_lvl1_width)) {
+		if (offset >= (1 << data->indirect_dev_lvl1_width)) {
 			return -EINVAL;
 		}
 

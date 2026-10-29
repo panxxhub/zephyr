@@ -60,10 +60,11 @@ static struct ot_nat64_pkt_filter_test ot_nat64_drop_rule_check = {
 static NPF_RULE(ot_nat64_drop_pkt_process, NET_DROP, ot_nat64_drop_rule_check);
 #endif /* CONFIG_OPENTHREAD_ZEPHYR_BORDER_ROUTER_NAT64_TRANSLATOR */
 
-otError otPlatInfraIfSendIcmp6Nd(uint32_t aInfraIfIndex, const otIp6Address *aDestAddress,
-				 const uint8_t *aBuffer, uint16_t aBufferLength)
+otError otPlatInfraIfSendIcmp6Nd(otInstance *aInstance, uint32_t aInfraIfIndex,
+				 const otIp6Address *aDestAddress, const uint8_t *aBuffer,
+				 uint16_t aBufferLength)
 {
-	otError error = OT_ERROR_NONE;
+	OT_UNUSED_VARIABLE(aInstance);	otError error = OT_ERROR_NONE;
 	struct net_pkt *pkt = NULL;
 	struct net_in6_addr dst = {0};
 	const struct net_in6_addr *src;
@@ -101,15 +102,19 @@ exit:
 	return error;
 }
 
-otError otPlatInfraIfDiscoverNat64Prefix(uint32_t aInfraIfIndex)
+otError otPlatInfraIfDiscoverNat64Prefix(otInstance *aInstance, uint32_t aInfraIfIndex)
 {
+	OT_UNUSED_VARIABLE(aInstance);
 	OT_UNUSED_VARIABLE(aInfraIfIndex);
 
 	return OT_ERROR_NOT_IMPLEMENTED;
 }
 
-bool otPlatInfraIfHasAddress(uint32_t aInfraIfIndex, const otIp6Address *aAddress)
+bool otPlatInfraIfHasAddress(otInstance *aInstance, uint32_t aInfraIfIndex,
+			     const otIp6Address *aAddress)
 {
+	OT_UNUSED_VARIABLE(aInstance);
+
 	struct net_if_addr *ifaddr = NULL;
 	struct net_in6_addr addr = {0};
 
@@ -202,9 +207,11 @@ static void handle_ra_from_ot(const uint8_t *buffer, uint16_t buffer_length)
 			if (net_ipv6_addr_generate_iid(
 				ail_iface_ptr, (struct net_in6_addr *)pio->prefix,
 				COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
-				     ((uint8_t *)&ail_iface_ptr->config.ip.ipv6->network_counter),
+				     ((uint8_t *)&net_if_get_config(ail_iface_ptr)->ip.ipv6
+							->network_counter),
 				     (NULL)), COND_CODE_1(CONFIG_NET_IPV6_IID_STABLE,
-				     (sizeof(ail_iface_ptr->config.ip.ipv6->network_counter)),
+				     (sizeof(net_if_get_config(ail_iface_ptr)->ip.ipv6
+							->network_counter)),
 				     (0U)), 0U, &addr_to_add_from_pio,
 				net_if_get_link_addr(ail_iface_ptr)) < 0) {
 				break;

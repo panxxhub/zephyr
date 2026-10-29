@@ -9,14 +9,21 @@
 #include <freq.h>
 
 / {
+	soc {
+		pinctrl: pin-controller@400cc000 {
+			compatible = "ti,mspm0-pinctrl";
+			reg = <0x400cc000 0x400>;
+		};
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
 
 		cpu0: cpu@0 {
-			device_type = "cpu";
 			compatible = "arm,cortex-m33";
 			reg = <0>;
+			device_type = "cpu";
 			#address-cells = <1>;
 			#size-cells = <1>;
 			clock-frequency = <DT_FREQ_M(32)>;
