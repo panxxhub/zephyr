@@ -24,7 +24,10 @@ description: |
 
 compatible: "xlnx,zynq-sdhc"
 
-include: [sdhc.yaml, pinctrl-device.yaml]
+include:
+  - name: sdhc.yaml
+    property-blocklist: [bus-width]
+  - pinctrl-device.yaml
 
 properties:
   reg:
@@ -33,10 +36,8 @@ properties:
   clock-frequency:
     type: int
     required: true
-    default: 50000000
     description: |
-      The clock frequency of the SDHC controller. If not specified, the default
-      value is 50000000.
+      The input clock frequency of the SDHC controller.
 
   bus-width:
     type: int

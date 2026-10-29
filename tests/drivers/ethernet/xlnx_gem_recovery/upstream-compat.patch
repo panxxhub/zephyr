@@ -1,0 +1,84 @@
+SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+SPDX-License-Identifier: Apache-2.0
+
+diff --git a/drivers/ethernet/eth_xlnx_gem.c b/drivers/ethernet/eth_xlnx_gem.c
+index b75c8b26497..24e538d94c2 100644
+--- a/drivers/ethernet/eth_xlnx_gem.c
++++ b/drivers/ethernet/eth_xlnx_gem.c
+@@ -696 +696 @@ static int eth_xlnx_gem_send(const struct device *dev, struct net_pkt *pkt)
+-	uint32_t reg_ctrl;
++	mem_addr_t reg_ctrl;
+@@ -789 +789 @@ claim_bds:
+-	reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
++	reg_ctrl = POINTER_TO_UINT(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+@@ -827 +827,2 @@ claim_bds:
+-			reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
++			reg_ctrl = POINTER_TO_UINT(
++				&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+@@ -853 +854 @@ claim_bds:
+-		reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
++		reg_ctrl = POINTER_TO_UINT(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+@@ -1799 +1800 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-		uint32_t addr = (uint32_t)dev_data->first_rx_buffer +
++		uint32_t addr = (uint32_t)POINTER_TO_UINT(dev_data->first_rx_buffer) +
+@@ -1807 +1808 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	uint32_t last_rx_addr = (uint32_t)dev_data->first_rx_buffer +
++	uint32_t last_rx_addr = (uint32_t)POINTER_TO_UINT(dev_data->first_rx_buffer) +
+@@ -1824 +1825 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-		bdptr->addr = (uint32_t)dev_data->first_tx_buffer +
++		bdptr->addr = (uint32_t)POINTER_TO_UINT(dev_data->first_tx_buffer) +
+@@ -1830 +1831 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	bdptr->addr = (uint32_t)dev_data->first_tx_buffer +
++	bdptr->addr = (uint32_t)POINTER_TO_UINT(dev_data->first_tx_buffer) +
+@@ -1843,2 +1844,2 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	bdptr->addr = (uint32_t)dev_data->rx_tie_off_buffer | ETH_XLNX_GEM_RX_BD_USED_BIT |
+-		      ETH_XLNX_GEM_RX_BD_WRAP_BIT;
++	bdptr->addr = (uint32_t)POINTER_TO_UINT(dev_data->rx_tie_off_buffer) |
++		      ETH_XLNX_GEM_RX_BD_USED_BIT | ETH_XLNX_GEM_RX_BD_WRAP_BIT;
+@@ -1848 +1849 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	bdptr->addr = (uint32_t)dev_data->tx_tie_off_buffer;
++	bdptr->addr = (uint32_t)POINTER_TO_UINT(dev_data->tx_tie_off_buffer);
+@@ -1868 +1869 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	sys_write32((uint32_t)dev_data->rx_bd_ring.first_bd,
++	sys_write32((uint32_t)POINTER_TO_UINT(dev_data->rx_bd_ring.first_bd),
+@@ -1870 +1871 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	sys_write32((uint32_t)dev_data->tx_bd_ring.first_bd,
++	sys_write32((uint32_t)POINTER_TO_UINT(dev_data->tx_bd_ring.first_bd),
+@@ -1874 +1875 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	sys_write32((uint32_t)dev_data->rx_bd_ring.tie_off_bd,
++	sys_write32((uint32_t)POINTER_TO_UINT(dev_data->rx_bd_ring.tie_off_bd),
+@@ -1877 +1878 @@ static void eth_xlnx_gem_configure_buffers(const struct device *dev)
+-	sys_write32((uint32_t)dev_data->tx_bd_ring.tie_off_bd,
++	sys_write32((uint32_t)POINTER_TO_UINT(dev_data->tx_bd_ring.tie_off_bd),
+@@ -1991,2 +1992,2 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
+-	uint32_t reg_addr;
+-	uint32_t reg_ctrl;
++	mem_addr_t reg_addr;
++	mem_addr_t reg_ctrl;
+@@ -2013,2 +2014,2 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
+-		reg_addr = (uint32_t)(&dev_data->rx_bd_ring.first_bd[first_bd_idx].addr);
+-		reg_ctrl = (uint32_t)(&dev_data->rx_bd_ring.first_bd[first_bd_idx].ctrl);
++		reg_addr = POINTER_TO_UINT(&dev_data->rx_bd_ring.first_bd[first_bd_idx].addr);
++		reg_ctrl = POINTER_TO_UINT(&dev_data->rx_bd_ring.first_bd[first_bd_idx].ctrl);
+@@ -2050 +2051,2 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
+-			reg_ctrl = (uint32_t)(&dev_data->rx_bd_ring.first_bd[last_bd_idx].ctrl);
++			reg_ctrl = POINTER_TO_UINT(
++				&dev_data->rx_bd_ring.first_bd[last_bd_idx].ctrl);
+@@ -2099,2 +2101,2 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
+-				net_pkt_write(pkt, (const void *)
+-					      (dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
++				net_pkt_write(pkt, UINT_TO_POINTER(
++					      dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr &
+@@ -2111 +2113,2 @@ static void eth_xlnx_gem_handle_rx_pending(const struct device *dev)
+-			reg_addr = (uint32_t)(&dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr);
++			reg_addr = POINTER_TO_UINT(
++				&dev_data->rx_bd_ring.first_bd[curr_bd_idx].addr);
+@@ -2196 +2199 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
+-	uint32_t reg_ctrl;
++	mem_addr_t reg_ctrl;
+@@ -2264 +2267 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
+-	reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
++	reg_ctrl = POINTER_TO_UINT(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
+@@ -2294 +2297 @@ static void eth_xlnx_gem_handle_tx_done(const struct device *dev)
+-		reg_ctrl = (uint32_t)(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);
++		reg_ctrl = POINTER_TO_UINT(&dev_data->tx_bd_ring.first_bd[curr_bd_idx].ctrl);

@@ -15,6 +15,11 @@ EOF scan, and dispatch on BNA/overrun interrupts. The private header differs
 only by the two named RXSR status bits. A source-equality reverse rejects
 unrelated changes to the receive loop.
 
+`upstream-compat.patch` records the 4.5 upstream pointer-width conversions
+separately from `optin.patch`. Both are reversed with exact hunk matching
+before checking the unchanged historical hashes. The opt-in tests compile
+the actual current driver functions, including those conversions.
+
 The cheap missing-SOF path clears USED, preserves address/WRAP and advances
 to the next BD. It drains complete frames before hard recovery when possible.
 A skipped BD, RXSR BNA/overrun, or an EOF scan exhausting the ring triggers
