@@ -88,7 +88,7 @@ static struct fixture_service_data {
 struct coap_service {
 	struct fixture_service_data *data;
 };
-static struct coap_service fixture_service = { .data = &service_data };
+static struct coap_service fixture_service = {.data = &service_data};
 #define COAP_SERVICE_FOREACH(svc)                                                                  \
 	for (struct coap_service *svc = &fixture_service; svc != NULL; svc = NULL)
 static int k_mutex_lock(int *mutex, int timeout)

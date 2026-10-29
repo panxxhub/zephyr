@@ -26,8 +26,8 @@
 #define K_SEM_MAX_LIMIT             UINT32_MAX
 #define NET_AF_UNSPEC               0
 #define ARG_UNUSED(x)               ((void)(x))
-#define POINTER_TO_UINT(p)          ((uintptr_t)(p))
-#define UINT_TO_POINTER(v)          ((void *)(uintptr_t)(v))
+#define POINTER_TO_UINT(p)                ((uintptr_t)(p))
+#define UINT_TO_POINTER(v)                ((void *)(uintptr_t)(v))
 #define MIN(a, b)                         ((a) < (b) ? (a) : (b))
 #define ARRAY_SIZE(a)                     (sizeof(a) / sizeof((a)[0]))
 #define ROUND_UP(x, align)          ((((x) + ((align) - 1)) / (align)) * (align))
