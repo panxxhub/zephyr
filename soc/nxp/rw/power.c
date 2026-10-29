@@ -297,6 +297,7 @@ __weak void pm_state_set(enum pm_state state, uint8_t substate_id)
 					k_spinlock_key_t key = sys_clock_lock();
 
 					sys_clock_set_timeout(0, true);
+#if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(standby))
 					/* Subtract exit-latency from the programmed
 					 * RTC wakeup to account for PM3 re-entry
 					 * recovery overhead.
@@ -308,6 +309,7 @@ __weak void pm_state_set(enum pm_state state, uint8_t substate_id)
 					if (wake > latency_ticks) {
 						RTC_SetWakeupCount(RTC, wake - latency_ticks);
 					}
+#endif
 					sys_clock_unlock(key);
 				}
 				/* GDET got enabled when exiting PM3, disable it
@@ -385,7 +387,7 @@ void nxp_rw6xx_power_init(void)
 	slp_cfg.pm3BuckCfg = suspend_sleepconfig[4];
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(pin0))
-	/* PIN 0 uses GPIO0_24, confiure the pin as GPIO */
+	/* PIN 0 uses GPIO0_24, configure the pin as GPIO */
 	pin_cfg = IOMUX_GPIO_IDX(24) | IOMUX_TYPE(IOMUX_GPIO);
 	pinctrl_configure_pins(&pin_cfg, 1, 0);
 
@@ -397,7 +399,7 @@ void nxp_rw6xx_power_init(void)
 #endif
 
 #if DT_NODE_HAS_STATUS_OKAY(DT_NODELABEL(pin1))
-	/* PIN 1 uses GPIO0_25, confiure the pin as GPIO */
+	/* PIN 1 uses GPIO0_25, configure the pin as GPIO */
 	pin_cfg = IOMUX_GPIO_IDX(25) | IOMUX_TYPE(IOMUX_GPIO);
 	pinctrl_configure_pins(&pin_cfg, 1, 0);
 

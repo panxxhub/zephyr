@@ -2397,6 +2397,39 @@ static int context_setup_udp_options(struct net_context *context,
 }
 #endif /* CONFIG_NET_UDP_OPTIONS */
 
+static bool get_msg_src_addr_hint(const struct net_msghdr *msg, net_sa_family_t family,
+				  struct net_in6_addr *src6, struct net_in_addr *src4)
+{
+	struct net_cmsghdr *cmsg;
+
+	if (msg == NULL || msg->msg_control == NULL) {
+		return false;
+	}
+
+	for (cmsg = NET_CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = NET_CMSG_NXTHDR(msg, cmsg)) {
+		if (IS_ENABLED(CONFIG_NET_IPV6) && family == NET_AF_INET6 &&
+		    cmsg->cmsg_level == NET_IPPROTO_IPV6 && cmsg->cmsg_type == ZSOCK_IPV6_PKTINFO &&
+		    cmsg->cmsg_len == NET_CMSG_LEN(sizeof(struct net_in6_pktinfo))) {
+			struct net_in6_pktinfo *info =
+				(struct net_in6_pktinfo *)NET_CMSG_DATA(cmsg);
+
+			*src6 = info->ipi6_addr;
+			return true;
+		}
+
+		if (IS_ENABLED(CONFIG_NET_IPV4) && family == NET_AF_INET &&
+		    cmsg->cmsg_level == NET_IPPROTO_IP && cmsg->cmsg_type == ZSOCK_IP_PKTINFO &&
+		    cmsg->cmsg_len == NET_CMSG_LEN(sizeof(struct net_in_pktinfo))) {
+			struct net_in_pktinfo *info = (struct net_in_pktinfo *)NET_CMSG_DATA(cmsg);
+
+			*src4 = info->ipi_spec_dst;
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static int context_setup_udp_packet(struct net_context *context,
 				    net_sa_family_t family,
 				    struct net_pkt *pkt,
@@ -2409,20 +2442,37 @@ static int context_setup_udp_packet(struct net_context *context,
 {
 	int ret = -EINVAL;
 	uint16_t dst_port = 0U;
+	struct net_in6_addr src6;
+	struct net_in_addr src4;
+	bool have_src = get_msg_src_addr_hint(msg, family, &src6, &src4);
 
 	if (IS_ENABLED(CONFIG_NET_IPV6) && family == NET_AF_INET6) {
 		struct net_sockaddr_in6 *addr6 = (struct net_sockaddr_in6 *)dst_addr;
 
 		dst_port = addr6->sin6_port;
 
-		ret = context_create_ipv6_new(context, pkt, NULL,
+		/* Only honor the hint if the address is still owned by this
+		 * packet's interface; otherwise fall back to normal source
+		 * selection, e.g. if it was removed by a rebind in the meantime.
+		 */
+		if (have_src &&
+		    net_if_ipv6_addr_lookup_by_iface(net_pkt_iface(pkt), &src6) == NULL) {
+			have_src = false;
+		}
+
+		ret = context_create_ipv6_new(context, pkt, have_src ? &src6 : NULL,
 					      &addr6->sin6_addr, dont_fragment);
 	} else if (IS_ENABLED(CONFIG_NET_IPV4) && family == NET_AF_INET) {
 		struct net_sockaddr_in *addr4 = (struct net_sockaddr_in *)dst_addr;
 
 		dst_port = addr4->sin_port;
 
-		ret = context_create_ipv4_new(context, pkt, NULL,
+		if (have_src &&
+		    net_if_ipv4_addr_lookup_by_iface(net_pkt_iface(pkt), &src4) == NULL) {
+			have_src = false;
+		}
+
+		ret = context_create_ipv4_new(context, pkt, have_src ? &src4 : NULL,
 					      &addr4->sin_addr, dont_fragment);
 	}
 
@@ -2491,9 +2541,14 @@ static int context_setup_raw_ip_packet(net_sa_family_t family,
 			return -ENOBUFS;
 		}
 
+		hdr_len = (ipv4_hdr->vhl & 0x0F) * 4;
+		if (hdr_len < sizeof(struct net_ipv4_hdr) ||
+		    hdr_len > net_pkt_get_len(pkt)) {
+			return -EINVAL;
+		}
+
 		net_pkt_set_ip_hdr_len(pkt, sizeof(struct net_ipv4_hdr));
 
-		hdr_len = (ipv4_hdr->vhl & 0x0F) * 4;
 		if (hdr_len > sizeof(struct net_ipv4_hdr)) {
 			net_pkt_set_ipv4_opts_len(
 				pkt, hdr_len - sizeof(struct net_ipv4_hdr));
@@ -3920,6 +3975,7 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 					     void *user_data)
 {
 	struct net_context *context = find_context(conn);
+	net_context_recv_cb_t recv_cb;
 	enum net_verdict verdict = NET_DROP;
 
 	NET_ASSERT(context);
@@ -3930,9 +3986,6 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 	net_context_set_iface(context, net_pkt_iface(pkt));
 	net_pkt_set_context(pkt, context);
 
-	/* If there is no callback registered, then we can only drop
-	 * the packet.
-	 */
 	if (!context_allow_udp_options(context, pkt)) {
 		goto unlock;
 	}
@@ -3944,7 +3997,14 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 	}
 #endif /* CONFIG_NET_UDP_OPTIONS_DPLPMTUD */
 
-	if (!context->recv_cb) {
+	/* If there is no callback registered, then we can only drop
+	 * the packet.
+	 *
+	 * Snapshot the callback while holding the context lock. Another thread
+	 * may disable receiving immediately after the unlock below.
+	 */
+	recv_cb = context->recv_cb;
+	if (!recv_cb) {
 		goto unlock;
 	}
 
@@ -3959,7 +4019,7 @@ enum net_verdict net_context_packet_received(struct net_conn *conn,
 
 	k_mutex_unlock(&context->lock);
 
-	context->recv_cb(context, pkt, ip_hdr, proto_hdr, 0, user_data);
+	recv_cb(context, pkt, ip_hdr, proto_hdr, 0, user_data);
 
 	verdict = NET_OK;
 

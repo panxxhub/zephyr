@@ -58,8 +58,9 @@ MODEM_CHAT_SCRIPT_CMDS_DEFINE(
 	MODEM_CHAT_SCRIPT_CMD_RESP_MULT("AT+CGMI", cgmi_match),
 	MODEM_CHAT_SCRIPT_CMD_RESP_MULT("AT+CGMR", cgmr_match),
 	MODEM_CHAT_SCRIPT_CMD_RESP_MULT("AT+CIMI", cimi_match),
-	MODEM_CHAT_SCRIPT_CMD_RESP("AT+CMUX=0,0," QUECTEL_BG770_CMUX_PORT_SPEED ",127",
-						   ok_match));
+	MODEM_CHAT_SCRIPT_CMD_RESP("AT+CMUX=0,0," QUECTEL_BG770_CMUX_PORT_SPEED
+				   "," STRINGIFY(CONFIG_MODEM_CMUX_MTU),
+				   ok_match));
 
 MODEM_CHAT_SCRIPT_DEFINE(quectel_bg770_init_chat_script, quectel_bg770_init_chat_script_cmds,
 			 abort_matches, modem_cellular_chat_callback_handler, 10);
@@ -68,7 +69,9 @@ MODEM_CHAT_SCRIPT_CMDS_DEFINE(quectel_bg770_dial_chat_script_cmds,
 			      MODEM_CHAT_SCRIPT_CMD_RESP("AT+CGATT?", ok_match),
 			      MODEM_CHAT_SCRIPT_CMD_RESP("AT+QCFGEXT=\"pppmapping/subprofile\",0",
 							 ok_match),
-			      MODEM_CHAT_SCRIPT_CMD_RESP("ATD*99***1#", connect_match));
+			      MODEM_CHAT_SCRIPT_CMD_RESP(
+				"ATD*99***" STRINGIFY(CONFIG_MODEM_CELLULAR_PDP_CONTEXT_ID) "#",
+				connect_match));
 
 MODEM_CHAT_SCRIPT_DEFINE(quectel_bg770_dial_chat_script, quectel_bg770_dial_chat_script_cmds,
 			 dial_abort_matches, modem_cellular_chat_callback_handler, 10);
@@ -121,6 +124,6 @@ static const struct modem_cellular_vendor_config quectel_bg770_vendor = {
                                                                                                    \
 	MODEM_CELLULAR_DEFINE_AND_INIT_USER_PIPES(inst, (user_pipe_0, 3), (user_pipe_1, 4))        \
                                                                                                    \
-	MODEM_CELLULAR_DEFINE_INSTANCE(inst, &quectel_bg770_vendor)
+	MODEM_CELLULAR_DEFINE_INSTANCE(inst, &quectel_bg770_vendor, NULL)
 
 DT_INST_FOREACH_STATUS_OKAY(MODEM_CELLULAR_DEVICE_QUECTEL_BG770)

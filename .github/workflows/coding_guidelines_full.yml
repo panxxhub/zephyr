@@ -16,7 +16,7 @@ jobs:
       group: zephyr-runner-v2-linux-x64-4xlarge
     timeout-minutes: 300
     container:
-      image: ghcr.io/zephyrproject-rtos/ci-repo-cache:v0.29.3.20260727
+      image: ghcr.io/zephyrproject-rtos/ci-repo-cache:v0.29.4.20260912
       options: '--entrypoint /bin/bash'
     permissions:
       contents: read
@@ -56,7 +56,7 @@ jobs:
           run-checks: 'true'
 
       - name: SCA Setup
-        uses: zephyrproject-rtos/action-sca-setup@681d9f46f28d391eb57e6f15fdb76af25d6c46bc
+        uses: zephyrproject-rtos/action-sca-setup@22eaf0d78b8b47d9935e3f29c7665f4a7ee0f149 # main
         with:
           tool-name: eclair
           tool-version: 3.15.0
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload SARIF as artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sarif
           if-no-files-found: ignore

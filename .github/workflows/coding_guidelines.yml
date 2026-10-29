@@ -31,16 +31,15 @@ jobs:
         comparison_base="origin/${BASE_REF}"
         if [ "${{ github.repository }}" != "zephyrproject-rtos/zephyr" ]; then
           comparison_base="${BASE_SHA}"
-          import_merge=$(git rev-list --reverse --first-parent --merges \
-            "${BASE_SHA}..HEAD" | head -n 1)
-          if [ -n "${import_merge}" ]; then
-            imported_commits=$(git rev-list --count \
-              "${BASE_SHA}..${import_merge}^2")
+          for import_merge in $(git rev-list --reverse --first-parent --merges \
+            "${BASE_SHA}..HEAD"); do
+            imported_commits=$(git rev-list --count "${BASE_SHA}..${import_merge}^2")
             if [ "${imported_commits}" -ge 100 ]; then
               comparison_base="${import_merge}"
               echo "Detected an import of ${imported_commits} commits"
+              break
             fi
-          fi
+          done
         fi
 
         echo "range=${comparison_base}.." >> "${GITHUB_OUTPUT}"

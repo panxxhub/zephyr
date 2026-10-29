@@ -27,23 +27,23 @@ jobs:
         BASE_REF: ${{ github.base_ref }}
         BASE_SHA: ${{ github.event.pull_request.base.sha }}
       run: |
-        import_merge=$(git rev-list --reverse --first-parent --merges \
-          "${BASE_SHA}..HEAD" | head -n 1)
-        if [ -n "${import_merge}" ]; then
+        for import_merge in $(git rev-list --reverse --first-parent --merges \
+          "${BASE_SHA}..HEAD"); do
           imported_commits=$(git rev-list --count \
             "${BASE_SHA}..${import_merge}^2")
           if [ "${imported_commits}" -ge 100 ]; then
             git update-ref "refs/remotes/origin/${BASE_REF}" "${import_merge}"
             echo "Scanning files added after an import of ${imported_commits} commits"
+            break
           fi
-        fi
+        done
     - name: Scan the code
       id: scancode
       uses: zephyrproject-rtos/action_scancode@23ef91ce31cd4b954366a7b71eea47520da9b380 # v4
       with:
         directory-to-scan: 'scan/'
     - name: Artifact Upload
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: scancode
         path: ./artifacts

@@ -28,6 +28,7 @@ LOG_MODULE_REGISTER(net_test, NET_LOG_LEVEL);
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_log.h>
 #include <zephyr/net/ppp.h>
+#include <zephyr/sys/byteorder.h>
 
 #define NET_LOG_ENABLED 1
 #include "net_private.h"
@@ -41,6 +42,7 @@ typedef enum net_verdict (*ppp_l2_callback_t)(struct net_if *iface,
 					      struct net_pkt *pkt);
 void ppp_l2_register_pkt_cb(ppp_l2_callback_t cb); /* found in ppp_l2.c */
 void ppp_driver_feed_data(uint8_t *data, int data_len);
+void ppp_driver_register_send_cb(void (*cb)(struct net_pkt *pkt));
 
 static struct net_if *net_iface;
 
@@ -898,6 +900,343 @@ ZTEST(net_ppp_test_suite, test_net_ppp)
 	test_send_ppp_6();
 	test_send_ppp_7();
 	test_send_ppp_8();
+}
+
+#define TX_FRAME_COUNT 8
+#define TX_FRAME_LEN 64
+
+struct tx_frame {
+	uint16_t protocol;
+	uint8_t data[TX_FRAME_LEN];
+	size_t len;
+};
+
+static struct tx_frame tx_frames[TX_FRAME_COUNT];
+static int tx_frame_count;
+static bool tx_capture;
+
+static void ppp_tx_cb(struct net_pkt *pkt)
+{
+	uint8_t buf[sizeof(uint16_t) + TX_FRAME_LEN];
+	struct tx_frame *frame;
+	size_t len;
+
+	if (!tx_capture || tx_frame_count >= TX_FRAME_COUNT) {
+		return;
+	}
+
+	len = net_pkt_get_len(pkt);
+	if (len <= sizeof(uint16_t) || len > sizeof(buf)) {
+		return;
+	}
+
+	net_pkt_cursor_init(pkt);
+
+	if (net_pkt_read(pkt, buf, len) < 0) {
+		return;
+	}
+
+	net_pkt_cursor_init(pkt);
+
+	frame = &tx_frames[tx_frame_count++];
+	frame->protocol = sys_get_be16(buf);
+	frame->len = len - sizeof(uint16_t);
+	memcpy(frame->data, &buf[sizeof(uint16_t)], frame->len);
+}
+
+/* code 0 matches any code of the given protocol */
+static int tx_frames_count(uint16_t protocol, uint8_t code)
+{
+	int count = 0;
+
+	for (int i = 0; i < tx_frame_count; i++) {
+		if (tx_frames[i].protocol != protocol) {
+			continue;
+		}
+
+		if (code == 0U || tx_frames[i].data[0] == code) {
+			count++;
+		}
+	}
+
+	return count;
+}
+
+static struct tx_frame *tx_frames_get(uint16_t protocol, uint8_t code)
+{
+	for (int i = 0; i < tx_frame_count; i++) {
+		if (tx_frames[i].protocol == protocol &&
+		    tx_frames[i].data[0] == code) {
+			return &tx_frames[i];
+		}
+	}
+
+	return NULL;
+}
+
+static void feed_ppp_frame(const uint8_t *data, size_t len)
+{
+	uint8_t frame[TX_FRAME_LEN * 2];
+	uint8_t encoded[sizeof(frame) * 2 + 2];
+	size_t frame_len = 0;
+	size_t encoded_len = 0;
+	uint16_t fcs;
+
+	zassert_true(len + 4U <= sizeof(frame), "Frame too long");
+
+	frame[frame_len++] = 0xff;
+	frame[frame_len++] = 0x03;
+	memcpy(&frame[frame_len], data, len);
+	frame_len += len;
+
+	fcs = crc16_ccitt(0xffff, frame, frame_len) ^ 0xffff;
+	frame[frame_len++] = fcs & 0xff;
+	frame[frame_len++] = fcs >> 8;
+
+	encoded[encoded_len++] = 0x7e;
+
+	for (size_t i = 0; i < frame_len; i++) {
+		uint8_t byte = frame[i];
+
+		if (byte == 0x7e || byte == 0x7d || byte < 0x20) {
+			encoded[encoded_len++] = 0x7d;
+			encoded[encoded_len++] = byte ^ 0x20;
+		} else {
+			encoded[encoded_len++] = byte;
+		}
+	}
+
+	encoded[encoded_len++] = 0x7e;
+
+	ppp_driver_feed_data(encoded, encoded_len);
+}
+
+/* RFC 1661 chapter 5.7: Protocol-Reject must stop the protocol, not get a Code-Reject */
+ZTEST(net_ppp_test_suite, test_net_ppp_protocol_reject)
+{
+	struct tx_frame *ipv6cp_req;
+	struct ppp_context *ctx;
+	uint8_t rej[TX_FRAME_LEN];
+	size_t rej_len = 0;
+	uint16_t length;
+
+	net_iface = net_if_get_first_by_type(&NET_L2_GET_NAME(PPP));
+	zassert_not_null(net_iface, "PPP interface not found!");
+
+	ppp_l2_register_pkt_cb(NULL);
+	ppp_driver_register_send_cb(ppp_tx_cb);
+
+	ctx = net_if_l2_data(net_iface);
+
+	(void)net_if_up(net_iface);
+
+	tx_frame_count = 0;
+	tx_capture = true;
+
+	/* no peer here, so fake LCP Opened to let the NCPs start negotiating */
+	ppp_change_state(&ctx->lcp.fsm, PPP_OPENED);
+	ppp_link_established(ctx, &ctx->lcp.fsm);
+
+	k_sleep(K_MSEC(WAIT_TIME));
+
+	tx_capture = false;
+
+	ipv6cp_req = tx_frames_get(PPP_IPV6CP, PPP_CONFIGURE_REQ);
+	zassert_not_null(ipv6cp_req, "No IPV6CP Configure-Req sent");
+	zassert_true(tx_frames_count(PPP_IPCP, PPP_CONFIGURE_REQ) > 0,
+		     "No IPCP Configure-Req sent");
+
+	/* build a Protocol-Reject of IPV6CP, echoing back its Configure-Req */
+	length = 4U + sizeof(uint16_t) + ipv6cp_req->len;
+
+	sys_put_be16(PPP_LCP, &rej[rej_len]);
+	rej_len += sizeof(uint16_t);
+	rej[rej_len++] = PPP_PROTOCOL_REJ;
+	rej[rej_len++] = 0x42;
+	sys_put_be16(length, &rej[rej_len]);
+	rej_len += sizeof(uint16_t);
+	sys_put_be16(PPP_IPV6CP, &rej[rej_len]);
+	rej_len += sizeof(uint16_t);
+	memcpy(&rej[rej_len], ipv6cp_req->data, ipv6cp_req->len);
+	rej_len += ipv6cp_req->len;
+
+	tx_frame_count = 0;
+	tx_capture = true;
+
+	feed_ppp_frame(rej, rej_len);
+
+	/* longer than the FSM restart timer, so a retransmission would show up */
+	k_sleep(K_MSEC(CONFIG_NET_L2_PPP_TIMEOUT + WAIT_TIME));
+
+	tx_capture = false;
+
+	ppp_driver_register_send_cb(NULL);
+	ppp_l2_register_pkt_cb(ppp_l2_recv);
+
+	zexpect_equal(tx_frames_count(PPP_LCP, PPP_CODE_REJ), 0,
+		      "Code-Reject sent for a valid Protocol-Reject");
+	zexpect_equal(tx_frames_count(PPP_IPV6CP, 0), 0,
+		      "IPV6CP packet sent after Protocol-Reject");
+	zexpect_equal(ctx->ipv6cp.fsm.state, PPP_STARTING,
+		      "IPV6CP in state %d", ctx->ipv6cp.fsm.state);
+	zexpect_true(tx_frames_count(PPP_IPCP, PPP_CONFIGURE_REQ) > 0,
+		     "IPCP negotiation stopped after Protocol-Reject");
+}
+
+static int phase_dead_events;
+static struct net_mgmt_event_callback phase_dead_cb;
+static bool phase_dead_cb_added;
+
+static void phase_dead_handler(struct net_mgmt_event_callback *cb, uint64_t mgmt_event,
+			       struct net_if *iface)
+{
+	if (mgmt_event == NET_EVENT_PPP_PHASE_DEAD) {
+		phase_dead_events++;
+	}
+}
+
+/* Bring the interface up and fake LCP Opened, the way
+ * test_net_ppp_protocol_reject() does, so that the NCPs start
+ * negotiating. If ipcp_up is true, also fake IPCP fully negotiated
+ * (skipping the actual Configure-Ack round-trip), so that the PPP
+ * phase reaches RUNNING like it would with an established peer.
+ */
+static struct ppp_context *lcp_test_setup(bool ipcp_up)
+{
+	struct ppp_context *ctx;
+
+	net_iface = net_if_get_first_by_type(&NET_L2_GET_NAME(PPP));
+	zassert_not_null(net_iface, "PPP interface not found!");
+
+	ppp_l2_register_pkt_cb(NULL);
+	ppp_driver_register_send_cb(ppp_tx_cb);
+
+	if (!phase_dead_cb_added) {
+		net_mgmt_init_event_callback(&phase_dead_cb, phase_dead_handler,
+					     NET_EVENT_PPP_PHASE_DEAD);
+		net_mgmt_add_event_callback(&phase_dead_cb);
+		phase_dead_cb_added = true;
+	}
+
+	ctx = net_if_l2_data(net_iface);
+
+	(void)net_if_up(net_iface);
+	k_sleep(K_MSEC(WAIT_TIME));
+
+	ppp_change_state(&ctx->lcp.fsm, PPP_OPENED);
+	ppp_link_established(ctx, &ctx->lcp.fsm);
+	k_sleep(K_MSEC(WAIT_TIME));
+
+	if (ipcp_up) {
+		ppp_change_state(&ctx->ipcp.fsm, PPP_OPENED);
+		ctx->is_ipcp_up = true;
+		ppp_network_up(ctx, PPP_IP);
+		zassert_equal(ctx->phase, PPP_RUNNING,
+			      "Phase %d, expected RUNNING", ctx->phase);
+	} else {
+		zassert_equal(ctx->phase, PPP_NETWORK,
+			      "Phase %d, expected NETWORK", ctx->phase);
+	}
+
+	phase_dead_events = 0;
+	tx_frame_count = 0;
+	tx_capture = true;
+
+	return ctx;
+}
+
+static void lcp_test_teardown(void)
+{
+	tx_capture = false;
+	ppp_driver_register_send_cb(NULL);
+	ppp_l2_register_pkt_cb(ppp_l2_recv);
+}
+
+/* RFC 1661 chapter 4.2: a Terminate-Request in Opened brings the link down
+ * for good, the PPP phase must go DEAD exactly once and LCP must be
+ * restartable from STOPPED afterwards.
+ */
+ZTEST(net_ppp_test_suite, test_lcp_terminate_req_reports_dead)
+{
+	static const uint8_t term_req[] = { 0xc0, 0x21, PPP_TERMINATE_REQ, 0x33, 0x00, 0x04 };
+	struct ppp_context *ctx = lcp_test_setup(true);
+
+	feed_ppp_frame(term_req, sizeof(term_req));
+	k_sleep(K_MSEC(WAIT_TIME));
+
+	zexpect_equal(tx_frames_count(PPP_LCP, PPP_TERMINATE_ACK), 1,
+		      "Terminate-Request was not acknowledged");
+	zexpect_equal(ctx->phase, PPP_DEAD,
+		      "Phase %d after Terminate-Request, expected DEAD", ctx->phase);
+	zexpect_equal(phase_dead_events, 1,
+		      "%d PHASE_DEAD events, expected 1", phase_dead_events);
+
+	/* The STOPPING state times out into STOPPED without a second event */
+	k_sleep(K_MSEC(CONFIG_NET_L2_PPP_TIMEOUT + WAIT_TIME));
+
+	zexpect_equal(ctx->lcp.fsm.state, PPP_STOPPED,
+		      "LCP in state %d, expected STOPPED", ctx->lcp.fsm.state);
+	zexpect_equal(phase_dead_events, 1,
+		      "%d PHASE_DEAD events after timeout, expected 1", phase_dead_events);
+
+	/* Bringing the interface back must restart LCP from STOPPED */
+	tx_frame_count = 0;
+	net_if_down(net_iface);
+	k_sleep(K_MSEC(WAIT_TIME));
+	net_if_up(net_iface);
+	k_sleep(K_MSEC(WAIT_TIME));
+
+	zexpect_equal(ctx->lcp.fsm.state, PPP_REQUEST_SENT,
+		      "LCP in state %d after interface up, expected REQUEST_SENT",
+		      ctx->lcp.fsm.state);
+	zexpect_true(tx_frames_count(PPP_LCP, PPP_CONFIGURE_REQ) > 0,
+		     "No Configure-Request after the interface came back up");
+
+	lcp_test_teardown();
+}
+
+/* RFC 1661 chapter 4.2: a Terminate-Request must bring the phase to DEAD
+ * even if no NCP ever came up, and it must do so immediately rather than
+ * only after the STOPPING timeout.
+ */
+ZTEST(net_ppp_test_suite, test_lcp_terminate_req_no_ncp_reports_dead)
+{
+	static const uint8_t term_req[] = { 0xc0, 0x21, PPP_TERMINATE_REQ, 0x35, 0x00, 0x04 };
+	struct ppp_context *ctx = lcp_test_setup(false);
+
+	feed_ppp_frame(term_req, sizeof(term_req));
+	k_sleep(K_MSEC(WAIT_TIME));
+
+	zexpect_equal(ctx->phase, PPP_DEAD,
+		      "Phase %d right after Terminate-Request, expected DEAD", ctx->phase);
+	zexpect_equal(phase_dead_events, 1,
+		      "%d PHASE_DEAD events, expected 1", phase_dead_events);
+
+	lcp_test_teardown();
+}
+
+/* RFC 1661 chapter 4.1 (RCR) and chapter 3.4: a Configure-Request in Opened
+ * renegotiates the link and returns to the Link Establishment phase, it
+ * does not terminate it, so the PPP phase must not pass through DEAD.
+ */
+ZTEST(net_ppp_test_suite, test_lcp_renegotiation_keeps_link)
+{
+	static const uint8_t conf_req[] = { 0xc0, 0x21, PPP_CONFIGURE_REQ, 0x34, 0x00, 0x04 };
+	struct ppp_context *ctx = lcp_test_setup(true);
+
+	feed_ppp_frame(conf_req, sizeof(conf_req));
+	k_sleep(K_MSEC(WAIT_TIME));
+
+	zexpect_equal(tx_frames_count(PPP_LCP, PPP_CONFIGURE_ACK), 1,
+		      "Configure-Request was not acknowledged");
+	zexpect_equal(ctx->lcp.fsm.state, PPP_ACK_SENT,
+		      "LCP in state %d, expected ACK_SENT", ctx->lcp.fsm.state);
+	zexpect_equal(ctx->phase, PPP_ESTABLISH,
+		      "Phase %d during renegotiation, expected ESTABLISH", ctx->phase);
+	zexpect_equal(phase_dead_events, 0,
+		      "%d PHASE_DEAD events during renegotiation", phase_dead_events);
+
+	lcp_test_teardown();
 }
 
 ZTEST_SUITE(net_ppp_test_suite, NULL, NULL, NULL, NULL, NULL);

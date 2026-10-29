@@ -17,6 +17,10 @@ config SOC_ESP32_WIFI_HE_SUPPORT
 	bool
 	default y
 
+config SOC_ESP32_WIFI_SUPPORT_5G
+	bool
+	default y
+
 config SOC_ESP32_PM_SUPPORT_TOP_PD
 	bool
 	default y
@@ -34,6 +38,10 @@ config SOC_ESP32_FLASH_SUPPORTED
 	default y
 
 config SOC_ESP32_PM_SUPPORT_VDDSDIO_PD
+	bool
+	default y
+
+config SOC_ESP32_PM_FLASH_KEEP_POWER_IN_LSLP
 	bool
 	default y
 

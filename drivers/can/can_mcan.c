@@ -475,8 +475,6 @@ static void can_mcan_state_change_handler(const struct device *dev)
 {
 	const struct can_mcan_config *config = dev->config;
 	struct can_mcan_data *data = dev->data;
-	const can_state_change_callback_t state_cb = data->common.state_change_cb;
-	void *state_cb_data = data->common.state_change_cb_user_data;
 	const struct can_mcan_callbacks *cbs = config->callbacks;
 	can_tx_callback_t tx_cb;
 	struct can_bus_err_cnt err_cnt;
@@ -489,9 +487,7 @@ static void can_mcan_state_change_handler(const struct device *dev)
 		return;
 	}
 
-	if (state_cb != NULL) {
-		state_cb(dev, state, err_cnt, state_cb_data);
-	}
+	can_fire_state_change_callbacks(dev, state, err_cnt);
 
 	if (state == CAN_STATE_BUS_OFF) {
 		/* Request all TX buffers to be cancelled */
@@ -572,12 +568,16 @@ static void can_mcan_tx_event_handler(const struct device *dev)
 
 		__ASSERT_NO_MSG(tx_idx < cbs->num_tx);
 		tx_cb = cbs->tx[tx_idx].function;
-		user_data = cbs->tx[tx_idx].user_data;
-		cbs->tx[tx_idx].function = NULL;
 
-		k_sem_give(&data->tx_sem);
+		/* The bus-off handler may already have completed this Tx Buffer */
+		if (tx_cb != NULL) {
+			user_data = cbs->tx[tx_idx].user_data;
+			cbs->tx[tx_idx].function = NULL;
 
-		tx_cb(dev, 0, user_data);
+			k_sem_give(&data->tx_sem);
+
+			tx_cb(dev, 0, user_data);
+		}
 
 		err = can_mcan_read_reg(dev, CAN_MCAN_TXEFS, &txefs);
 		if (err != 0) {
@@ -1257,15 +1257,6 @@ void can_mcan_remove_rx_filter(const struct device *dev, int filter_id)
 	}
 
 	k_mutex_unlock(&data->lock);
-}
-
-void can_mcan_set_state_change_callback(const struct device *dev,
-					can_state_change_callback_t callback, void *user_data)
-{
-	struct can_mcan_data *data = dev->data;
-
-	data->common.state_change_cb = callback;
-	data->common.state_change_cb_user_data = user_data;
 }
 
 /* helper function allowing mcan drivers without access to private mcan

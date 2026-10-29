@@ -35,7 +35,7 @@ def macros(source):
     )
 
 
-def compile_run(source, name, cases, reverse=False, companions=(), failure_assert=None):
+def compile_run(source, name, cases, reverse=False, companions=(), failure_assert=None, cflags=()):
     path = BUILD / f'{name}.c'
     exe = BUILD / name
     path.write_text(source)
@@ -43,6 +43,7 @@ def compile_run(source, name, cases, reverse=False, companions=(), failure_asser
         [
             os.environ.get('CC', 'cc'),
             '-std=c11',
+            *cflags,
             '-g',
             '-O1',
             '-fno-pie',
@@ -139,6 +140,12 @@ def without_optin(source, header):
     recovery path or the send function that is not declared there. The patch
     is reviewed as a diff; the hashes guarantee it is the whole of it.
     """
+    # Reverse the separately reviewed upstream pointer-width conversions
+    # before checking the historical baseline. Actual opt-in functions below
+    # still compile and execute with these conversions present.
+    source = unapply(
+        source, (HERE / 'upstream-compat.patch').read_text(), 'drivers/ethernet/eth_xlnx_gem.c'
+    )
     patch = (HERE / 'optin.patch').read_text()
     return (
         unapply(source, patch, 'drivers/ethernet/eth_xlnx_gem.c'),
@@ -776,12 +783,16 @@ def coap_log():
     # dispatch is outside this malformed-datagram test's scope.
     process = function(server, 'coap_server_process')
     end = process.index('\n\t/* RFC 7252 Section 5.4.1:')
-    host = host.replace('/* SERVER REJECTION PATH */', process[:end] + '\n\treturn 0;\n}')
-    compile_run(host, 'coap_slow_log', [12])
+    host = host.replace(
+        '/* SERVER REJECTION PATH */',
+        process[:end] + '\n\t(void)client_addr_len;\n\t(void)service;\n\treturn 0;\n}',
+    )
+    compile_run(host, 'coap_slow_log', [12], cflags=['-D_GNU_SOURCE'])
     compile_run(
         re.sub(r'(#define TEST_DEBUG_LOGGING\s+)0', r'\g<1>1', host),
         'coap_slow_log_debug',
         [12],
+        cflags=['-D_GNU_SOURCE'],
     )
     for name, old, new in [
         (
@@ -795,7 +806,13 @@ def coap_log():
             'NET_ERR("%u is > sizeof(coap_option',
         ),
     ]:
-        compile_run(mutation(host, old, new), f'coap_reverse_{name}_log', [12], reverse=True)
+        compile_run(
+            mutation(host, old, new),
+            f'coap_reverse_{name}_log',
+            [12],
+            reverse=True,
+            cflags=['-D_GNU_SOURCE'],
+        )
 
 
 if __name__ == '__main__':

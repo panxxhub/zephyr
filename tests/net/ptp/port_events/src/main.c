@@ -52,6 +52,7 @@ static int management_process_calls;
 static int timestamp_register_calls;
 static int timestamp_unregister_calls;
 static int clock_sync_calls;
+static int8_t last_sync_log_interval;
 static int clock_sync_with_delay_calls;
 static int clock_delay_calls;
 static int clock_pdelay_calls;
@@ -219,6 +220,11 @@ const struct ptp_time_prop_ds *ptp_clock_time_prop_ds(void)
 	return &fake_time_prop_ds;
 }
 
+void ptp_clock_sync_interval_set(int8_t log_sync_interval)
+{
+	last_sync_log_interval = log_sync_interval;
+}
+
 void ptp_clock_synchronize(uint64_t ingress, uint64_t egress, bool ingress_ts_valid)
 {
 	clock_sync_calls++;
@@ -322,16 +328,16 @@ static enum ptp_port_state disabled_state_machine(enum ptp_port_state state,
 	return PTP_PS_DISABLED;
 }
 
-int ptp_tlv_post_recv(struct ptp_tlv *tlv)
+int ptp_tlv_post_recv(struct ptp_tlv **p_tlv)
 {
-	ARG_UNUSED(tlv);
+	ARG_UNUSED(p_tlv);
 
 	return 0;
 }
 
-void ptp_tlv_pre_send(struct ptp_tlv *tlv)
+void ptp_tlv_pre_send(struct ptp_tlv **p_tlv)
 {
-	ARG_UNUSED(tlv);
+	ARG_UNUSED(p_tlv);
 }
 
 enum ptp_mgmt_op ptp_mgmt_action(struct ptp_msg *msg)
@@ -547,6 +553,7 @@ static void reset_fakes(void)
 	timestamp_register_calls = 0;
 	timestamp_unregister_calls = 0;
 	clock_sync_calls = 0;
+	last_sync_log_interval = 0;
 	clock_sync_with_delay_calls = 0;
 	clock_delay_calls = 0;
 	clock_pdelay_calls = 0;
@@ -609,16 +616,45 @@ ZTEST(ptp_port_events, test_event_gen_receive_failure_reports_fault)
 	zassert_equal(msg_unref_calls, 1, "message should be unreferenced");
 }
 
-ZTEST(ptp_port_events, test_event_gen_post_recv_failure_reports_fault)
+ZTEST(ptp_port_events, test_event_gen_empty_datagram_is_discarded)
+{
+	struct ptp_port port;
+
+	init_port(&port, PTP_PS_LISTENING);
+	transport_recv_ret = 0;
+
+	zassert_equal(ptp_port_event_gen(&port, PTP_SOCKET_EVENT), PTP_EVT_NONE,
+		      "empty datagram should not report fault");
+	zassert_equal(msg_unref_calls, 1, "message should be unreferenced");
+}
+
+ZTEST(ptp_port_events, test_event_gen_malformed_message_is_discarded)
+{
+	struct ptp_port port;
+	const int errors[] = {-EBADMSG, -EMSGSIZE};
+
+	for (size_t i = 0; i < ARRAY_SIZE(errors); i++) {
+		reset_fakes();
+		init_port(&port, PTP_PS_LISTENING);
+		init_rx_msg(PTP_MSG_SYNC, 0x10);
+		msg_post_recv_ret = errors[i];
+
+		zassert_equal(ptp_port_event_gen(&port, PTP_SOCKET_EVENT), PTP_EVT_NONE,
+			      "malformed message should not report fault");
+		zassert_equal(msg_unref_calls, 1, "message should be unreferenced");
+	}
+}
+
+ZTEST(ptp_port_events, test_event_gen_unsupported_version_is_discarded)
 {
 	struct ptp_port port;
 
 	init_port(&port, PTP_PS_LISTENING);
 	init_rx_msg(PTP_MSG_SYNC, 0x10);
-	msg_post_recv_ret = -EBADMSG;
+	msg_post_recv_ret = -EPROTONOSUPPORT;
 
-	zassert_equal(ptp_port_event_gen(&port, PTP_SOCKET_EVENT), PTP_EVT_FAULT_DETECTED,
-		      "post-receive failure should report fault");
+	zassert_equal(ptp_port_event_gen(&port, PTP_SOCKET_EVENT), PTP_EVT_NONE,
+		      "unsupported version should not report fault");
 	zassert_equal(msg_unref_calls, 1, "message should be unreferenced");
 }
 
@@ -1062,6 +1098,28 @@ ZTEST(ptp_port_events, test_event_gen_sync_follow_up_pair_synchronizes)
 		      "Follow_Up should not change port event state");
 	zassert_is_null(port.last_sync_fup, "matched Sync/Follow_Up should be consumed");
 	zassert_equal(clock_sync_calls, 1, "clock synchronization not requested");
+	zassert_equal(last_sync_log_interval, -1, "Sync interval not passed to the clock");
+	stop_port_timers(&port);
+}
+
+ZTEST(ptp_port_events, test_time_transmitter_change_resets_sync_interval)
+{
+	struct ptp_port port;
+
+	init_port(&port, PTP_PS_TIME_RECEIVER);
+	port.port_ds.log_sync_interval = -3;
+	/* The reset happens before the state machine, whichever state it picks */
+	port.state_machine = disabled_state_machine;
+
+	/* Same time transmitter: keep the interval learned from its Sync messages */
+	ptp_port_event_handle(&port, PTP_EVT_RS_TIME_RECEIVER, false);
+	zassert_equal(port.port_ds.log_sync_interval, -3,
+		      "interval changed without a new transmitter");
+
+	/* New time transmitter: the learned interval belonged to the previous one */
+	ptp_port_event_handle(&port, PTP_EVT_RS_TIME_RECEIVER, true);
+	zassert_equal(port.port_ds.log_sync_interval, CONFIG_PTP_SYNC_LOG_INTERVAL,
+		      "interval of the previous time transmitter kept");
 	stop_port_timers(&port);
 }
 
@@ -1086,6 +1144,52 @@ ZTEST(ptp_port_events, test_event_gen_sync_without_rx_timestamp_is_dropped)
 		      "Sync without RX timestamp should not synchronize with P2P delay");
 	zassert_is_null(port.last_sync_fup, "dropped Sync should not wait for Follow_Up");
 	stop_port_timers(&port);
+}
+
+static int8_t sync_interval_result(uint8_t flags, int8_t log_msg_interval)
+{
+	struct ptp_port port;
+
+	init_port(&port, PTP_PS_TIME_RECEIVER);
+	init_rx_msg(PTP_MSG_SYNC, 0x62);
+	scripted_rx_msg.header.sequence_id = 13;
+	scripted_rx_msg.header.flags[0] = flags;
+	scripted_rx_msg.header.log_msg_interval = log_msg_interval;
+	scripted_rx_msg.rx_timestamp_valid = false;
+	fake_parent_ds.port_id = scripted_rx_msg.header.src_port_id;
+
+	zassert_equal(ptp_port_event_gen(&port, PTP_SOCKET_EVENT), PTP_EVT_NONE,
+		      "Sync should not change port event state");
+
+	stop_port_timers(&port);
+
+	return port.port_ds.log_sync_interval;
+}
+
+ZTEST(ptp_port_events, test_event_gen_sync_updates_interval)
+{
+	zassert_equal(sync_interval_result(0, -3), -3,
+		      "interval advertised in a Sync should be adopted");
+}
+
+ZTEST(ptp_port_events, test_event_gen_sync_ignores_not_applicable_interval)
+{
+	zassert_equal(sync_interval_result(0, 0x7F), 0,
+		      "0x7F marks the interval as not applicable and must not be adopted");
+}
+
+ZTEST(ptp_port_events, test_event_gen_sync_ignores_bogus_interval)
+{
+	zassert_equal(sync_interval_result(0, 23), 0,
+		      "out of range sync interval must be ignored");
+	zassert_equal(sync_interval_result(0, -11), 0,
+		      "out of range sync interval must be ignored");
+}
+
+ZTEST(ptp_port_events, test_event_gen_sync_ignores_unicast_interval)
+{
+	zassert_equal(sync_interval_result(PTP_MSG_UNICAST_FLAG, -3), 0,
+		      "interval of a unicast Sync must be ignored");
 }
 
 ZTEST(ptp_port_events, test_event_gen_follow_up_first_bad_sync_clears_pair)

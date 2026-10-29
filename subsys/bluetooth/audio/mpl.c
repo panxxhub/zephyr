@@ -90,7 +90,7 @@ static struct mpl_track track_2_5;
 
 /* Tracks */
 static struct mpl_track track_1_1 = {
-	.title	     = "Track 1.1",
+	.title	     = "Track 1.1 with a very long name",
 	.duration    = 30000,
 	.segment     = &seg_1,
 	.prev	     = NULL,
@@ -98,7 +98,7 @@ static struct mpl_track track_1_1 = {
 };
 
 static struct mpl_track track_1_2 = {
-	.title	     = "Track 1.2",
+	.title	     = "Track 1.2 with a very long name",
 	.duration    = 30000,
 	.segment     = &seg_1,
 	.prev	     = &track_1_1,
@@ -106,7 +106,7 @@ static struct mpl_track track_1_2 = {
 };
 
 static struct mpl_track track_1_3 = {
-	.title	     = "Track 1.3",
+	.title	     = "Track 1.3 with a very long name",
 	.duration    = 30000,
 	.segment     = &seg_1,
 	.prev	     = &track_1_2,
@@ -1947,6 +1947,21 @@ static const char *get_player_name(void)
 	return media_player.name;
 }
 
+static void set_player_name(const char *name)
+{
+	size_t len = strlen(name);
+
+	if (len >= sizeof(media_player.name)) {
+		LOG_DBG("Media Player Name is too long: %zu", len);
+		return;
+	}
+
+	if (strcmp(media_player.name, name) != 0) {
+		(void)memcpy(media_player.name, name, len + 1U);
+		media_proxy_pl_name_cb(media_player.name);
+	}
+}
+
 #ifdef CONFIG_BT_MPL_OBJECTS
 static uint64_t get_icon_id(void)
 {
@@ -2382,9 +2397,9 @@ static uint8_t get_content_ctrl_id(void)
 	return media_player.content_ctrl_id;
 }
 
-/** Calculates the new relative position depending on the sate and seeking/playing speed factor
+/** Calculates the new relative position depending on the state and seeking/playing speed factor
  *
- * @return New relative postion in centiseconds (may be negative)
+ * @return New relative position in centiseconds (may be negative)
  */
 static int32_t get_pos_diff_cs(void)
 {
@@ -2508,6 +2523,7 @@ int media_proxy_pl_init(void)
 
 	/* Set up the calls structure */
 	media_player.calls.get_player_name              = get_player_name;
+	media_player.calls.set_player_name              = set_player_name;
 #ifdef CONFIG_BT_MPL_OBJECTS
 	media_player.calls.get_icon_id                  = get_icon_id;
 #endif /* CONFIG_BT_MPL_OBJECTS */

@@ -9,6 +9,36 @@
 #include <stdatomic.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <sys/uio.h>
+
+#define net_sockaddr_storage           sockaddr_storage
+#define net_sockaddr_in                sockaddr_in
+#define net_sockaddr_in6               sockaddr_in6
+#define net_cmsghdr                    cmsghdr
+#define net_msghdr                     msghdr
+#define net_iovec                      iovec
+#define net_in_pktinfo                 in_pktinfo
+#define net_in6_pktinfo                in6_pktinfo
+#define NET_CMSG_SPACE                 CMSG_SPACE
+#define NET_CMSG_LEN                   CMSG_LEN
+#define NET_CMSG_DATA                  CMSG_DATA
+#define NET_CMSG_FIRSTHDR              CMSG_FIRSTHDR
+#define NET_CMSG_NXTHDR                CMSG_NXTHDR
+#define NET_IPPROTO_IP                 IPPROTO_IP
+#define NET_IPPROTO_IPV6               IPPROTO_IPV6
+#define NET_AF_INET                    AF_INET
+#define NET_AF_INET6                   AF_INET6
+#define ZSOCK_IP_PKTINFO               IP_PKTINFO
+#define ZSOCK_IPV6_PKTINFO             IPV6_PKTINFO
+#define CONFIG_NET_IPV4                1
+#define CONFIG_NET_IPV6                1
+#define net_ipv6_is_addr_mcast         IN6_IS_ADDR_MULTICAST
+#define net_ipv4_is_addr_mcast(addr)   IN_MULTICAST(ntohl((addr)->s_addr))
+#define K_FOREVER                      (-1)
+#define COAP_CODE_EMPTY                0
+#define Z_LOG_CONST_LEVEL_CHECK(level) true
 
 #define CONFIG_COAP_EXTENDED_OPTIONS_LEN       1
 #define CONFIG_COAP_EXTENDED_OPTIONS_LEN_VALUE 68
@@ -48,10 +78,27 @@ static uint64_t now_us;
 static uint32_t uart_lines, server_lines, option_lines, skipped_lines;
 static uint8_t datagram[1200];
 static size_t datagram_len;
-struct net_sockaddr_storage {
-	uint32_t unused;
-};
 typedef size_t net_socklen_t;
+static int lock;
+static struct fixture_service_data {
+	int sock_fd;
+	bool secure;
+	bool pktinfo_supported;
+} service_data;
+struct coap_service {
+	struct fixture_service_data *data;
+};
+static struct coap_service fixture_service = {.data = &service_data};
+#define COAP_SERVICE_FOREACH(svc)                                                                  \
+	for (struct coap_service *svc = &fixture_service; svc != NULL; svc = NULL)
+static int k_mutex_lock(int *mutex, int timeout)
+{
+	return 0;
+}
+static int k_mutex_unlock(int *mutex)
+{
+	return 0;
+}
 /* DECLARATIONS */
 static uint32_t k_uptime_get_32(void)
 {
@@ -79,6 +126,11 @@ static ssize_t zsock_recvfrom(int fd, void *buf, size_t size, int flags,
 	assert(datagram_len <= size);
 	memcpy(buf, datagram, datagram_len);
 	return datagram_len;
+}
+static ssize_t zsock_recvmsg(int fd, struct net_msghdr *msg, int flags)
+{
+	assert(false); /* This fixture tests the plain datagram rejection path. */
+	return -1;
 }
 /* PARSER FUNCTIONS */
 /* SERVER REJECTION PATH */

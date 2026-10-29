@@ -11,8 +11,8 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 
 / {
-	model = "STMicroelectronics STM32WBA65I Discovery kit board";
 	compatible = "st,stm32wba65i-dk1";
+	model = "STMicroelectronics STM32WBA65I Discovery kit board";
 
 	chosen {
 		zephyr,bt-c2h-uart = &usart1;
@@ -118,10 +118,10 @@
 };
 
 &rtc {
-	status = "okay";
 	clocks = <&rcc STM32_CLOCK(APB7, 21)>,
 		 <&rcc STM32_SRC_LSE RTC_SEL(1)>;
 	prescaler = <32768>;
+	status = "okay";
 };
 
 &usart1 {
@@ -146,18 +146,21 @@
 	pinctrl-names = "default";
 	scl-gpios = <&gpiob 2 GPIO_ACTIVE_HIGH>;
 	sda-gpios = <&gpiob 1 GPIO_ACTIVE_HIGH>;
-	status = "okay";
 	clock-frequency = <I2C_BITRATE_FAST>;
+	status = "okay";
+};
+
+&adc4_common {
+	st,adc-prescaler = <4>;
+	status = "okay";
 };
 
 &adc4 {
 	pinctrl-0 = <&adc4_in6_pa3>;
 	pinctrl-names = "default";
-	st,adc-clock-source = "ASYNC";
-	st,adc-prescaler = <4>;
-	status = "okay";
 	#address-cells = <1>;
 	#size-cells = <0>;
+	status = "okay";
 
 	channel@6 {
 		reg = <0x6>;
@@ -173,9 +176,18 @@
 	status = "okay";
 };
 
+&vref {
+	status = "okay";
+};
+
 &lptim1 {
 	clocks = <&rcc STM32_CLOCK(APB7, 11)>,
 		 <&rcc STM32_SRC_LSE LPTIM1_SEL(3)>;
+	status = "okay";
+};
+
+&pka {
+	interrupts = <62 7>;
 	status = "okay";
 };
 

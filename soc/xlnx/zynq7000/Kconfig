@@ -6,7 +6,7 @@
 if SOC_FAMILY_XILINX_ZYNQ7000
 
 config SOC_XLNX_ZYNQ7000_L2_CACHE
-	bool "Enable the Zynq-7000 PL310 L2 cache"
+	bool "Zynq-7000 PL310 L2 cache"
 	default y
 	depends on DCACHE && ARM_AARCH32_MMU
 	select CACHE_MANAGEMENT

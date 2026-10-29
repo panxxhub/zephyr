@@ -10,7 +10,7 @@
 #include <errno.h>
 #include <zephyr/kernel.h>
 #include <zephyr/toolchain.h>
-#include <zephyr/arch/common/ffs.h>
+#include <zephyr/arch/cpu.h>
 #include <zephyr/sys/util.h>
 #include <soc.h>
 #include <stm32_bitops.h>
@@ -77,48 +77,6 @@ LOG_MODULE_REGISTER(flash_stm32_ospi, CONFIG_FLASH_LOG_LEVEL);
 #define SPI_NOR_WRITEOC_NONE 0xFF
 
 #if STM32_OSPI_USE_DMA
-#if CONFIG_DMA_STM32U5
-static const uint32_t table_src_size[] = {
-	LL_DMA_SRC_DATAWIDTH_BYTE,
-	LL_DMA_SRC_DATAWIDTH_HALFWORD,
-	LL_DMA_SRC_DATAWIDTH_WORD,
-};
-
-static const uint32_t table_dest_size[] = {
-	LL_DMA_DEST_DATAWIDTH_BYTE,
-	LL_DMA_DEST_DATAWIDTH_HALFWORD,
-	LL_DMA_DEST_DATAWIDTH_WORD,
-};
-
-/* Lookup table to set dma priority from the DTS */
-static const uint32_t table_priority[] = {
-	LL_DMA_LOW_PRIORITY_LOW_WEIGHT,
-	LL_DMA_LOW_PRIORITY_MID_WEIGHT,
-	LL_DMA_LOW_PRIORITY_HIGH_WEIGHT,
-	LL_DMA_HIGH_PRIORITY,
-};
-#else
-static const uint32_t table_m_size[] = {
-	LL_DMA_MDATAALIGN_BYTE,
-	LL_DMA_MDATAALIGN_HALFWORD,
-	LL_DMA_MDATAALIGN_WORD,
-};
-
-static const uint32_t table_p_size[] = {
-	LL_DMA_PDATAALIGN_BYTE,
-	LL_DMA_PDATAALIGN_HALFWORD,
-	LL_DMA_PDATAALIGN_WORD,
-};
-
-/* Lookup table to set dma priority from the DTS */
-static const uint32_t table_priority[] = {
-	DMA_PRIORITY_LOW,
-	DMA_PRIORITY_MEDIUM,
-	DMA_PRIORITY_HIGH,
-	DMA_PRIORITY_VERY_HIGH,
-};
-#endif /* CONFIG_DMA_STM32U5 */
-
 struct stream {
 	DMA_TypeDef *reg;
 	const struct device *dev;
@@ -163,6 +121,8 @@ struct flash_stm32_ospi_data {
 	uint16_t page_size;
 	/* Address width in bytes */
 	uint8_t address_width;
+	/* JESD216 DW16 enter_4ba bits 0-1, applied once SFDP reading is done */
+	uint8_t enter_4ba;
 	/* Read operation dummy cycles */
 	uint8_t read_dummy;
 	uint32_t read_opcode;
@@ -1159,6 +1119,21 @@ static int stm32_ospi_abort(const struct device *dev)
 }
 #endif /* CONFIG_FLASH_STM32_NOR_MEMMAP */
 
+static uint8_t spi_nor_convert_erase_to_4b(const uint8_t opcode)
+{
+	switch (opcode) {
+	case SPI_NOR_CMD_SE:
+		return SPI_NOR_CMD_SE_4B;
+	case SPI_NOR_CMD_BE_32K:
+		return SPI_NOR_CMD_BE_32K_4B;
+	case SPI_NOR_CMD_BE:
+		return SPI_NOR_CMD_BE_4B;
+	default:
+		/* use provided */
+		return opcode;
+	}
+}
+
 /*
  * Function to erase the flash : chip or sector with possible OSPI/SPI and STR/DTR
  * to erase the complete chip (using dedicated command) :
@@ -1300,6 +1275,9 @@ static int flash_stm32_ospi_erase(const struct device *dev, off_t addr,
 				/* In OPI mode, do not use the SFDP SPI opcode (bet->cmd). */
 				if (dev_cfg->data_mode == OSPI_OPI_MODE) {
 					cmd_erase.Instruction = SPI_NOR_OCMD_SE;
+				} else if (IS_ENABLED(DT_INST_PROP(0, four_byte_opcodes))) {
+					cmd_erase.Instruction =
+						spi_nor_convert_erase_to_4b(bet->cmd);
 				} else {
 					cmd_erase.Instruction = bet->cmd;
 				}
@@ -2109,13 +2087,9 @@ static int spi_nor_process_bfp(const struct device *dev,
 			 * if it is enough to use 0xB7 instruction without
 			 * write enable to switch to 4 bytes addressing mode.
 			 * If bit 1 is set, a write enable is needed.
+			 * The switch is deferred: SFDP reads use a 3-byte address.
 			 */
-			if (dw16.enter_4ba & 0x3) {
-				if (stm32_ospi_program_addr_4b(dev, dw16.enter_4ba & 2)) {
-					LOG_ERR("Unable to enter 4B mode.");
-					return -EIO;
-				}
-			}
+			data->enter_4ba = dw16.enter_4ba & 0x3;
 		}
 	}
 
@@ -2261,49 +2235,29 @@ static int flash_stm32_ospi_init(const struct device *dev)
 
 	/* Proceed to the minimum Zephyr DMA driver init */
 	dma_cfg->user_data = &hdma;
+	dma_cfg->channel_direction = PERIPHERAL_TO_MEMORY;
 	/* HACK: This field is used to inform driver that it is overridden */
 	dma_cfg->linked_channel = STM32_DMA_HAL_OVERRIDE;
+	dma_cfg->source_burst_length = 4;
+	dma_cfg->dest_burst_length = 4;
 	ret = dma_config(dev_data->dma.dev, dev_data->dma.channel, dma_cfg);
 	if (ret != 0) {
 		LOG_ERR("Failed to configure DMA channel %d", dev_data->dma.channel);
 		return ret;
 	}
 
-	/* Proceed to the HAL DMA driver init */
-	if (dma_cfg->source_data_size != dma_cfg->dest_data_size) {
-		LOG_ERR("Source and destination data sizes not aligned");
-		return -EINVAL;
+	ret = dma_stm32_zcfg_to_halcfg(dev_data->dma.dev, dma_cfg, &hdma.Init,
+				       DMA_ADDR_ADJ_NO_CHANGE, DMA_ADDR_ADJ_INCREMENT);
+	if (ret < 0) {
+		return ret;
 	}
 
-	int index = find_lsb_set(dma_cfg->source_data_size) - 1;
-
 #if CONFIG_DMA_STM32U5
-	/* Fill the structure for dma init */
-	hdma.Init.BlkHWRequest = DMA_BREQ_SINGLE_BURST;
-	hdma.Init.SrcInc = DMA_SINC_FIXED;
 	hdma.Init.DestInc = DMA_DINC_INCREMENTED;
-	hdma.Init.SrcDataWidth = table_src_size[index];
-	hdma.Init.DestDataWidth = table_dest_size[index];
-	hdma.Init.SrcBurstLength = 4;
-	hdma.Init.DestBurstLength = 4;
 	hdma.Init.TransferAllocatedPort = DMA_SRC_ALLOCATED_PORT0 | DMA_DEST_ALLOCATED_PORT1;
-	hdma.Init.TransferEventMode = DMA_TCEM_BLOCK_TRANSFER;
-#else
-	hdma.Init.PeriphDataAlignment = table_p_size[index];
-	hdma.Init.MemDataAlignment = table_m_size[index];
-	hdma.Init.PeriphInc = DMA_PINC_DISABLE;
-	hdma.Init.MemInc = DMA_MINC_ENABLE;
 #endif /* CONFIG_DMA_STM32U5 */
-	hdma.Init.Mode = DMA_NORMAL;
-	hdma.Init.Priority = table_priority[dma_cfg->channel_priority];
-	hdma.Init.Direction = DMA_PERIPH_TO_MEMORY;
+
 	hdma.Instance = STM32_DMA_GET_INSTANCE(dev_data->dma.reg, dev_data->dma.channel);
-#ifdef CONFIG_DMA_STM32_V1
-	/* TODO: Not tested in this configuration */
-	hdma.Init.Channel = dma_cfg->dma_slot;
-#else
-	hdma.Init.Request = dma_cfg->dma_slot;
-#endif /* CONFIG_DMA_STM32_V1 */
 
 	/* Initialize DMA HAL */
 	__HAL_LINKDMA(&dev_data->hospi, hdma, hdma);
@@ -2573,6 +2527,14 @@ static int flash_stm32_ospi_init(const struct device *dev)
 		++php;
 	}
 
+	if (dev_data->enter_4ba != 0U) {
+		ret = stm32_ospi_program_addr_4b(dev, (dev_data->enter_4ba & 2U) != 0U);
+		if (ret != 0) {
+			LOG_ERR("Unable to enter 4B mode.");
+			return -EIO;
+		}
+	}
+
 #if defined(CONFIG_FLASH_PAGE_LAYOUT)
 	ret = setup_pages_layout(dev);
 	if (ret != 0) {
@@ -2654,12 +2616,12 @@ static void flash_stm32_ospi_irq_config_func(const struct device *dev);
 PINCTRL_DT_DEFINE(STM32_OSPI_NODE);
 
 static const struct flash_stm32_ospi_config flash_stm32_ospi_cfg = {
-	.pclken = STM32_CLOCK_INFO_BY_NAME(STM32_OSPI_NODE, ospix),
+	.pclken = STM32_DT_CLOCK_INFO_BY_NAME(STM32_OSPI_NODE, ospix),
 #if DT_CLOCKS_HAS_NAME(STM32_OSPI_NODE, ospi_ker)
-	.pclken_ker = STM32_CLOCK_INFO_BY_NAME(STM32_OSPI_NODE, ospi_ker),
+	.pclken_ker = STM32_DT_CLOCK_INFO_BY_NAME(STM32_OSPI_NODE, ospi_ker),
 #endif
 #if DT_CLOCKS_HAS_NAME(STM32_OSPI_NODE, ospi_mgr)
-	.pclken_mgr = STM32_CLOCK_INFO_BY_NAME(STM32_OSPI_NODE, ospi_mgr),
+	.pclken_mgr = STM32_DT_CLOCK_INFO_BY_NAME(STM32_OSPI_NODE, ospi_mgr),
 #endif
 	.irq_config = flash_stm32_ospi_irq_config_func,
 	.flash_size = DT_INST_PROP(0, size) / 8, /* In Bytes */

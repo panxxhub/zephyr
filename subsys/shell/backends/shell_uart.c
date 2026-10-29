@@ -324,6 +324,7 @@ static int init(const struct shell_transport *transport,
 #ifdef CONFIG_MCUMGR_TRANSPORT_SHELL
 	common->smp.buf_pool = &smp_shell_rx_pool;
 	k_fifo_init(&common->smp.buf_ready);
+	common->smp.uart = common;
 #endif
 
 	ret = pm_device_runtime_get(common->dev);
@@ -579,6 +580,7 @@ const struct shell_transport_api shell_uart_transport_api = {
 #endif /* CONFIG_MCUMGR_TRANSPORT_SHELL */
 };
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_shell_uart))
 SHELL_UART_DEFINE(shell_transport_uart);
 SHELL_DEFINE(shell_uart, CONFIG_SHELL_PROMPT_UART, &shell_transport_uart,
 	     CONFIG_SHELL_BACKEND_SERIAL_LOG_MESSAGE_QUEUE_SIZE,
@@ -619,8 +621,13 @@ static int enable_shell_uart(void)
 
 SYS_INIT(enable_shell_uart, POST_KERNEL,
 	 CONFIG_SHELL_BACKEND_SERIAL_INIT_PRIORITY);
+#endif
 
 const struct shell *shell_backend_uart_get_ptr(void)
 {
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_shell_uart))
 	return &shell_uart;
+#else
+	return NULL;
+#endif
 }

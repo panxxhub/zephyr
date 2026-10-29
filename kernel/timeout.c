@@ -106,15 +106,15 @@ static uint32_t elapsed(void)
  * tree-wide and live in timeout_q.h.
  */
 #if defined(CONFIG_TIMEOUT_BACKEND_MINHEAP)
-#include "timeout_minheap.h"
+#include "timeout/minheap.h"
 #elif defined(CONFIG_TIMEOUT_BACKEND_WHEEL)
-#include "timeout_wheel.h"
+#include "timeout/wheel.h"
 #elif defined(CONFIG_TIMEOUT_BACKEND_BUCKET)
-#include "timeout_bucket.h"
+#include "timeout/bucket.h"
 #elif defined(CONFIG_TIMEOUT_BACKEND_SKIPLIST)
-#include "timeout_skiplist.h"
+#include "timeout/skiplist.h"
 #else /* CONFIG_TIMEOUT_BACKEND_DLIST */
-#include "timeout_list.h"
+#include "timeout/list.h"
 #endif
 
 /*
@@ -205,7 +205,7 @@ k_ticks_t z_add_timeout(struct _timeout *to, _timeout_func_t fn, k_timeout_t tim
 	to->fn = fn;
 
 	K_SPINLOCK(&timeout_lock) {
-		uint32_t ticks_elapsed;
+		uint32_t ticks_elapsed = 0;
 		bool has_elapsed = false;
 		k_ticks_t dticks;
 
@@ -235,7 +235,8 @@ k_ticks_t z_add_timeout(struct _timeout *to, _timeout_func_t fn, k_timeout_t tim
 		} else {
 			dticks = Z_TICK_ABS(timeout.ticks) - curr_tick;
 			dticks = max(1, dticks);
-			ticks = timeout.ticks;
+			/* report the decoded absolute expiry, not the Z_TICK_ABS encoding */
+			ticks = Z_TICK_ABS(timeout.ticks);
 		}
 
 		if (z_timeout_q_insert(to, dticks) && !any_cpu_announcing()) {
@@ -264,11 +265,14 @@ int z_try_abort_timeout(struct _timeout *to)
 			if (was_first) {
 				reprogram_next(elapsed());
 			}
-		} else if (IS_ENABLED(CONFIG_SMP) && inflight_ptr() == to &&
-			   !this_cpu_announcing()) {
-			/* Handler in flight on another CPU. Free-safety
-			 * callers retry on -EAGAIN to wait it out; others
-			 * rely on the superseded mark below and don't.
+		}
+
+		if (IS_ENABLED(CONFIG_SMP) && inflight_ptr() == to &&
+		    !this_cpu_announcing()) {
+			/* Handler in flight on another CPU, even if we just
+			 * removed a copy it re-queued (periodic timer).
+			 * Free-safety callers retry on -EAGAIN to wait it
+			 * out; others rely on the superseded mark below.
 			 */
 			ret = -EAGAIN;
 		}
@@ -307,7 +311,11 @@ k_ticks_t z_timeout_remaining(const struct _timeout *timeout)
 
 	K_SPINLOCK(&timeout_lock) {
 		if (!z_is_inactive_timeout(timeout)) {
-			ticks = z_timeout_q_remainder(timeout) - elapsed();
+			k_ticks_t rem = z_timeout_q_remainder(timeout);
+			uint32_t el = elapsed();
+
+			/* elapsed() can exceed rem when announce is late. */
+			ticks = (rem > el) ? (rem - el) : 0;
 		}
 	}
 

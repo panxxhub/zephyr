@@ -5,6 +5,7 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/toolchain.h>
 #include <kernel_internal.h>
 #include <ctf_top.h>
 #include <zephyr/net/net_core.h>
@@ -14,11 +15,19 @@
 #include <zephyr/net/net_pkt.h>
 #include <zephyr/sys/cpu_load.h>
 #include <zephyr/pm/state.h>
+#include <zephyr/rtio/sqe.h>
 
 struct rtio;
 struct rtio_sqe;
 struct rtio_cqe;
 struct rtio_iodev_sqe;
+
+#ifdef CONFIG_TRACING_CTF_CONFIGURABLE_TIMESTAMP
+__weak uint64_t ctf_top_timestamp_get(void)
+{
+	return timing_ns_get();
+}
+#endif /* CONFIG_TRACING_CTF_CONFIGURABLE_TIMESTAMP */
 
 static void _get_thread_name(struct k_thread *thread, ctf_bounded_string_t *name)
 {
@@ -978,11 +987,15 @@ void sys_trace_socket_shutdown_exit(int sock, int ret)
 void sys_trace_socket_bind_enter(int sock, const struct net_sockaddr *addr, size_t addrlen)
 {
 	ctf_net_bounded_string_t addr_str = {"unknown"};
+	uint16_t port = 0U;
 
-	(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
-			    sizeof(addr_str.buf));
+	if (addr != NULL) {
+		(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
+				    sizeof(addr_str.buf));
+		port = net_ntohs(net_sin(addr)->sin_port);
+	}
 
-	ctf_top_socket_bind_enter(sock, addr_str, addrlen, net_ntohs(net_sin(addr)->sin_port));
+	ctf_top_socket_bind_enter(sock, addr_str, addrlen, port);
 }
 
 void sys_trace_socket_bind_exit(int sock, int ret)
@@ -994,8 +1007,10 @@ void sys_trace_socket_connect_enter(int sock, const struct net_sockaddr *addr, s
 {
 	ctf_net_bounded_string_t addr_str = {"unknown"};
 
-	(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
-			    sizeof(addr_str.buf));
+	if (addr != NULL) {
+		(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
+				    sizeof(addr_str.buf));
+	}
 
 	ctf_top_socket_connect_enter(sock, addr_str, addrlen);
 }
@@ -1213,11 +1228,18 @@ void sys_trace_socket_getpeername_exit(int sock,  struct net_sockaddr *addr,
 				       const uint32_t *addrlen, int ret)
 {
 	ctf_net_bounded_string_t addr_str = {"unknown"};
+	uint32_t addr_len = 0U;
 
-	(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
-			    sizeof(addr_str.buf));
+	if (addr != NULL) {
+		(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
+				    sizeof(addr_str.buf));
+	}
 
-	ctf_top_socket_getpeername_exit(sock, addr_str, *addrlen, ret);
+	if (addrlen != NULL) {
+		addr_len = *addrlen;
+	}
+
+	ctf_top_socket_getpeername_exit(sock, addr_str, addr_len, ret);
 }
 
 void sys_trace_socket_getsockname_enter(int sock)
@@ -1229,11 +1251,18 @@ void sys_trace_socket_getsockname_exit(int sock, const struct net_sockaddr *addr
 				       const uint32_t *addrlen, int ret)
 {
 	ctf_net_bounded_string_t addr_str = {"unknown"};
+	uint32_t addr_len = 0U;
 
-	(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
-			    sizeof(addr_str.buf));
+	if (addr != NULL) {
+		(void)net_addr_ntop(addr->sa_family, &net_sin(addr)->sin_addr, addr_str.buf,
+				    sizeof(addr_str.buf));
+	}
 
-	ctf_top_socket_getsockname_exit(sock, addr_str, *addrlen, ret);
+	if (addrlen != NULL) {
+		addr_len = *addrlen;
+	}
+
+	ctf_top_socket_getsockname_exit(sock, addr_str, addr_len, ret);
 }
 
 void sys_trace_socket_socketpair_enter(int family, int type, int proto, int *sv)
@@ -2188,9 +2217,9 @@ void sys_trace_rtio_sqe_acquire_exit(const struct rtio *r, const struct rtio_sqe
 	ctf_top_rtio_sqe_acquire_exit((uint32_t)(uintptr_t)r, (uint32_t)(uintptr_t)sqe);
 }
 
-void sys_trace_rtio_sqe_cancel(const struct rtio_sqe *sqe)
+void sys_trace_rtio_sqe_cancel(uint32_t handle)
 {
-	ctf_top_rtio_sqe_cancel((uint32_t)(uintptr_t)sqe);
+	ctf_top_rtio_sqe_cancel(rtio_sqe_handle_index(handle), rtio_sqe_handle_generation(handle));
 }
 
 void sys_trace_rtio_cqe_submit_enter(const struct rtio *r, int result, uint32_t flags)

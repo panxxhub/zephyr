@@ -6,7 +6,7 @@
 #include <zephyr/sys/atomic.h>
 #include <zephyr/ztest.h>
 
-extern int z_arm_mmu_init_secondary(void);
+extern int z_arm_mmu_init(bool is_primary_core);
 
 /* Small descriptor format, level 2 small page: bit [0] is execute never. */
 #define L2_XN_BIT	     0x00000001U
@@ -84,7 +84,7 @@ static void worker_entry(void *a, void *b, void *c)
  *
  * Watch the descriptor of a text page from the other CPU while the secondary
  * MMU initialisation runs, and require it never to change. Calling
- * z_arm_mmu_init() here instead is the reverse control: the watcher sees the
+ * z_arm_mmu_init(true) here instead is the reverse control: the watcher sees the
  * descriptor lose its executable permission.
  */
 ZTEST(arm_mmu_smp, test_secondary_init_leaves_the_tables_alone)
@@ -114,7 +114,7 @@ ZTEST(arm_mmu_smp, test_secondary_init_leaves_the_tables_alone)
 	zassert_true(atomic_get(&samples) > 0, "the watcher never ran on the second CPU");
 
 	for (int i = 0; i < 64; i++) {
-		zassert_ok(z_arm_mmu_init_secondary(), "secondary MMU init failed");
+		zassert_ok(z_arm_mmu_init(false), "secondary MMU init failed");
 	}
 
 	atomic_set(&running, 0);

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <zephyr/logging/log.h>
+#include <zephyr/net/wifi_utils.h>
 
 #include <siwx91x_nwp.h>
 #include "siwx91x_wifi.h"
@@ -22,32 +23,36 @@ static void siwx91x_report_scan_res(struct siwx91x_dev *sidev, sl_wifi_scan_resu
 		int sl_val;
 		int z_val;
 	} security_convert[] = {
-		{ SL_WIFI_OPEN,            WIFI_SECURITY_TYPE_NONE    },
-		{ SL_WIFI_WEP,             WIFI_SECURITY_TYPE_WEP     },
-		{ SL_WIFI_WPA,             WIFI_SECURITY_TYPE_WPA_PSK },
-		{ SL_WIFI_WPA2,            WIFI_SECURITY_TYPE_PSK     },
-		{ SL_WIFI_WPA3,            WIFI_SECURITY_TYPE_SAE     },
-		{ SL_WIFI_WPA3_TRANSITION, WIFI_SECURITY_TYPE_SAE     },
-		{ SL_WIFI_WPA_ENTERPRISE,  WIFI_SECURITY_TYPE_EAP     },
-		{ SL_WIFI_WPA2_ENTERPRISE, WIFI_SECURITY_TYPE_EAP     },
+		{ SL_WIFI_OPEN,            WIFI_SECURITY_TYPE_NONE              },
+		{ SL_WIFI_WEP,             WIFI_SECURITY_TYPE_WEP               },
+		{ SL_WIFI_WPA,             WIFI_SECURITY_TYPE_WPA_PSK           },
+		{ SL_WIFI_WPA2,            WIFI_SECURITY_TYPE_PSK               },
+		{ SL_WIFI_WPA3,            WIFI_SECURITY_TYPE_SAE               },
+		{ SL_WIFI_WPA3_TRANSITION, WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL },
+		{ SL_WIFI_WPA_WPA2_MIXED,  WIFI_SECURITY_TYPE_WPA_AUTO_PERSONAL },
+		{ SL_WIFI_WPA_ENTERPRISE,  WIFI_SECURITY_TYPE_EAP               },
+		{ SL_WIFI_WPA2_ENTERPRISE, WIFI_SECURITY_TYPE_EAP               },
 	};
 	struct wifi_scan_result tmp = {
 		.channel = result->scan_info[item].rf_channel,
-		.rssi = result->scan_info[item].rssi_val,
+		/* WiSeConnect reports rssi_val as an unsigned magnitude, while
+		 * struct wifi_scan_result expects signed dBm.
+		 */
+		.rssi = -result->scan_info[item].rssi_val,
 		.ssid_length = strlen(result->scan_info[item].ssid),
 		.mac_length = sizeof(result->scan_info[item].bssid),
 		.security = WIFI_SECURITY_TYPE_UNKNOWN,
 		.mfp = WIFI_MFP_UNKNOWN,
-		.band = WIFI_FREQ_BAND_2_4_GHZ,
+		.band = WIFI_FREQ_BAND_UNKNOWN,
 	};
 
 	if (result->scan_count == 0) {
 		return;
 	}
 
-	if (result->scan_info[item].rf_channel <= 0 || result->scan_info[item].rf_channel > 14) {
+	tmp.band = wifi_utils_chan_to_band(tmp.channel);
+	if (tmp.band != WIFI_FREQ_BAND_2_4_GHZ) {
 		LOG_WRN("Unexpected scan result");
-		tmp.band = WIFI_FREQ_BAND_UNKNOWN;
 	}
 
 	memcpy(tmp.ssid, result->scan_info[item].ssid, tmp.ssid_length);

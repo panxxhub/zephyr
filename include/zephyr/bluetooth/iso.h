@@ -773,6 +773,18 @@ struct bt_iso_chan_ops {
 	 * @param chan The channel which has sent data.
 	 */
 	void (*sent)(struct bt_iso_chan *chan);
+
+	/**
+	 * @brief Channel send failed callback
+	 *
+	 * This callback will be called if the call to bt_iso_chan_send() was successful, but
+	 * @p chan disconnected before the controller marked the SDU as completed. None, part
+	 * or all of the SDU may have been given to the controller by then.
+	 *
+	 * @param chan The channel for which the send operation failed.
+	 * @param err The reason for the send failure.
+	 */
+	void (*send_failed)(struct bt_iso_chan *chan, int err);
 };
 
 /** @brief ISO Accept Info Structure */

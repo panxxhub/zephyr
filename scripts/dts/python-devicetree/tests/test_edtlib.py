@@ -297,6 +297,33 @@ def test_ranges():
         edtlib.Range(node=node, child_bus_cells=0x3, child_bus_addr=0x2a0000002b0000002c, parent_bus_cells=0x2, parent_bus_addr=0x2d0000002e, length_cells=0x2, length=0x2f00000210)
     ]
 
+def test_dma_ranges_undeclared(tmp_path):
+    '''dma-ranges, like ranges, need not be declared in the binding'''
+    # 'defaults' declares properties, but not dma-ranges
+    dts_file = tmp_path / "dma-ranges.dts"
+    dts_file.write_text("""\
+/dts-v1/;
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	node {
+		compatible = "defaults";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		dma-ranges = <0x0 0x10000000 0x1000>;
+	};
+};
+""", encoding="utf-8")
+    with from_here():
+        edt = edtlib.EDT(str(dts_file), ["test-bindings"])
+
+    node = edt.get_node("/node")
+    assert node.dma_ranges == [
+        edtlib.Range(node=node, child_bus_cells=0x1, child_bus_addr=0x0, parent_bus_cells=0x1, parent_bus_addr=0x10000000, length_cells=0x1, length=0x1000)
+    ]
+
 def test_reg():
     '''Tests for the regs property'''
     with from_here():
@@ -395,6 +422,41 @@ def test_include():
                  ['foo', 'bar', 'baz', 'qaz'],
                  ['int', 'int', 'int', 'int'],
                  [0, 1, 2, 3])
+
+def test_class_merge():
+    '''Test the union merge of the 'class:' key across includes.'''
+    fname2path = {'class-base-1.yaml': 'test-bindings-include/class-base-1.yaml',
+                  'class-base-2.yaml': 'test-bindings-include/class-base-2.yaml'}
+
+    with from_here():
+        binding = edtlib.Binding('test-bindings-include/class-base-1.yaml', {})
+    assert binding.classes == ['class-a']
+
+    with from_here():
+        binding = edtlib.Binding('test-bindings-include/class-base-2.yaml', {})
+    assert binding.classes == ['class-b', 'class-a']
+
+    # The including binding's own 'class:' comes first, then the included
+    # bindings' classes in include order, without duplicates.
+    with from_here():
+        binding = edtlib.Binding('test-bindings-include/class-union.yaml',
+                                 fname2path)
+    assert binding.classes == ['class-c', 'class-a', 'class-b']
+
+    # The union also applies at child-binding roots.
+    with from_here():
+        binding = edtlib.Binding(
+            'test-bindings-include/class-child-union.yaml',
+            {'class-child-base.yaml':
+             'test-bindings-include/class-child-base.yaml'})
+    assert binding.classes == []
+    assert binding.child_binding.classes == ['class-child-b', 'class-child-a']
+
+    # Malformed names and duplicates are rejected.
+    for fname in ('class-bad-name.yaml', 'class-dup.yaml'):
+        with from_here():
+            with pytest.raises(edtlib.EDTError):
+                edtlib.Binding(f'test-bindings-include/{fname}', {})
 
 def test_include_filters():
     '''Test property-allowlist and property-blocklist in an include.'''

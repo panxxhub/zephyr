@@ -13,6 +13,7 @@ toolchain:
   - zephyr
 supported:
   - clock_control
+  - counter
   - gpio
   - pinctrl
   - bluetooth
@@ -20,3 +21,6 @@ supported:
   - flash
   - dma
   - spi
+  - i2c
+  - counter
+  - pwm

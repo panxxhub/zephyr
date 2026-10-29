@@ -134,3 +134,6 @@ MPLABXLog.xml
 
 # GEM host test harness build output
 .scratch/
+
+# Per-developer specific preferences for Claude Code
+CLAUDE.local.md

@@ -43,13 +43,7 @@ LOG_MODULE_REGISTER(net_sock_tls, CONFIG_NET_SOCKETS_LOG_LEVEL);
 #include <mbedtls/platform.h>
 #include <mbedtls/ssl_cache.h>
 #include <mbedtls/pk.h>
-#if defined(MBEDTLS_PSA_CRYPTO_C) || defined(MBEDTLS_PSA_CRYPTO_CLIENT)
 #include <psa/crypto.h>
-/* Support for referencing a private key resident in PSA (TLS_CREDENTIAL_PRIVATE_KEY_PSA),
- * so that the key material never has to be exported into the credential store.
- */
-#define TLS_PRIV_KEY_PSA_ENABLED 1
-#endif
 #endif /* CONFIG_MBEDTLS */
 
 #include "sockets_internal.h"
@@ -176,6 +170,9 @@ struct tls_session_context {
 
 	/* DTLS peer address length. */
 	net_socklen_t dtls_peer_addrlen;
+
+	/* The local address this session's data came in on (server side only). */
+	struct net_sockaddr_storage dtls_local_addr;
 
 	/* DTLS session expiry time (server only). */
 	k_timepoint_t session_expiry;
@@ -1160,15 +1157,64 @@ static void dtls_peer_address_get(struct tls_session_context *session_ctx,
 static int dtls_tx(void *ctx, const unsigned char *buf, size_t len)
 {
 	struct tls_context *tls_ctx = ctx;
+	struct net_sockaddr_storage *local_addr = NULL;
 	ssize_t sent;
 
 	if (tls_ctx->options.role == MBEDTLS_SSL_IS_SERVER) {
 		dtls_server_refresh_session_timeout(tls_ctx->active_session);
+
+		if (tls_ctx->active_session->dtls_local_addr.ss_family != NET_AF_UNSPEC) {
+			local_addr = &tls_ctx->active_session->dtls_local_addr;
+		}
 	}
 
-	sent = zsock_sendto(tls_ctx->sock, buf, len, ZSOCK_MSG_DONTWAIT,
-			    net_sad(&tls_ctx->active_session->dtls_peer_addr),
-			    tls_ctx->active_session->dtls_peer_addrlen);
+	if (local_addr != NULL) {
+		/* A union keeps this properly aligned for net_cmsghdr, not just a byte array. */
+		union {
+			struct net_cmsghdr hdr;
+			uint8_t buf[NET_CMSG_SPACE(sizeof(struct net_in6_pktinfo))];
+		} cmsg_storage = { 0 };
+		uint8_t *cmsg_buf = cmsg_storage.buf;
+		struct net_cmsghdr *cmsg = &cmsg_storage.hdr;
+		struct net_iovec io_vec = { .iov_base = (void *)buf, .iov_len = len };
+		struct net_msghdr msg = {
+			.msg_name = net_sad(&tls_ctx->active_session->dtls_peer_addr),
+			.msg_namelen = tls_ctx->active_session->dtls_peer_addrlen,
+			.msg_iov = &io_vec,
+			.msg_iovlen = 1,
+			.msg_control = cmsg_buf,
+			.msg_controllen = sizeof(cmsg_storage.buf),
+		};
+
+		if (IS_ENABLED(CONFIG_NET_IPV6) && local_addr->ss_family == NET_AF_INET6) {
+			struct net_in6_pktinfo info = {
+				.ipi6_addr = ((struct net_sockaddr_in6 *)local_addr)->sin6_addr,
+			};
+
+			cmsg->cmsg_level = NET_IPPROTO_IPV6;
+			cmsg->cmsg_type = ZSOCK_IPV6_PKTINFO;
+			cmsg->cmsg_len = NET_CMSG_LEN(sizeof(info));
+			memcpy(NET_CMSG_DATA(cmsg), &info, sizeof(info));
+			msg.msg_controllen = NET_CMSG_SPACE(sizeof(info));
+		} else if (IS_ENABLED(CONFIG_NET_IPV4) && local_addr->ss_family == NET_AF_INET) {
+			struct net_in_pktinfo info = {
+				.ipi_spec_dst = ((struct net_sockaddr_in *)local_addr)->sin_addr,
+			};
+
+			cmsg->cmsg_level = NET_IPPROTO_IP;
+			cmsg->cmsg_type = ZSOCK_IP_PKTINFO;
+			cmsg->cmsg_len = NET_CMSG_LEN(sizeof(info));
+			memcpy(NET_CMSG_DATA(cmsg), &info, sizeof(info));
+			msg.msg_controllen = NET_CMSG_SPACE(sizeof(info));
+		}
+
+		sent = zsock_sendmsg(tls_ctx->sock, &msg, ZSOCK_MSG_DONTWAIT);
+	} else {
+		sent = zsock_sendto(tls_ctx->sock, buf, len, ZSOCK_MSG_DONTWAIT,
+				    net_sad(&tls_ctx->active_session->dtls_peer_addr),
+				    tls_ctx->active_session->dtls_peer_addrlen);
+	}
+
 	if (sent < 0) {
 		if (errno == EAGAIN) {
 			return MBEDTLS_ERR_SSL_WANT_WRITE;
@@ -1180,11 +1226,62 @@ static int dtls_tx(void *ctx, const unsigned char *buf, size_t len)
 	return sent;
 }
 
+/* Get the local address a DTLS packet came in on, from IPV6_PKTINFO/IP_PKTINFO.
+ * If that address turns out to be multicast, we leave it unset instead of
+ * storing it. That way the reply just goes out through plain sendto(), and
+ * the OS picks a normal address to send it from - replying "from" a
+ * multicast address wouldn't make sense.
+ */
+static void dtls_server_local_addr_from_cmsg(struct net_msghdr *msg,
+					     struct net_sockaddr_storage *local_addr)
+{
+	struct net_cmsghdr *cmsg;
+
+	local_addr->ss_family = NET_AF_UNSPEC;
+
+	for (cmsg = NET_CMSG_FIRSTHDR(msg); cmsg != NULL; cmsg = NET_CMSG_NXTHDR(msg, cmsg)) {
+		if (IS_ENABLED(CONFIG_NET_IPV6) && cmsg->cmsg_level == NET_IPPROTO_IPV6 &&
+		    cmsg->cmsg_type == ZSOCK_IPV6_PKTINFO &&
+		    cmsg->cmsg_len == NET_CMSG_LEN(sizeof(struct net_in6_pktinfo))) {
+			struct net_in6_pktinfo *info =
+				(struct net_in6_pktinfo *)NET_CMSG_DATA(cmsg);
+			struct net_sockaddr_in6 *addr6 = (struct net_sockaddr_in6 *)local_addr;
+
+			if (!net_ipv6_is_addr_mcast(&info->ipi6_addr)) {
+				addr6->sin6_family = NET_AF_INET6;
+				addr6->sin6_addr = info->ipi6_addr;
+			}
+			return;
+		}
+
+		if (IS_ENABLED(CONFIG_NET_IPV4) && cmsg->cmsg_level == NET_IPPROTO_IP &&
+		    cmsg->cmsg_type == ZSOCK_IP_PKTINFO &&
+		    cmsg->cmsg_len == NET_CMSG_LEN(sizeof(struct net_in_pktinfo))) {
+			struct net_in_pktinfo *info = (struct net_in_pktinfo *)NET_CMSG_DATA(cmsg);
+			struct net_sockaddr_in *addr4 = (struct net_sockaddr_in *)local_addr;
+
+			if (!net_ipv4_is_addr_mcast(&info->ipi_addr)) {
+				addr4->sin_family = NET_AF_INET;
+				addr4->sin_addr = info->ipi_addr;
+			}
+			return;
+		}
+	}
+}
+
 static int dtls_server_rx(void *ctx, unsigned char *buf, size_t len)
 {
 	struct tls_context *tls_ctx = ctx;
 	net_socklen_t addrlen = sizeof(struct net_sockaddr_storage);
 	struct net_sockaddr_storage addr = { 0 };
+	struct net_sockaddr_storage local_addr = { 0 };
+	union {
+		struct net_cmsghdr hdr;
+		uint8_t buf[NET_CMSG_SPACE(sizeof(struct net_in6_pktinfo))];
+	} cmsg_storage = { 0 };
+	uint8_t *cmsg_buf = cmsg_storage.buf;
+	struct net_iovec io_vec;
+	struct net_msghdr msg;
 	int err;
 	ssize_t received;
 	uint8_t tmp_buf;
@@ -1211,13 +1308,29 @@ static int dtls_server_rx(void *ctx, unsigned char *buf, size_t len)
 		return MBEDTLS_ERR_SSL_WANT_READ;
 	}
 
-	/* If the session matches, read the actual packet. */
-	received = zsock_recvfrom(tls_ctx->sock, buf, len,
-				  ZSOCK_MSG_DONTWAIT, net_sad(&addr), &addrlen);
+	/* If the session matches, use recvmsg() to read the packet and its local address. */
+	memset(cmsg_buf, 0, sizeof(cmsg_storage.buf));
+
+	io_vec.iov_base = buf;
+	io_vec.iov_len = len;
+
+	memset(&msg, 0, sizeof(msg));
+	msg.msg_name = net_sad(&addr);
+	msg.msg_namelen = sizeof(addr);
+	msg.msg_iov = &io_vec;
+	msg.msg_iovlen = 1;
+	msg.msg_control = cmsg_buf;
+	msg.msg_controllen = sizeof(cmsg_storage.buf);
+
+	received = zsock_recvmsg(tls_ctx->sock, &msg, ZSOCK_MSG_DONTWAIT);
 	if (received < 0) {
 		NET_ERR("DTLS server RX: failure %d", errno);
 		return MBEDTLS_ERR_NET_RECV_FAILED;
 	}
+
+	addrlen = msg.msg_namelen;
+	dtls_server_local_addr_from_cmsg(&msg, &local_addr);
+	tls_ctx->active_session->dtls_local_addr = local_addr;
 
 	dtls_server_refresh_session_timeout(tls_ctx->active_session);
 
@@ -1647,19 +1760,59 @@ static int tls_set_private_key(struct tls_context *tls,
 	return -ENOTSUP;
 }
 
+#if defined(CONFIG_MBEDTLS_X509_CRT_PARSE_C) || defined(MBEDTLS_SSL_HANDSHAKE_WITH_PSK_ENABLED)
+/* On success "key_id" contains the PSA key ID that has been verified. */
+static int tls_check_psa_key(struct tls_credential *cred, psa_key_id_t *key_id)
+{
+	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+	psa_status_t status;
+	int ret = -EINVAL;
+
+	if (cred->len != sizeof(psa_key_id_t)) {
+		NET_ERR("Bad PSA key id length (%zu) on tag %d", cred->len, cred->tag);
+		return -EINVAL;
+	}
+
+	memcpy(key_id, cred->buf, cred->len);
+	status = psa_get_key_attributes(*key_id, &attr);
+	if (status != PSA_SUCCESS) {
+		NET_ERR("Error %d reading attributes for PSA key %x (tag %d)",
+			status, *key_id, cred->tag);
+		goto exit;
+	}
+
+	if ((cred->type == TLS_CREDENTIAL_PRIVATE_KEY_PSA) &&
+	    !PSA_KEY_TYPE_IS_KEY_PAIR(psa_get_key_type(&attr))) {
+		NET_ERR("PSA key %x (tag %d) is not a key_pair", *key_id, cred->tag);
+		goto exit;
+	} else if (cred->type == TLS_CREDENTIAL_PSK_PSA) {
+		if ((psa_get_key_type(&attr) != PSA_KEY_TYPE_DERIVE) ||
+		    ((psa_get_key_usage_flags(&attr) & PSA_KEY_USAGE_DERIVE) == 0)) {
+			NET_ERR("PSA key %x (tag %d) cannot derive keys", *key_id, cred->tag);
+			goto exit;
+		}
+	}
+
+	ret = 0;
+
+exit:
+	psa_reset_key_attributes(&attr);
+
+	return ret;
+}
+#endif /* CONFIG_MBEDTLS_X509_CRT_PARSE_C || MBEDTLS_SSL_HANDSHAKE_WITH_PSK_ENABLED*/
+
 static int tls_set_private_key_psa(struct tls_context *tls,
 				   struct tls_credential *priv_key)
 {
-#if defined(CONFIG_MBEDTLS_X509_CRT_PARSE_C) && defined(TLS_PRIV_KEY_PSA_ENABLED)
+#if defined(CONFIG_MBEDTLS_X509_CRT_PARSE_C)
 	psa_key_id_t key_id;
 	mbedtls_svc_key_id_t svc_key_id;
 	int err;
 
-	if (priv_key->len != sizeof(key_id)) {
+	if (tls_check_psa_key(priv_key, &key_id) != 0) {
 		return -EINVAL;
 	}
-
-	memcpy(&key_id, priv_key->buf, sizeof(key_id));
 
 	/* The private key lives in PSA and is never exported - we only hold its
 	 * key id. Wrap that id into an opaque PK context (mbedtls_pk_wrap_psa)
@@ -1677,25 +1830,40 @@ static int tls_set_private_key_psa(struct tls_context *tls,
 	return 0;
 #else
 	return -ENOTSUP;
-#endif /* CONFIG_MBEDTLS_X509_CRT_PARSE_C && TLS_PRIV_KEY_PSA_ENABLED */
+#endif /* CONFIG_MBEDTLS_X509_CRT_PARSE_C */
 }
 
-static int tls_set_psk(struct tls_context *tls,
-		       struct tls_credential *psk,
+static int tls_set_psk(struct tls_context *tls, struct tls_credential *psk,
 		       struct tls_credential *psk_id)
 {
 #if defined(MBEDTLS_SSL_HANDSHAKE_WITH_PSK_ENABLED)
-	int err = mbedtls_ssl_conf_psk(&tls->config,
-				       psk->buf, psk->len,
-				       (const unsigned char *)psk_id->buf,
-				       psk_id->len);
-	if (err != 0) {
+	/* Full validation is done in tls_check_credentials() when the tag list
+	 * is set. Credentials may change afterwards, so guard against an
+	 * incomplete pair here.
+	 */
+	if ((psk == NULL) || (psk_id == NULL)) {
 		return -EINVAL;
+	}
+
+	if (psk->type == TLS_CREDENTIAL_PSK_PSA) {
+		psa_key_id_t key_id;
+
+		if (tls_check_psa_key(psk, &key_id) != 0) {
+			return -EINVAL;
+		}
+		if (mbedtls_ssl_conf_psk_opaque(&tls->config, key_id,
+						psk_id->buf, psk_id->len) != 0) {
+			return -EINVAL;
+		}
+	} else {
+		if (mbedtls_ssl_conf_psk(&tls->config, psk->buf, psk->len,
+					 psk_id->buf, psk_id->len) != 0) {
+			return -EINVAL;
+		}
 	}
 
 	return 0;
 #endif
-
 	return -ENOTSUP;
 }
 
@@ -1718,20 +1886,9 @@ static int tls_set_credential(struct tls_context *tls,
 	break;
 
 	case TLS_CREDENTIAL_PSK:
-	{
-		struct tls_credential *psk_id =
-			credential_get(cred->tag, TLS_CREDENTIAL_PSK_ID);
-		if (!psk_id) {
-			return -ENOENT;
-		}
-
-		return tls_set_psk(tls, cred, psk_id);
-	}
-
+	case TLS_CREDENTIAL_PSK_PSA:
 	case TLS_CREDENTIAL_PSK_ID:
-		/* Ignore PSK ID - it will be used together
-		 * with PSK
-		 */
+		/* Nothing to do here. */
 		break;
 
 	default:
@@ -1743,10 +1900,11 @@ static int tls_set_credential(struct tls_context *tls,
 
 static int tls_mbedtls_set_credentials(struct tls_context *tls)
 {
-	struct tls_credential *cred;
+	struct tls_credential *cred, *psk, *psk_id;
 	sec_tag_t tag;
 	int i, err = 0;
-	bool tag_found, ca_cert_present = false, own_cert_present = false;
+	bool tag_found, ca_cert_present = false, own_cert_present = false,
+	     psk_set = false;
 
 	credentials_lock();
 
@@ -1754,6 +1912,8 @@ static int tls_mbedtls_set_credentials(struct tls_context *tls)
 		tag = tls->options.sec_tag_list.sec_tags[i];
 		cred = NULL;
 		tag_found = false;
+		psk = NULL;
+		psk_id = NULL;
 
 		while ((cred = credential_next_get(tag, cred)) != NULL) {
 			tag_found = true;
@@ -1767,6 +1927,11 @@ static int tls_mbedtls_set_credentials(struct tls_context *tls)
 				ca_cert_present = true;
 			} else if (cred->type == TLS_CREDENTIAL_PUBLIC_CERTIFICATE) {
 				own_cert_present = true;
+			} else if ((cred->type == TLS_CREDENTIAL_PSK) ||
+				   (cred->type == TLS_CREDENTIAL_PSK_PSA)) {
+				psk = cred;
+			} else if (cred->type == TLS_CREDENTIAL_PSK_ID) {
+				psk_id = cred;
 			}
 		}
 
@@ -1774,19 +1939,32 @@ static int tls_mbedtls_set_credentials(struct tls_context *tls)
 			err = -ENOENT;
 			goto exit;
 		}
+
+		if ((psk != NULL) || (psk_id != NULL)) {
+			if (psk_set) {
+				err = -EINVAL;
+				goto exit;
+			}
+			err = tls_set_psk(tls, psk, psk_id);
+			if (err != 0) {
+				goto exit;
+			}
+			psk_set = true;
+		}
+	}
+
+	if (ca_cert_present) {
+		tls_set_ca_chain(tls);
+	}
+	if (own_cert_present) {
+		err = tls_set_own_cert(tls);
+		if (err != 0) {
+			goto exit;
+		}
 	}
 
 exit:
 	credentials_unlock();
-
-	if (err == 0) {
-		if (ca_cert_present) {
-			tls_set_ca_chain(tls);
-		}
-		if (own_cert_present) {
-			err = tls_set_own_cert(tls);
-		}
-	}
 
 	return err;
 }
@@ -2200,53 +2378,39 @@ static int tls_check_priv_key(struct tls_credential *priv_key)
 
 static int tls_check_private_key_psa(struct tls_credential *priv_key)
 {
-#if defined(CONFIG_MBEDTLS_X509_CRT_PARSE_C) && defined(TLS_PRIV_KEY_PSA_ENABLED)
+#if defined(CONFIG_MBEDTLS_X509_CRT_PARSE_C)
 	psa_key_id_t key_id;
-	psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-	psa_status_t status;
 
-	if (priv_key->len != sizeof(key_id)) {
-		NET_ERR("Bad PSA key id length on tag %d", priv_key->tag);
-		return -EINVAL;
-	}
-
-	memcpy(&key_id, priv_key->buf, sizeof(key_id));
-
-	/* Validate that the referenced key exists and is usable, without
-	 * touching the key material.
-	 */
-	status = psa_get_key_attributes(key_id, &attr);
-	if (status != PSA_SUCCESS) {
-		NET_ERR("PSA key %u not found for tag %d, status: %d",
-			key_id, priv_key->tag, status);
-		return -EINVAL;
-	}
-
-	psa_reset_key_attributes(&attr);
-
-	return 0;
+	return tls_check_psa_key(priv_key, &key_id);
 #else
-	NET_ERR("TLS with PSA-resident private keys disabled. "
-		"Reconfigure mbed TLS to support PSA crypto.");
+	NET_ERR("TLS with certificates disabled. "
+		"Reconfigure mbed TLS to support certificate based key exchange.");
 
 	return -ENOTSUP;
-#endif /* CONFIG_MBEDTLS_X509_CRT_PARSE_C && TLS_PRIV_KEY_PSA_ENABLED */
+#endif /* CONFIG_MBEDTLS_X509_CRT_PARSE_C */
 }
 
-static int tls_check_psk(struct tls_credential *psk)
+static int tls_check_psk(struct tls_credential *cred)
 {
 #if defined(MBEDTLS_SSL_HANDSHAKE_WITH_PSK_ENABLED)
-	struct tls_credential *psk_id;
+	switch (cred->type) {
+	case TLS_CREDENTIAL_PSK:
+		if ((cred->len == 0) || (cred->len > CONFIG_MBEDTLS_PSK_MAX_LEN)) {
+			NET_ERR("Invalid PSK length (%zu) on tag %d", cred->len, cred->tag);
+			return -EINVAL;
+		}
+		break;
+	case TLS_CREDENTIAL_PSK_PSA: {
+		psa_key_id_t key_id;
 
-	psk_id = credential_get(psk->tag, TLS_CREDENTIAL_PSK_ID);
-	if (psk_id == NULL) {
-		NET_ERR("No matching PSK ID found for tag %d", psk->tag);
-		return -EINVAL;
+		return tls_check_psa_key(cred, &key_id);
 	}
-
-	if (psk->len == 0 || psk_id->len == 0) {
-		NET_ERR("PSK or PSK ID empty on tag %d", psk->tag);
-		return -EINVAL;
+	default: /* TLS_CREDENTIAL_PSK_ID */
+		if (cred->len == 0) {
+			NET_ERR("PSK_ID is empty on tag %d", cred->tag);
+			return -EINVAL;
+		}
+		break;
 	}
 
 	return 0;
@@ -2261,6 +2425,7 @@ static int tls_check_psk(struct tls_credential *psk)
 static int tls_check_credentials(const sec_tag_t *sec_tags, int sec_tag_count)
 {
 	int err = 0;
+	bool valid_psk_config_found = false;
 
 	credentials_lock();
 
@@ -2268,6 +2433,7 @@ static int tls_check_credentials(const sec_tag_t *sec_tags, int sec_tag_count)
 		sec_tag_t tag = sec_tags[i];
 		struct tls_credential *cred = NULL;
 		bool tag_found = false;
+		bool psk_found = false, psk_psa_found = false, psk_id_found = false;
 
 		while ((cred = credential_next_get(tag, cred)) != NULL) {
 			tag_found = true;
@@ -2297,19 +2463,29 @@ static int tls_check_credentials(const sec_tag_t *sec_tags, int sec_tag_count)
 
 				break;
 			case TLS_CREDENTIAL_PSK:
+			case TLS_CREDENTIAL_PSK_PSA:
+			case TLS_CREDENTIAL_PSK_ID:
+				if (valid_psk_config_found) {
+					NET_ERR("Tag %d tried to override PSK/PSK_PSA/PSK_ID", tag);
+					err = -EINVAL;
+					goto exit;
+				}
 				err = tls_check_psk(cred);
 				if (err != 0) {
 					goto exit;
 				}
+				if (cred->type == TLS_CREDENTIAL_PSK) {
+					psk_found = true;
+				} else if (cred->type == TLS_CREDENTIAL_PSK_PSA) {
+					psk_psa_found = true;
+				} else {
+					psk_id_found = true;
+				}
 
 				break;
-			case TLS_CREDENTIAL_PSK_ID:
-				/* Ignore PSK ID - it will be verified together
-				 * with PSK.
-				 */
-				break;
 			default:
-				return -EINVAL;
+				err = -EINVAL;
+				goto exit;
 			}
 		}
 
@@ -2317,6 +2493,24 @@ static int tls_check_credentials(const sec_tag_t *sec_tags, int sec_tag_count)
 		if (!tag_found) {
 			NET_ERR("No TLS credential found with tag %d", tag);
 			err = -ENOENT;
+			goto exit;
+		}
+
+		/* - PSK/PSA_PSK and PSK_ID must be provided using the same tag.
+		 * - Only one between PSK and PSK_PSA can be defined for the same tag.
+		 * - There cannot be more than one (PSK/PSK_PSA, PSK_ID) pair in the
+		 *   provided tag list.
+		 */
+		if (psk_found && psk_psa_found) {
+			NET_ERR("PSK and PSK_PSA both specified at tag %d", tag);
+			err = -EINVAL;
+			goto exit;
+		}
+		if ((psk_found || psk_psa_found) && psk_id_found) {
+			valid_psk_config_found = true;
+		} else if (psk_found || psk_psa_found || psk_id_found) {
+			NET_ERR("Missing PSK or PSK_ID on tag %d", tag);
+			err = -EINVAL;
 			goto exit;
 		}
 	}
