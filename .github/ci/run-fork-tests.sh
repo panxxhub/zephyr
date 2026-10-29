@@ -6,6 +6,8 @@ set -euo pipefail
 export ZEPHYR_BASE="$PWD"
 python3 tests/drivers/watchdog/zynq_swdt/host/run.py
 python3 tests/drivers/flash/spi_nor_deadline/test_deadline.py
+python3 tests/drivers/spi/zynq_qspi_fifo/test_fifo.py
+python3 tests/drivers/ethernet/xlnx_gem_recovery/test_recovery.py
 for platform in qemu_cortex_a9 qemu_cortex_r5; do
   args=()
   if [[ "$platform" == qemu_cortex_a9 ]]; then
