@@ -455,6 +455,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 				ch->bds[0].app[a] = ch->tx_app.app[a];
 			}
 			ch->bds[0].status = 0U;
+			ch->active_bds = 1U;
 			bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd));
 			return 0;
 		}
@@ -499,6 +500,7 @@ static int build_bd_ring(const struct device *dev, uint32_t channel)
 			remaining -= chunk;
 		}
 
+		ch->active_bds = num_needed;
 		bd_flush(ch, ch->bds, sizeof(struct xlnx_sg_bd) * num_needed);
 		return 0;
 	}
@@ -645,30 +647,9 @@ static void kick_channel(const struct device *dev, uint32_t channel)
 		rx_stream_advance_tail(dev);
 		k_spin_unlock(&ch->rx_tail_lock, key);
 	} else {
-		/*
-		 * Non-cyclic: TAILDESC triggers processing up to this BD.
-		 * For TX with caller buffer, compute last BD from transfer size.
-		 * For finite RX (active_bds > 0), use active_bds - 1.
-		 * For multi-BD transfers, submit through the last BD.
-		 */
-		uint32_t tail_idx;
-
-		if (ch->tx_src_addr != 0 && ch->tx_xfer_size > 0 && ch->bd_buf_bytes > 0) {
-			/* Use capped per_bd matching build_bd_ring to avoid divergence */
-			uint32_t per_bd = ch->bd_buf_bytes;
-			uint32_t lm = DEV_CFG(dev)->sg_len_mask;
-
-			if (per_bd > lm) {
-				per_bd = lm;
-			}
-			uint32_t num_used = (ch->tx_xfer_size + per_bd - 1U) / per_bd;
-
-			tail_idx = (num_used > 0) ? (num_used - 1) : 0;
-		} else if (ch->active_bds > 0) {
-			tail_idx = ch->active_bds - 1;
-		} else {
-			tail_idx = ch->num_bds - 1;
-		}
+		/* Submit the last descriptor built, including single-BD TX. */
+		uint32_t count = ch->active_bds > 0U ? ch->active_bds : ch->num_bds;
+		uint32_t tail_idx = count - 1U;
 
 		chan_write(dev, channel, REG_TAILDESC, (uint32_t)(uintptr_t)&ch->bds[tail_idx]);
 	}
