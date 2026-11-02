@@ -225,6 +225,70 @@ static void before(void *fixture)
 	callback_status = 0;
 }
 
+ZTEST(xlnx_finite_rx, test_tx_submitted_tail_matches_built_chain)
+{
+	static struct xlnx_sg_bd tx_bds[16] __aligned(64);
+	static struct dma_xlnx_sg_data tx_data;
+	static const struct dma_xlnx_sg_cfg tx_config = {
+		.tx_buf_phys = 0x05500000U,
+		.tx_buf_size = 65536U,
+		.sg_len_mask = 16383U,
+	};
+	const struct device tx_dev = {.data = &tx_data, .config = &tx_config};
+	const uint32_t sizes[] = {
+		12U, 4092U, 4096U, 4097U, 4104U, 6804U,
+		16383U, 16384U, 16392U, 65536U, 12U,
+	};
+
+	memset(&tx_data, 0, sizeof(tx_data));
+	tx_data.ch[CH_TX].bds = tx_bds;
+	tx_data.ch[CH_TX].num_bds = ARRAY_SIZE(tx_bds);
+	for (size_t sample = 0U; sample < ARRAY_SIZE(sizes); sample++) {
+		struct dma_block_config block = {
+			.source_address = tx_config.tx_buf_phys,
+			.block_size = sizes[sample],
+		};
+		struct dma_config cfg = {
+			.channel_direction = MEMORY_TO_PERIPHERAL,
+			.head_block = &block,
+		};
+		uint32_t bytes = 0U;
+		bool reached_tail = false;
+
+		zassert_ok(dma_xlnx_sg_config(&tx_dev, CH_TX, &cfg));
+		zassert_ok(dma_xlnx_sg_start(&tx_dev, CH_TX));
+		uintptr_t addr = regs[REG_CURDESC / 4U];
+		uintptr_t tail = regs[REG_TAILDESC / 4U];
+
+		/* Follow the graph submitted to hardware, stopping at its tail.
+		 * A second fetch of a completed BD models PG021 SGIntErr.
+		 */
+		for (uint32_t i = 0U; i < ARRAY_SIZE(tx_bds); i++) {
+			zassert_true(addr >= (uintptr_t)tx_bds &&
+				     addr < (uintptr_t)(tx_bds + ARRAY_SIZE(tx_bds)));
+			zassert_equal(addr & 63U, 0U);
+			struct xlnx_sg_bd *bd = (struct xlnx_sg_bd *)addr;
+			uint32_t length = bd->control & tx_config.sg_len_mask;
+
+			zassert_equal(bd->status & BD_STS_CMPLT, 0U,
+				      "TX %u bytes revisited a completed BD", sizes[sample]);
+			zassert_true(length > 0U);
+			zassert_equal(bd->buf_addr, tx_config.tx_buf_phys + bytes);
+			zassert_equal((bd->control & BD_CTRL_SOF) != 0U, i == 0U);
+			zassert_equal((bd->control & BD_CTRL_EOF) != 0U, addr == tail);
+			bytes += length;
+			bd->status = BD_STS_CMPLT | length;
+			if (addr == tail) {
+				reached_tail = true;
+				break;
+			}
+			addr = bd->next_desc;
+		}
+		zassert_true(reached_tail, "TX %u bytes never reached TAILDESC", sizes[sample]);
+		zassert_equal(bytes, sizes[sample]);
+	}
+}
+
 ZTEST(xlnx_finite_rx, test_halted_sg_error_is_reset_before_reusing_descriptors)
 {
 	regs[0x34U / 4U] = 0x14109;
