@@ -106,6 +106,23 @@ config SCHED_CPU_MASK_PIN_ONLY
 	  only be modified before a thread is started.  Most
 	  applications don't want this.
 
+config SCHED_IRQ_EXIT_FASTPATH
+	bool "Skip scheduling on an unchanged idle IRQ exit"
+	default n
+	depends on SCHED_CPU_MASK_PIN_ONLY && USE_SWITCH
+	depends on SCHED_IPI_SUPPORTED && ARCH_HAS_DIRECTED_IPIS && IPI_OPTIMIZE
+	depends on CPU_AARCH32_CORTEX_A || X86_64
+	depends on ATOMIC_OPERATIONS_BUILTIN
+	depends on !SWAP_NONATOMIC && !IPI_OPTIMIZE_IDLE
+	help
+	  Avoid the scheduler spinlock when an outermost interrupt returns to
+	  this CPU's idle thread, its private run queue is empty, and no swap,
+	  timeslice, halt or IPI work is pending. Remote enqueues publish an
+	  atomic queue count before requesting the directed scheduling IPI.
+	  Adds one atomic word per run queue and updates it on enqueue/dequeue.
+	  Stack sentinel and runtime usage accounting remain active; usage
+	  accounting can still take its own lock. Other exits use the scheduler.
+
 config TRACE_SCHED_IPI
 	bool "Test IPI"
 	help

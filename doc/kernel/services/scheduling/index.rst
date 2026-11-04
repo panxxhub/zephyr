@@ -450,6 +450,14 @@ i.e. not doing any real work, like in this example below.
      **Do not use these APIs unless absolutely necessary.** In a normal system,
      the idle thread takes care of power management, including CPU idling.
 
+Idle IRQ-exit fast path
+**********************
+
+.. toctree::
+   :maxdepth: 1
+
+   irq_exit_fastpath
+
 API Reference
 *************
 
