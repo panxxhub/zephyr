@@ -367,6 +367,13 @@ GROUP_START(OCM)
 		__ocm_data_end = .;
 	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME_TOKEN(DT_CHOSEN(zephyr_ocm)) AT> ROMABLE_REGION)
 
+	/* A bootstrap stack must survive arch_bss_zero(). */
+	SECTION_PROLOGUE(.ocm_irq_stacks, (NOLOAD),)
+	{
+		*(.ocm_irq_stacks)
+		*(".ocm_irq_stacks.*")
+	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME_TOKEN(DT_CHOSEN(zephyr_ocm)))
+
 	__ocm_end = .;
 	__ocm_size = __ocm_end - __ocm_start;
 
