@@ -31,7 +31,7 @@ for setting, targets in {
         "sys_trace_k_thread_switched_in",
         "sys_trace_k_thread_switched_out",
     },
-    "TRACING_IDLE": {"sys_trace_idle"},
+    "TRACING_IDLE": {"sys_trace_idle", "sys_trace_idle_exit"},
 }.items():
     present = sorted(set(calls) & targets)
     expected = f"CONFIG_{setting}=y" in config

@@ -25,6 +25,7 @@ void __weak sys_trace_thread_priority_set_user(struct k_thread *thread, int prio
 void __weak sys_trace_isr_enter_user(void) {}
 void __weak sys_trace_isr_exit_user(void) {}
 void __weak sys_trace_idle_user(void) {}
+void __weak sys_trace_idle_exit_user(void) {}
 void __weak sys_trace_sys_init_enter_user(const struct init_entry *entry, int level) {}
 void __weak sys_trace_sys_init_exit_user(const struct init_entry *entry, int level, int result) {}
 void __weak sys_trace_k_thread_sleep_ticks_enter_user(k_timeout_t timeout) {}
@@ -244,6 +245,7 @@ void sys_trace_idle_exit(void)
 	if (IS_ENABLED(CONFIG_CPU_LOAD_BACKEND_IDLE_HOOK)) {
 		cpu_load_on_exit_idle();
 	}
+	sys_trace_idle_exit_user();
 }
 
 void sys_trace_sys_init_enter(const struct init_entry *entry, int level)
