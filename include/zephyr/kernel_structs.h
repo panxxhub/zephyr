@@ -128,6 +128,10 @@ struct _priq_mq {
 };
 
 struct _ready_q {
+#ifdef CONFIG_SCHED_IRQ_EXIT_FASTPATH
+	/* Published under the scheduler lock; IRQ exit only reads this count. */
+	atomic_t queued;
+#endif
 #ifndef CONFIG_SMP
 	/* always contains next thread to run: cannot be NULL */
 	struct k_thread *cache;

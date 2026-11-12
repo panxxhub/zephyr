@@ -147,6 +147,11 @@ void k_thread_time_slice_set(struct k_thread *thread, int32_t thread_slice_ticks
 }
 #endif
 
+bool z_time_slice_pending(void)
+{
+	return atomic_get(&slice_expired[_current_cpu->id]) != 0;
+}
+
 /* Called out of each timer and IPI interrupt */
 void z_time_slice(void)
 {

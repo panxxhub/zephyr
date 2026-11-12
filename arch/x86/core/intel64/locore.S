@@ -1006,7 +1006,11 @@ irq_dispatch:
 	/* not nested; ask the scheduler who's up next and resume it */
 
 	movq ___cpu_t_current_OFFSET(%rsi), %rdi
+#ifdef CONFIG_SCHED_IRQ_EXIT_FASTPATH
+	call z_irq_exit_switch_handle
+#else
 	call z_get_next_switch_handle
+#endif
 	movq %rax, %rdi
 
 #ifdef CONFIG_HW_SHADOW_STACK

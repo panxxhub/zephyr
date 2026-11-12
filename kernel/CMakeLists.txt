@@ -52,6 +52,8 @@ else()
   # FIXME: SHADOW_VARS: Remove this once we have enabled -Wshadow globally.
   add_compile_options($<TARGET_PROPERTY:compiler,warning_shadow_variables>)
 
+  kernel_sources_ifdef(CONFIG_SCHED_IRQ_EXIT_FASTPATH irq_exit.c)
+
   kernel_sources(
     main_weak.c
     busy_wait.c
