@@ -324,7 +324,10 @@ uint32_t sys_clock_elapsed(void)
 
 uint32_t sys_clock_cycle_get_32(void)
 {
-	return (uint32_t)global_timer_count();
+	/* A low-word sample is already atomic, including across its rollover.
+	 * Only the 64-bit API needs the upper/lower/upper consistency loop.
+	 */
+	return sys_read32(GT_REG(GT_CNT_LOWER));
 }
 
 uint64_t sys_clock_cycle_get_64(void)

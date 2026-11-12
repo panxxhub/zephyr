@@ -63,6 +63,24 @@ static void dormant_entry(void *a, void *b, void *c)
 	atomic_set(&started, 1);
 }
 
+static void check_cycle_widths(void)
+{
+	for (uint32_t i = 0U; i < 1024U; i++) {
+		uint64_t before = k_cycle_get_64();
+		uint32_t sample = k_cycle_get_32();
+		uint64_t after = k_cycle_get_64();
+
+		zassert_true(after - before <= UINT32_MAX);
+		/* Unsigned subtraction also covers a low-word rollover. */
+		zassert_true((uint32_t)(sample - (uint32_t)before) <= after - before);
+	}
+}
+
+ZTEST(cpu0_timer, test_cycle_widths)
+{
+	check_cycle_widths();
+}
+
 static void remote_waits(void *a, void *b, void *c)
 {
 	ARG_UNUSED(a);
@@ -85,6 +103,7 @@ static void remote_waits(void *a, void *b, void *c)
 
 	k_busy_wait(100);
 	zassert_true(k_cycle_get_32() != before);
+	check_cycle_widths();
 	k_sem_give(&done);
 }
 
