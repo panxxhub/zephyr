@@ -36,6 +36,18 @@
 			      DT_REG_SIZE(id),\
 			      MT_DEVICE | MATTR_SHARED | MPERM_R | MPERM_W),
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm_text))
+#define OCM_TEXT_BASE DT_REG_ADDR(DT_CHOSEN(zephyr_ocm_text))
+#define OCM_TEXT_SIZE DT_REG_SIZE(DT_CHOSEN(zephyr_ocm_text))
+#define OCM_DATA_BASE DT_REG_ADDR(DT_CHOSEN(zephyr_ocm))
+#define OCM_DATA_SIZE DT_REG_SIZE(DT_CHOSEN(zephyr_ocm))
+BUILD_ASSERT((OCM_TEXT_BASE % 4096U) == 0U && (OCM_TEXT_SIZE % 4096U) == 0U,
+	     "OCM text must occupy whole MMU pages");
+BUILD_ASSERT((uint64_t)OCM_TEXT_BASE + OCM_TEXT_SIZE <= OCM_DATA_BASE ||
+	     (uint64_t)OCM_DATA_BASE + OCM_DATA_SIZE <= OCM_TEXT_BASE,
+	     "OCM text and writable OCM must not overlap");
+#endif
+
 static const struct arm_mmu_region mmu_regions[] = {
 
 	MMU_REGION_FLAT_ENTRY("vectors",
@@ -59,6 +71,12 @@ static const struct arm_mmu_region mmu_regions[] = {
 				      MATTR_CACHE_INNER_WB_WA |
 				      MPERM_R | MPERM_W),
 	/* ARM Arch timer, GIC are covered by the MPCore mapping */
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm_text))
+	MMU_REGION_FLAT_ENTRY("ocm_text", OCM_TEXT_BASE, OCM_TEXT_SIZE,
+			      MT_NORMAL | MATTR_SHARED | MATTR_CACHE_OUTER_WB_WA |
+			      MATTR_CACHE_INNER_WB_WA | MPERM_R | MPERM_X),
+#endif
 
 DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 
@@ -107,6 +125,26 @@ const struct arm_mmu_config mmu_config = {
 	.num_regions = ARRAY_SIZE(mmu_regions),
 	.mmu_regions = mmu_regions,
 };
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm_text))
+void soc_prep_hook(void)
+{
+	const uint32_t *source = (const uint32_t *)__ocm_text_load_start;
+	volatile uint32_t *destination = (volatile uint32_t *)__ocm_text_start;
+	size_t words = ((uintptr_t)__ocm_text_end - (uintptr_t)__ocm_text_start) / 4U;
+
+	/* The bootloader loads the code's LMA in DDR. soc_reset_hook() has
+	 * disabled the L1 caches; copy before the MMU makes OCM text read-only.
+	 * Volatile writes prevent a library call into code not yet relocated.
+	 */
+	for (size_t i = 0; i < words; ++i) {
+		destination[i] = source[i];
+	}
+	barrier_dsync_fence_full();
+	__set_ICIALLU(0);
+	barrier_isync_fence_full();
+}
+#endif
 
 #ifdef CONFIG_SMP
 static void zynq_scu_enable(void)

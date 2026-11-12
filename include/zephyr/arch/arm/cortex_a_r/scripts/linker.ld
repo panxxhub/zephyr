@@ -382,6 +382,19 @@ GROUP_START(OCM)
 GROUP_END(OCM)
 #endif
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm_text))
+	SECTION_PROLOGUE(.ocm_text,,ALIGN(4))
+	{
+		__ocm_text_start = .;
+		*(.ocm_text)
+		*(".ocm_text.*")
+		. = ALIGN(4);
+		__ocm_text_end = .;
+	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME_TOKEN(DT_CHOSEN(zephyr_ocm_text))
+			AT> ROMABLE_REGION)
+	__ocm_text_load_start = LOADADDR(.ocm_text);
+#endif
+
 /* Located in generated directory. This file is populated by the
  * zephyr_linker_sources() Cmake function.
  */

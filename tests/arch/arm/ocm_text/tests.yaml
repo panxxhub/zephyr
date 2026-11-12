@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+tests:
+  arch.arm.ocm_text:
+    tags:
+      - kernel
+      - memory
+    platform_allow:
+      - qemu_cortex_a9
+    integration_platforms:
+      - qemu_cortex_a9
