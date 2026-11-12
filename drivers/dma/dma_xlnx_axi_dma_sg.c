@@ -247,6 +247,7 @@ struct dma_xlnx_sg_cfg {
 	uint8_t sg_cache;     /* AxCACHE for M_AXI_SG transactions */
 	bool rx_invalidate_in_isr;
 	bool rx_outer_nocache;
+	bool rx_cpu0_owned;
 };
 
 /* --------------------------------------------------------------------------
@@ -311,15 +312,41 @@ static inline void cache_invd(void *addr, size_t len)
 #endif
 }
 
-/* The DT attribute describes the CPU mapping, not DMA bus attributes. */
+static int rx_cpu_access_check(const struct device *dev)
+{
+#ifdef CONFIG_SMP
+	if (DEV_CFG(dev)->rx_cpu0_owned) {
+		if (arch_curr_cpu()->id != 0U) {
+			return -EXDEV;
+		}
+#ifdef CONFIG_SCHED_CPU_MASK
+		if (!k_is_in_isr() && k_current_get()->base.cpu_mask != BIT(0)) {
+			return -EXDEV;
+		}
+#else
+		return -ENOTSUP;
+#endif
+	}
+#else
+	ARG_UNUSED(dev);
+#endif
+	return 0;
+}
+
+/* The DT attributes describe the CPU mapping, not DMA bus attributes. */
 static int rx_payload_invd(const struct device *dev, void *addr, size_t len)
 {
+	int ret = rx_cpu_access_check(dev);
+
+	if (ret != 0) {
+		return ret;
+	}
 	if (len == 0U || IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT)) {
 		return 0;
 	}
 	if (DEV_CFG(dev)->rx_outer_nocache) {
 #if defined(CONFIG_DCACHE)
-		int ret = arch_dcache_invd_range(addr, len);
+		ret = arch_dcache_invd_range(addr, len);
 
 		barrier_dsync_fence_full();
 		return ret;
@@ -1867,6 +1894,7 @@ static int dma_xlnx_sg_init(const struct device *dev)
 		.rx_buf_size = DT_INST_REG_SIZE_BY_NAME(inst, rx_buf),                             \
 		.sg_len_mask = SG_LEN_MASK(DT_INST_PROP_OR(inst, xlnx_sg_length_width, 14)),       \
 		.rx_outer_nocache = DT_INST_PROP(inst, xlnx_rx_outer_noncacheable),               \
+		.rx_cpu0_owned = DT_INST_PROP(inst, xlnx_rx_cpu0_owned),                         \
 		.rx_invalidate_in_isr =                                                        \
 			IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_RX_INVALIDATE_IN_ISR),               \
 		.sg_cache = (uint8_t)DT_INST_PROP_OR(inst, xlnx_sg_cache, 0x3),                    \
@@ -1895,6 +1923,12 @@ static int dma_xlnx_sg_init(const struct device *dev)
 	BUILD_ASSERT(!DT_INST_PROP(inst, xlnx_rx_outer_noncacheable) ||                      \
 		     IS_ENABLED(CONFIG_CPU_AARCH32_CORTEX_A),                                  \
 		     "L1-only RX invalidation requires Cortex-A cache operations");            \
+	BUILD_ASSERT(!DT_INST_PROP(inst, xlnx_rx_cpu0_owned) ||                              \
+		     (IS_ENABLED(CONFIG_SOC_FAMILY_XILINX_ZYNQ7000) &&                        \
+		      DT_INST_PROP(inst, xlnx_rx_outer_noncacheable) &&                        \
+		      !IS_ENABLED(CONFIG_DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT) &&                 \
+		      (!IS_ENABLED(CONFIG_SMP) || IS_ENABLED(CONFIG_SCHED_CPU_MASK))),         \
+		     "CPU0 RX requires Zynq, outer bypass, cache maintenance and CPU affinity"); \
 	                                                                                  \
 	BUILD_ASSERT(DT_INST_PROP(inst, xlnx_addrwidth) == 32,                                     \
 		     "xlnx,axi-dma-sg: only 32-bit addressing supported");                         \

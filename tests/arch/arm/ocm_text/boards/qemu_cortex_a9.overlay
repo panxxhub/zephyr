@@ -1,0 +1,20 @@
+/*
+ * SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&ocm_low {
+	reg = <0x00001000 0x0001f000>;
+};
+
+/ {
+	chosen {
+		zephyr,ocm-text = &ocm_code;
+	};
+
+	ocm_code: memory@20000 {
+		compatible = "zephyr,memory-region";
+		reg = <0x00020000 0x00010000>;
+		zephyr,memory-region = "OCM_TEXT";
+	};
+};

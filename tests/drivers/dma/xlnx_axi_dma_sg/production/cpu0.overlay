@@ -1,0 +1,6 @@
+/* SPDX-FileCopyrightText: Copyright The Zephyr Project Contributors */
+/* SPDX-License-Identifier: Apache-2.0 */
+
+&axi_dma0 {
+	xlnx,rx-cpu0-owned;
+};
