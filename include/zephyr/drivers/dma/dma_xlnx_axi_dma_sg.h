@@ -195,6 +195,8 @@ uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev);
  * wall-clock latency. Cache errors stop at the first unsuccessful slice.
  * On SMP, invalidate on every CPU that reads the range unless the platform
  * broadcasts inner-cache maintenance; keep the reader on that CPU otherwise.
+ * With xlnx,rx-cpu0-owned, both invalidation and every payload read must run
+ * on CPU 0. Threads must be pinned to CPU 0 for the entire read lifetime.
  *
  * @param dev DMA device.
  * @param offset Byte offset within the RX buffer region.
@@ -203,6 +205,7 @@ uint32_t dma_xlnx_sg_last_rx_bytes(const struct device *dev);
  * @retval -EINVAL Range outside the RX buffer region or address overflow.
  * @retval -EWOULDBLOCK Called from interrupt context.
  * @retval -EBUSY RX is configured for streaming.
+ * @retval -EXDEV CPU-0-owned RX requested by an unpinned or remote consumer.
  * @return Negative cache error on failure.
  */
 int dma_xlnx_sg_rx_invalidate(const struct device *dev, size_t offset, size_t len);
@@ -217,6 +220,9 @@ int dma_xlnx_sg_rx_invalidate(const struct device *dev, size_t offset, size_t le
  * reports as received - a stream window before its callback, a finite transfer
  * before its completion callback when RX_INVALIDATE_IN_ISR is enabled. With
  * that option disabled, finite consumers must call dma_xlnx_sg_rx_invalidate().
+ * With xlnx,rx-cpu0-owned, only CPU 0 may read the returned RX address, and
+ * reader threads must remain pinned to CPU 0. This metadata query neither
+ * invalidates the payload nor transfers its CPU ownership.
  * Reading elsewhere in the region, or writing into
  * it at all, is the caller's own problem: the driver relies on the RX region
  * never holding a dirty line.

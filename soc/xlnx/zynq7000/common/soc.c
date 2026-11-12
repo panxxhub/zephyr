@@ -78,6 +78,10 @@ DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 	 * consumer.  Only the inner (L1) level is cacheable, because the cache
 	 * receive window needs no outer allocation; PL310 remains bypassed
 	 * for this region even when the shared L2 cache is enabled.
+	 * A CPU-0-owned RX region is Non-shareable: its cache maintenance must
+	 * not broadcast to other cores. The driver rejects payload consumers
+	 * outside CPU 0; applications must retain that affinity while reading.
+	 * Other RX regions keep their shared mapping.
 	 * Nothing in the system writes into the RX region, so no line in it is
 	 * ever dirty — that is what makes an invalidate of a window whose end
 	 * shares a cache line with the next window safe.
@@ -91,7 +95,9 @@ DT_FOREACH_STATUS_OKAY(xlnx_xps_gpio_1_00_a, AXI_GPIO_MMU_ENTRY)
 	MMU_REGION_FLAT_ENTRY("dma_rx_buf",
 			      DT_REG_ADDR_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
 			      DT_REG_SIZE_BY_NAME(DT_NODELABEL(axi_dma0), rx_buf),
-			      MT_NORMAL | MATTR_SHARED | MATTR_CACHE_INNER_WB_nWA |
+			      MT_NORMAL | MATTR_CACHE_INNER_WB_nWA |
+				      (DT_PROP_OR(DT_NODELABEL(axi_dma0), xlnx_rx_cpu0_owned, 0) ?
+				       0U : MATTR_SHARED) |
 				      MPERM_R | MPERM_W | MATTR_MAY_MAP_L1_SECTION),
 #endif
 
