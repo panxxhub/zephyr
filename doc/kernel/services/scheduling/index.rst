@@ -451,7 +451,7 @@ i.e. not doing any real work, like in this example below.
      the idle thread takes care of power management, including CPU idling.
 
 Idle IRQ-exit fast path
-**********************
+***********************
 
 .. toctree::
    :maxdepth: 1

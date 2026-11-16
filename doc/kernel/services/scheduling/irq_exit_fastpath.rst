@@ -2,7 +2,7 @@
 .. SPDX-License-Identifier: Apache-2.0
 
 Idle IRQ-exit fast path
-######################
+#######################
 
 :kconfig:option:`CONFIG_SCHED_IRQ_EXIT_FASTPATH` is an opt-in optimization for
 Cortex-A AArch32 and x86-64 SMP interrupt return. It defaults to disabled and
@@ -26,7 +26,7 @@ lock acquisition. Every rejected exit calls ``z_get_next_switch_handle()``.
 No scheduling policy, thread affinity, or interrupt priority is changed.
 
 Publication and directed-IPI ordering
-************************************
+*************************************
 
 Queue links are never read without the scheduler lock. Each private run queue
 instead has one atomic count. All queue insertions and removals go through
