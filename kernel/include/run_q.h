@@ -53,6 +53,12 @@ static ALWAYS_INLINE void runq_add(struct k_thread *thread)
 	__ASSERT_NO_MSG(!z_is_idle_thread_object(thread));
 	__ASSERT_NO_MSG(!is_thread_dummy(thread));
 
+#ifdef CONFIG_SCHED_IRQ_EXIT_FASTPATH
+	struct _ready_q *rq = CONTAINER_OF(thread_runq(thread), struct _ready_q, runq);
+
+	/* Make in-progress insertions nonempty to the lockless idle check. */
+	atomic_inc(&rq->queued);
+#endif
 	_priq_run_add(thread_runq(thread), thread);
 }
 
@@ -62,6 +68,11 @@ static ALWAYS_INLINE void runq_remove(struct k_thread *thread)
 	__ASSERT_NO_MSG(!is_thread_dummy(thread));
 
 	_priq_run_remove(thread_runq(thread), thread);
+#ifdef CONFIG_SCHED_IRQ_EXIT_FASTPATH
+	struct _ready_q *rq = CONTAINER_OF(thread_runq(thread), struct _ready_q, runq);
+
+	atomic_dec(&rq->queued);
+#endif
 }
 
 static ALWAYS_INLINE void runq_yield(void)

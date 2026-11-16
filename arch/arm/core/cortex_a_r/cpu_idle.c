@@ -22,6 +22,12 @@
 	} while (false)
 #endif
 
+#if defined(CONFIG_SYS_IDLE_HOOKS)
+#define TRACE_IDLE_EXIT() sys_trace_idle_exit()
+#else
+#define TRACE_IDLE_EXIT() do { } while (false)
+#endif
+
 #if defined(CONFIG_ARM_ON_ENTER_CPU_IDLE_HOOK)
 #define SLEEP_IF_ALLOWED(wait_instr)                                                               \
 	do {                                                                                       \
@@ -33,6 +39,7 @@
 			wait_instr();                                                              \
 			/* Inline the macro provided by SoC-specific code */                       \
 			ON_EXIT_IDLE_HOOK;                                                         \
+			TRACE_IDLE_EXIT();                                                         \
 		}                                                                                  \
 	} while (false)
 #else
@@ -41,6 +48,7 @@
 		__DSB();                                                                           \
 		wait_instr();                                                                      \
 		ON_EXIT_IDLE_HOOK;                                                                 \
+		TRACE_IDLE_EXIT();                                                                 \
 	} while (false)
 #endif
 

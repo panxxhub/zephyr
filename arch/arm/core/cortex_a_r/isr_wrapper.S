@@ -487,7 +487,11 @@ z_arm_cortex_ar_irq_done:
 	ldr r1, [r2, #___cpu_t_current_OFFSET]
 	push {r1, r2}
 	mov r0, #0
+#ifdef CONFIG_SCHED_IRQ_EXIT_FASTPATH
+	bl z_irq_exit_switch_handle
+#else
 	bl z_get_next_switch_handle
+#endif
 	pop {r1, r2}
 
 	/*

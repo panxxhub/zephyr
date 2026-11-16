@@ -20,3 +20,8 @@ tests:
   drivers.dma.xlnx_axi_dma_sg.build.no_dcache:
     extra_configs:
       - CONFIG_DCACHE=n
+  drivers.dma.xlnx_axi_dma_sg.build.cpu0:
+    extra_args:
+      - EXTRA_DTC_OVERLAY_FILE=cpu0.overlay
+    extra_configs:
+      - CONFIG_DMA_XLNX_AXI_DMA_SG_RX_INVALIDATE_IN_ISR=n

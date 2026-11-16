@@ -367,12 +367,32 @@ GROUP_START(OCM)
 		__ocm_data_end = .;
 	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME_TOKEN(DT_CHOSEN(zephyr_ocm)) AT> ROMABLE_REGION)
 
+	/* A bootstrap stack must survive arch_bss_zero(). */
+	SECTION_PROLOGUE(.ocm_irq_stacks, (NOLOAD),)
+	{
+		*(.ocm_irq_stacks)
+		*(".ocm_irq_stacks.*")
+	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME_TOKEN(DT_CHOSEN(zephyr_ocm)))
+
 	__ocm_end = .;
 	__ocm_size = __ocm_end - __ocm_start;
 
 	__ocm_data_load_start = LOADADDR(_OCM_DATA_SECTION_NAME);
 
 GROUP_END(OCM)
+#endif
+
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm_text))
+	SECTION_PROLOGUE(.ocm_text,,ALIGN(4))
+	{
+		__ocm_text_start = .;
+		*(.ocm_text)
+		*(".ocm_text.*")
+		. = ALIGN(4);
+		__ocm_text_end = .;
+	} GROUP_LINK_IN(LINKER_DT_NODE_REGION_NAME_TOKEN(DT_CHOSEN(zephyr_ocm_text))
+			AT> ROMABLE_REGION)
+	__ocm_text_load_start = LOADADDR(.ocm_text);
 #endif
 
 /* Located in generated directory. This file is populated by the

@@ -140,9 +140,16 @@ extern const struct init_entry __init_SMP_start[];
  * of this area is safe since interrupts are disabled until the kernel context
  * switches to the init thread.
  */
+#ifdef CONFIG_ARM_ISR_STACKS_IN_OCM
+Z_KERNEL_STACK_ARRAY_DEFINE_IN(z_interrupt_stacks, CONFIG_MP_MAX_NUM_CPUS,
+			      CONFIG_ISR_STACK_SIZE, __in_section_unique(ocm_irq_stacks));
+K_THREAD_HW_SHADOW_STACK_ARRAY_DEFINE(z_interrupt_stacks, CONFIG_MP_MAX_NUM_CPUS,
+				    CONFIG_ISR_STACK_SIZE);
+#else
 K_KERNEL_STACK_ARRAY_DEFINE(z_interrupt_stacks,
 				   CONFIG_MP_MAX_NUM_CPUS,
 				   CONFIG_ISR_STACK_SIZE);
+#endif
 
 extern void idle(void *unused1, void *unused2, void *unused3);
 

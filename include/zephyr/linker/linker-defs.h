@@ -214,6 +214,12 @@ extern char __ocm_end[];
 extern char __ocm_size[];
 #endif
 
+#if DT_NODE_HAS_STATUS_OKAY(DT_CHOSEN(zephyr_ocm_text))
+extern char __ocm_text_start[];
+extern char __ocm_text_end[];
+extern char __ocm_text_load_start[];
+#endif
+
 /* Used by the Security Attribution Unit to configure the
  * Non-Secure Callable region.
  */

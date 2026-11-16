@@ -197,6 +197,18 @@ config HAS_SWO
 
 DT_CHOSEN_Z_DTCM := zephyr,dtcm
 DT_CHOSEN_Z_ITCM := zephyr,itcm
+DT_CHOSEN_Z_OCM := zephyr,ocm
+
+config ARM_ISR_STACKS_IN_OCM
+	bool "Place interrupt stacks in OCM"
+	depends on ARM_AARCH32_MMU && USE_SWITCH && !KERNEL_COHERENCE
+	depends on $(dt_chosen_enabled,$(DT_CHOSEN_Z_OCM))
+	help
+	  Place the per-CPU interrupt stacks in the zephyr,ocm chosen memory.
+	  The OCM must be accessible during early boot and remain writable after
+	  MMU setup. The linker reserves the stacks outside the OCM BSS clearing
+	  range because the primary stack can be in use during initialization.
+	  Stack sizes, alignment, initialization patterns and guards are unchanged.
 
 choice
 	prompt "Vector table memory location"

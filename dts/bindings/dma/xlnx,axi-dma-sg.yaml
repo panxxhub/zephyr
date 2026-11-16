@@ -74,6 +74,19 @@ properties:
       RX memory must never contain dirty CPU cache lines. Explicit physical
       streaming destinations remain CPU-invisible and are not maintained.
 
+  xlnx,rx-cpu0-owned:
+    type: boolean
+    description: |
+      Only CPU 0 may read the receive buffer. On Zynq-7000, map rx_buf as
+      Normal, inner-cacheable, outer-non-cacheable, Non-shareable memory.
+      This keeps RX cache maintenance local to CPU 0. Requires
+      xlnx,rx-outer-noncacheable and no other CPU mapping or reader of rx_buf.
+      Cache invalidation is still required before reading DMA-written bytes.
+      On SMP, payload consumers and the system workqueue must be pinned to
+      CPU 0; an unpinned or remote consumer is rejected with EXDEV. Metadata
+      queries do not grant permission to read the returned CPU address.
+      DMA_XLNX_AXI_DMA_SG_CACHE_COHERENT must be disabled.
+
   dma-channels:
     const: 2
     description: Fixed 2 channels (TX + RX).

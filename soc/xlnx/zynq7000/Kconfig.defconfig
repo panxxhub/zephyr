@@ -17,6 +17,7 @@ config NUM_IRQS
 
 # Workaround for not being able to have commas in macro arguments
 DT_CHOSEN_Z_FLASH := zephyr,flash
+DT_CHOSEN_Z_OCM_TEXT := zephyr,ocm-text
 
 config FLASH_SIZE
 	default $(dt_chosen_reg_size_int,$(DT_CHOSEN_Z_FLASH),0,K)
@@ -29,6 +30,9 @@ config SOC_RESET_HOOK
 
 config SOC_EARLY_INIT_HOOK
 	default y
+
+config SOC_PREP_HOOK
+	default y if $(dt_chosen_enabled,$(DT_CHOSEN_Z_OCM_TEXT))
 
 config SOC_PER_CORE_INIT_HOOK
 	default y if SMP
