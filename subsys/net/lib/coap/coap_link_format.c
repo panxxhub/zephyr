@@ -16,6 +16,8 @@ LOG_MODULE_DECLARE(net_coap, CONFIG_COAP_LOG_LEVEL);
 
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/hash_function.h>
+#include <zephyr/sys/math_extras.h>
+#include <zephyr/sys/util.h>
 
 #include <zephyr/sys/printk.h>
 
@@ -163,8 +165,6 @@ static bool match_queries_resource(const struct coap_resource *resource,
 
 #if defined(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)
 
-#define MAX_BLOCK_WISE_TRANSFER_SIZE 2048
-
 static uint32_t hash_combine_str(uint32_t seed, const char *str)
 {
 	/* Boost-style hash combine, the constant is the 32-bit golden ratio */
@@ -230,22 +230,80 @@ enum coap_block_size default_block_size(void)
 	return COAP_BLOCK_64;
 }
 
+static int well_known_core_total_size(const struct coap_resource *resources,
+				      size_t resources_len,
+				      const struct coap_option *query,
+				      unsigned int num_queries,
+				      size_t *total_size)
+{
+	size_t total = 0U;
+	bool first = true;
+
+	for (size_t i = 0; i < resources_len; i++) {
+		const struct coap_core_metadata *meta = resources[i].metadata;
+		const char * const *p;
+		size_t res_len;
+
+		if (!match_queries_resource(&resources[i], query, num_queries)) {
+			continue;
+		}
+
+		if (resources[i].path == NULL) {
+			return -EINVAL;
+		}
+
+		/* "," separator (after first resource) + "</" + ">" */
+		res_len = first ? 3U : 4U;
+		first = false;
+
+		for (p = resources[i].path; *p != NULL; p++) {
+			size_t seg_len = strlen(*p);
+
+			if (size_add_overflow(res_len, seg_len, &res_len)) {
+				return -EOVERFLOW;
+			}
+
+			if (*(p + 1) != NULL && size_add_overflow(res_len, 1U, &res_len)) {
+				return -EOVERFLOW;
+			}
+		}
+
+		if (meta != NULL && meta->attributes != NULL) {
+			for (const char * const *attr = meta->attributes; *attr != NULL; attr++) {
+				size_t attr_len = strlen(*attr);
+
+				if (size_add_overflow(res_len, 1U, &res_len) ||
+				    size_add_overflow(res_len, attr_len, &res_len)) {
+					return -EOVERFLOW;
+				}
+			}
+		}
+
+		if (size_add_overflow(total, res_len, &total)) {
+			return -EOVERFLOW;
+		}
+	}
+
+	*total_size = total;
+	return 0;
+}
+
 static bool append_to_coap_pkt(struct coap_packet *response,
-			       const char *str, uint16_t len,
+			       const char *str, size_t len,
 			       uint16_t *remaining, size_t *offset,
 			       size_t current)
 {
-	uint16_t pos = 0U;
+	size_t pos = 0U;
 	bool res;
 
-	if (!*remaining) {
+	if (!*remaining || len == 0U) {
 		return true;
 	}
 
 	if (*offset < current) {
 		pos = current - *offset;
 
-		if (len >= pos) {
+		if (len > pos) {
 			len -= pos;
 			*offset += pos;
 		} else {
@@ -258,9 +316,9 @@ static bool append_to_coap_pkt(struct coap_packet *response,
 		len = *remaining;
 	}
 
-	res = append(response, str + pos, len);
+	res = append(response, (const uint8_t *)(str + pos), (uint16_t)len);
 
-	*remaining -= len;
+	*remaining -= (uint16_t)len;
 	*offset += len;
 
 	return res;
@@ -269,7 +327,7 @@ static bool append_to_coap_pkt(struct coap_packet *response,
 static int format_uri(const char * const *path,
 		      struct coap_packet *response,
 		      uint16_t *remaining, size_t *offset,
-		      size_t current, bool *more)
+		      size_t current)
 {
 	static const char prefix[] = "</";
 	const char * const *p;
@@ -279,19 +337,18 @@ static int format_uri(const char * const *path,
 		return -EINVAL;
 	}
 
-	res = append_to_coap_pkt(response, &prefix[0], sizeof(prefix) - 1,
+	res = append_to_coap_pkt(response, &prefix[0], sizeof(prefix) - 1U,
 				 remaining, offset, current);
 	if (!res) {
 		return -ENOMEM;
 	}
 
 	if (!*remaining) {
-		*more = true;
 		return 0;
 	}
 
 	for (p = path; *p; ) {
-		uint16_t path_len = strlen(*p);
+		size_t path_len = strlen(*p);
 
 		res = append_to_coap_pkt(response, *p, path_len, remaining,
 					 offset, current);
@@ -300,7 +357,6 @@ static int format_uri(const char * const *path,
 		}
 
 		if (!*remaining) {
-			*more = true;
 			return 0;
 		}
 
@@ -309,30 +365,21 @@ static int format_uri(const char * const *path,
 			continue;
 		}
 
-		res = append_to_coap_pkt(response, "/", 1, remaining, offset,
+		res = append_to_coap_pkt(response, "/", 1U, remaining, offset,
 					 current);
 		if (!res) {
 			return -ENOMEM;
 		}
 
 		if (!*remaining) {
-			*more = true;
 			return 0;
 		}
-
 	}
 
-	res = append_to_coap_pkt(response, ">", 1, remaining, offset, current);
+	res = append_to_coap_pkt(response, ">", 1U, remaining, offset, current);
 	if (!res) {
 		return -ENOMEM;
 	}
-
-	if (!*remaining) {
-		*more = true;
-		return 0;
-	}
-
-	*more = false;
 
 	return 0;
 }
@@ -340,33 +387,29 @@ static int format_uri(const char * const *path,
 static int format_attributes(const char * const *attributes,
 			     struct coap_packet *response,
 			     uint16_t *remaining, size_t *offset,
-			     size_t current, bool *more)
+			     size_t current)
 {
 	const char * const *attr;
 	bool res;
 
 	if (!attributes) {
-		*more = false;
 		return 0;
 	}
 
 	for (attr = attributes; *attr; attr++) {
 		size_t attr_len;
-		size_t attr_offset;
 
-		res = append_to_coap_pkt(response, ";", 1,
+		res = append_to_coap_pkt(response, ";", 1U,
 					 remaining, offset, current);
 		if (!res) {
 			return -ENOMEM;
 		}
 
 		if (!*remaining) {
-			*more = true;
 			return 0;
 		}
 
 		attr_len = strlen(*attr);
-		attr_offset = *offset;
 
 		res = append_to_coap_pkt(response, *attr, attr_len,
 					 remaining, offset, current);
@@ -374,43 +417,29 @@ static int format_attributes(const char * const *attributes,
 			return -ENOMEM;
 		}
 
-		/* The offset advances by less than the attribute length only
-		 * when the attribute was cut short by the block boundary. The
-		 * remainder belongs in the next block, even when this is the
-		 * last attribute of the last resource.
-		 */
-		if (*offset - attr_offset < attr_len) {
-			*more = true;
-			return 0;
-		}
-
-		if (*(attr + 1) && !*remaining) {
-			*more = true;
+		if (!*remaining) {
 			return 0;
 		}
 	}
 
-	*more = false;
 	return 0;
 }
 
 static int format_resource(const struct coap_resource *resource,
 			   struct coap_packet *response,
 			   uint16_t *remaining, size_t *offset,
-			   size_t current, bool *more)
+			   size_t current)
 {
 	struct coap_core_metadata *meta = resource->metadata;
 	const char * const *attributes = NULL;
 	int r;
 
-	r = format_uri(resource->path, response, remaining,
-		       offset, current, more);
+	r = format_uri(resource->path, response, remaining, offset, current);
 	if (r < 0) {
 		return r;
 	}
 
 	if (!*remaining) {
-		*more = true;
 		return 0;
 	}
 
@@ -419,46 +448,7 @@ static int format_resource(const struct coap_resource *resource,
 	}
 
 	return format_attributes(attributes, response, remaining, offset,
-				 current, more);
-}
-
-/* coap_well_known_core_get() added Option (delta and len) with
- * out any extended options so this function will not consider Extended
- * options at the moment.
- */
-int clear_more_flag(struct coap_packet *cpkt)
-{
-	uint16_t offset;
-	uint8_t opt;
-	uint8_t delta;
-	uint8_t len;
-
-	offset = cpkt->hdr_len;
-	delta = 0U;
-
-	while (1) {
-		opt = cpkt->data[offset++];
-
-		delta += ((opt & 0xF0) >> 4);
-		len = (opt & 0xF);
-
-		if (delta == COAP_OPTION_BLOCK2) {
-			break;
-		}
-
-		offset += len;
-	}
-
-	/* As per RFC 7959 Sec 2.2 : NUM filed can be on 0-3 bytes.
-	 * Skip NUM field to update M bit.
-	 */
-	if (len > 1) {
-		offset = offset + len - 1;
-	}
-
-	cpkt->data[offset] = cpkt->data[offset] & 0xF7;
-
-	return 0;
+				 current);
 }
 
 int coap_well_known_core_get_len(struct coap_resource *resources,
@@ -469,47 +459,20 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 {
 	struct coap_block_context ctx;
 	struct coap_option query;
+	struct coap_option block2_opts[2];
 	unsigned int num_queries;
+	size_t total_size;
 	size_t offset;
 	uint8_t token[COAP_TOKEN_MAX_LEN];
 	uint16_t remaining;
 	uint16_t id;
 	uint8_t tkl;
 	int r;
-	int block2;
-	bool more = false, first = true;
+	bool first = true;
 
 	if (!resources || !request || !response || !data || !len) {
 		return -EINVAL;
 	}
-
-	/* The response is regenerated for every block and the block context is
-	 * derived from the request alone, so no state is shared between calls
-	 * and concurrent transfers from different clients stay independent.
-	 * The total size is unknown until the last block; the
-	 * MAX_BLOCK_WISE_TRANSFER_SIZE placeholder keeps the more flag set
-	 * until clear_more_flag() corrects the final block.
-	 */
-	coap_block_transfer_init(&ctx, default_block_size(),
-				 MAX_BLOCK_WISE_TRANSFER_SIZE);
-
-	/* Honor a smaller block size negotiated by the client on an earlier
-	 * block, which coap_update_from_block() would otherwise reject as a
-	 * size mismatch.
-	 */
-	block2 = coap_get_option_int(request, COAP_OPTION_BLOCK2);
-	if (block2 >= 0) {
-		ctx.block_size = MIN((enum coap_block_size)GET_BLOCK_SIZE(block2),
-				     ctx.block_size);
-	}
-
-	r = coap_update_from_block(request, &ctx);
-	if (r < 0) {
-		return r;
-	}
-
-	id = coap_header_get_id(request);
-	tkl = coap_header_get_token(request, token);
 
 	/* Per RFC 6690, Section 4.1, only one (or none) query parameter may be
 	 * provided, use the first if multiple.
@@ -520,6 +483,54 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 	}
 
 	num_queries = r;
+
+	r = well_known_core_total_size(resources, resources_len, &query,
+				       num_queries, &total_size);
+	if (r < 0) {
+		return r;
+	}
+
+	/* The response is regenerated for every block and the block context is
+	 * derived from the request alone, so no state is shared between calls
+	 * and concurrent transfers from different clients stay independent.
+	 * Initializing the context with the exact link-format document length
+	 * lets coap_append_block2_option() encode the M bit directly without a
+	 * fixed size ceiling or post-hoc option rewriting.
+	 */
+	coap_block_transfer_init(&ctx, default_block_size(), total_size);
+
+	/* Validate the Block2 option (RFC 7959 Table 1: non-repeatable, 0-3
+	 * bytes) and honor a smaller block size negotiated by the client on an
+	 * earlier block, which coap_update_from_block() would otherwise reject
+	 * as a size mismatch.
+	 */
+	r = coap_find_options(request, COAP_OPTION_BLOCK2, block2_opts, ARRAY_SIZE(block2_opts));
+	if (r < 0) {
+		return r;
+	}
+
+	if (r > 1 || (r == 1 && block2_opts[0].len > 3U)) {
+		return -EINVAL;
+	}
+
+	if (r == 1) {
+		unsigned int block2 = coap_option_value_to_int(&block2_opts[0]);
+
+		ctx.block_size = MIN((enum coap_block_size)GET_BLOCK_SIZE(block2),
+				     ctx.block_size);
+	}
+
+	r = coap_update_from_block(request, &ctx);
+	if (r < 0) {
+		return r;
+	}
+
+	if (ctx.current > 0U && ctx.current >= total_size) {
+		return -EINVAL;
+	}
+
+	id = coap_header_get_id(request);
+	tkl = coap_header_get_token(request, token);
 
 	r = coap_packet_init(response, data, len, COAP_VERSION_1, COAP_TYPE_ACK,
 			     tkl, token, COAP_RESPONSE_CODE_CONTENT, id);
@@ -549,20 +560,19 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 		return r;
 	}
 
+	if (total_size == 0U) {
+		return 0;
+	}
+
 	r = coap_packet_append_payload_marker(response);
 	if (r < 0) {
 		return r;
 	}
 
-	offset = 0;
+	offset = 0U;
 	remaining = coap_block_size_to_bytes(ctx.block_size);
 
-	for (size_t i = 0; i < resources_len; ++i) {
-		if (!remaining) {
-			more = true;
-			break;
-		}
-
+	for (size_t i = 0; i < resources_len && remaining > 0U; ++i) {
 		if (!match_queries_resource(&resources[i], &query, num_queries)) {
 			continue;
 		}
@@ -570,28 +580,24 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 		if (first) {
 			first = false;
 		} else {
-			r = append_to_coap_pkt(response, ",", 1, &remaining,
-					       &offset, ctx.current);
-			if (!r) {
-				return r;
+			if (!append_to_coap_pkt(response, ",", 1U, &remaining,
+						&offset, ctx.current)) {
+				return -ENOMEM;
+			}
+
+			if (!remaining) {
+				break;
 			}
 		}
 
 		r = format_resource(&resources[i], response, &remaining, &offset,
-				    ctx.current, &more);
+				    ctx.current);
 		if (r < 0) {
 			return r;
 		}
 	}
 
-	/* Offset is the total size now, but block2 option is already
-	 * appended. So update only 'more' flag.
-	 */
-	if (!more) {
-		r = clear_more_flag(response);
-	}
-
-	return r;
+	return 0;
 }
 
 #else
@@ -736,17 +742,16 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 		return -EINVAL;
 	}
 
-	r = coap_packet_append_payload_marker(response);
-	if (r < 0) {
-		return -EINVAL;
-	}
-
 	for (size_t i = 0; i < resources_len; ++i) {
 		if (!match_queries_resource(&resources[i], &query, num_queries)) {
 			continue;
 		}
 
 		if (first) {
+			r = coap_packet_append_payload_marker(response);
+			if (r < 0) {
+				return -EINVAL;
+			}
 			first = false;
 		} else {
 			r = append_u8(response, (uint8_t) ',');

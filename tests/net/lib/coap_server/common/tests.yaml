@@ -13,3 +13,6 @@ common:
 
 tests:
   net.coap.server.secure: {}
+  net.coap.server.well_known_blockwise:
+    extra_configs:
+      - CONFIG_COAP_WELL_KNOWN_BLOCK_WISE=y

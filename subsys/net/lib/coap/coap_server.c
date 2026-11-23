@@ -154,20 +154,20 @@ static int coap_service_send_internal(const struct coap_service *service,
 				      const struct coap_transmission_parameters *params,
 				      struct coap_oscore_protect_params *oscore_params);
 
-#if defined(CONFIG_COAP_OSCORE)
 static int init_error_response_packet(struct coap_packet *response,
 				      const struct coap_packet *request, uint8_t code, uint8_t *buf,
 				      size_t buf_len)
 {
 	uint8_t token[COAP_TOKEN_MAX_LEN];
 	uint8_t tkl = coap_header_get_token(request, token);
-	uint16_t id = coap_header_get_id(request);
 	uint8_t type = (coap_header_get_type(request) == COAP_TYPE_CON) ? COAP_TYPE_ACK
 									: COAP_TYPE_NON_CON;
+	uint16_t id = (type == COAP_TYPE_ACK) ? coap_header_get_id(request) : coap_next_id();
 
 	return coap_packet_init(response, buf, buf_len, COAP_VERSION_1, type, tkl, token, code, id);
 }
 
+#if defined(CONFIG_COAP_OSCORE)
 static int send_error_response(const struct coap_service *service,
 			       const struct coap_packet *request, uint8_t code,
 			       const struct net_sockaddr *client_addr,
@@ -689,12 +689,26 @@ static int coap_server_process(int sock_fd)
 						   &request, &response,
 						   well_known_buf, sizeof(well_known_buf));
 		if (ret < 0) {
+			uint8_t err_code = (ret == -EINVAL)
+						   ? COAP_RESPONSE_CODE_BAD_OPTION
+						   : COAP_RESPONSE_CODE_INTERNAL_ERROR;
+
 			LOG_ERR("Failed to build well known core for %s (%d)", service->name, ret);
-			goto unlock;
+
+			ret = init_error_response_packet(&response, &request, err_code,
+							 well_known_buf, sizeof(well_known_buf));
+			if (ret < 0) {
+				LOG_ERR("Failed to init well known core error response (%d)", ret);
+				goto unlock;
+			}
 		}
 
 		ret = coap_service_send(service, &response, net_sad(&client_addr), client_addr_len,
 					NULL);
+		if (ret < 0) {
+			LOG_ERR("Failed to send well known core response for %s (%d)",
+				service->name, ret);
+		}
 	} else {
 		ret = coap_handle_request_len(&request, service->res_begin,
 					      COAP_SERVICE_RESOURCE_COUNT(service), options,
