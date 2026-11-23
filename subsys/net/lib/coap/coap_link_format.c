@@ -24,6 +24,8 @@ LOG_MODULE_DECLARE(net_coap, CONFIG_COAP_LOG_LEVEL);
 #include <zephyr/net/coap.h>
 #include <zephyr/net/coap_link_format.h>
 
+#include "coap_internal.h"
+
 static inline bool append(struct coap_packet *cpkt, const uint8_t *data, uint16_t len)
 {
 	if (!cpkt || !data) {
@@ -43,68 +45,67 @@ static inline bool append(struct coap_packet *cpkt, const uint8_t *data, uint16_
 static bool match_path_uri(const char * const *path,
 			   const char *uri, uint16_t len)
 {
-	const char * const *p = NULL;
-	int i, j, k, plen;
+	const char * const *p;
+	bool wildcard = false;
+	uint16_t prefix_len;
+	uint16_t pos;
 
-	if (!path) {
+	if (path == NULL || *path == NULL || uri == NULL || len == 0U) {
 		return false;
 	}
 
-	if (len <= 1U || uri[0] != '/') {
+	if (uri[len - 1U] == '*') {
+		wildcard = true;
+		prefix_len = len - 1U;
+	} else {
+		prefix_len = len;
+	}
+
+	if (prefix_len == 0U) {
+		return true;
+	}
+
+	if (uri[0] != '/') {
 		return false;
 	}
 
-	p = path;
-	plen = *p ? strlen(*p) : 0;
-
-	if (plen == 0) {
-		return false;
+	pos = 1U;
+	if (pos == prefix_len) {
+		return wildcard || ((*path)[0] == '\0' && *(path + 1) == NULL);
 	}
 
-	/* Go through uri and try to find a matching path */
-	for (i = 1; i < len; i++) {
-		while (*p) {
-			plen = strlen(*p);
+	for (p = path; *p != NULL; p++) {
+		size_t seg_len = strlen(*p);
+		uint16_t rem = prefix_len - pos;
 
-			k = i;
-
-			for (j = 0; j < plen; j++) {
-				if (k >= len) {
-					goto next;
-				}
-
-				if (uri[k] == '*') {
-					if ((k + 1) == len) {
-						return true;
-					}
-				}
-
-				if (uri[k] != (*p)[j]) {
-					goto next;
-				}
-
-				k++;
+		if (p != path) {
+			if (rem == 0U) {
+				return wildcard;
 			}
 
-			if (i == (k - 1) && j == plen) {
-				return true;
+			if (uri[pos] != '/') {
+				return false;
 			}
 
-			if (k == len && j == plen) {
-				return true;
+			pos++;
+			rem--;
+			if (rem == 0U) {
+				return wildcard;
 			}
-
-next:
-			p++;
 		}
+
+		if (rem < seg_len) {
+			return wildcard && (memcmp(&uri[pos], *p, rem) == 0);
+		}
+
+		if (memcmp(&uri[pos], *p, seg_len) != 0) {
+			return false;
+		}
+
+		pos += (uint16_t)seg_len;
 	}
 
-	/* Did we find the resource or not */
-	if (i == len && !*p) {
-		return false;
-	}
-
-	return true;
+	return pos == prefix_len;
 }
 
 static bool match_attributes(const char * const *attributes,
@@ -135,12 +136,21 @@ static bool match_queries_resource(const struct coap_resource *resource,
 				   const struct coap_option *query,
 				   int num_queries)
 {
+	static const char href_prefix[] = "href=";
+	const size_t href_prefix_len = sizeof(href_prefix) - 1U;
 	struct coap_core_metadata *meta = resource->metadata;
 	const char * const *attributes = NULL;
-	const int href_len = strlen("href");
 
 	if (num_queries == 0) {
 		return true;
+	}
+
+	if (query->len > href_prefix_len &&
+	    memcmp(query->value, href_prefix, href_prefix_len) == 0) {
+		const char *uri = (const char *)query->value + href_prefix_len;
+		uint16_t uri_len = query->len - (uint16_t)href_prefix_len;
+
+		return match_path_uri(resource->path, uri, uri_len);
 	}
 
 	if (meta != NULL && meta->attributes != NULL) {
@@ -149,15 +159,6 @@ static bool match_queries_resource(const struct coap_resource *resource,
 
 	if (attributes == NULL) {
 		return false;
-	}
-
-	if (query->len > href_len + 1 &&
-	    !strncmp((char *) query->value, "href", href_len)) {
-		/* The stuff after 'href=' */
-		const char *uri = (char *) query->value + href_len + 1;
-		uint16_t uri_len  = query->len - (href_len + 1);
-
-		return match_path_uri(resource->path, uri, uri_len);
 	}
 
 	return match_attributes(attributes, query);
@@ -463,10 +464,7 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 	unsigned int num_queries;
 	size_t total_size;
 	size_t offset;
-	uint8_t token[COAP_TOKEN_MAX_LEN];
 	uint16_t remaining;
-	uint16_t id;
-	uint8_t tkl;
 	int r;
 	bool first = true;
 
@@ -520,7 +518,7 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 				     ctx.block_size);
 	}
 
-	r = coap_update_from_block(request, &ctx);
+	r = coap_update_from_block_for_option(request, &ctx, COAP_OPTION_BLOCK2);
 	if (r < 0) {
 		return r;
 	}
@@ -529,13 +527,9 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 		return -EINVAL;
 	}
 
-	id = coap_header_get_id(request);
-	tkl = coap_header_get_token(request, token);
-
-	r = coap_packet_init(response, data, len, COAP_VERSION_1, COAP_TYPE_ACK,
-			     tkl, token, COAP_RESPONSE_CODE_CONTENT, id);
+	r = coap_init_response_packet(response, request, COAP_RESPONSE_CODE_CONTENT, data, len);
 	if (r < 0) {
-		return r;
+		return -ENOMEM;
 	}
 
 	if (IS_ENABLED(CONFIG_SYS_HASH_FUNC32)) {
@@ -545,19 +539,19 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 		r = coap_packet_append_option(response, COAP_OPTION_ETAG,
 					      (const uint8_t *)&etag, sizeof(etag));
 		if (r < 0) {
-			return r;
+			return -ENOMEM;
 		}
 	}
 
 	r = coap_append_option_int(response, COAP_OPTION_CONTENT_FORMAT,
 				   COAP_CONTENT_FORMAT_APP_LINK_FORMAT);
 	if (r < 0) {
-		return r;
+		return -ENOMEM;
 	}
 
 	r = coap_append_block2_option(response, &ctx);
 	if (r < 0) {
-		return r;
+		return -ENOMEM;
 	}
 
 	if (total_size == 0U) {
@@ -566,7 +560,7 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 
 	r = coap_packet_append_payload_marker(response);
 	if (r < 0) {
-		return r;
+		return -ENOMEM;
 	}
 
 	offset = 0U;
@@ -706,9 +700,6 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 				 uint8_t *data, uint16_t data_len)
 {
 	struct coap_option query;
-	uint8_t token[COAP_TOKEN_MAX_LEN];
-	uint16_t id;
-	uint8_t tkl;
 	uint8_t num_queries;
 	int r;
 	bool first = true;
@@ -716,9 +707,6 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 	if (!resources || !request || !response || !data || !data_len) {
 		return -EINVAL;
 	}
-
-	id = coap_header_get_id(request);
-	tkl = coap_header_get_token(request, token);
 
 	/* Per RFC 6690, Section 4.1, only one (or none) query parameter may be
 	 * provided, use the first if multiple.
@@ -730,16 +718,16 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 
 	num_queries = r;
 
-	r = coap_packet_init(response, data, data_len, COAP_VERSION_1, COAP_TYPE_ACK,
-			     tkl, token, COAP_RESPONSE_CODE_CONTENT, id);
+	r = coap_init_response_packet(response, request, COAP_RESPONSE_CODE_CONTENT, data,
+				      data_len);
 	if (r < 0) {
-		return r;
+		return -ENOMEM;
 	}
 
 	r = coap_append_option_int(response, COAP_OPTION_CONTENT_FORMAT,
 				   COAP_CONTENT_FORMAT_APP_LINK_FORMAT);
 	if (r < 0) {
-		return -EINVAL;
+		return -ENOMEM;
 	}
 
 	for (size_t i = 0; i < resources_len; ++i) {
@@ -750,7 +738,7 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 		if (first) {
 			r = coap_packet_append_payload_marker(response);
 			if (r < 0) {
-				return -EINVAL;
+				return -ENOMEM;
 			}
 			first = false;
 		} else {

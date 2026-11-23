@@ -1013,6 +1013,11 @@ int coap_get_block2_option(const struct coap_packet *cpkt, bool *has_more,
  * @brief Retrieves BLOCK{1,2} and SIZE{1,2} from @a cpkt and updates
  * @a ctx accordingly.
  *
+ * A single @ref coap_block_context cannot track Block1 and Block2 transfers at
+ * the same time. If @a cpkt carries both options, this function returns
+ * -EINVAL without modifying @a ctx; use coap_update_from_block_for_option()
+ * with independent contexts instead.
+ *
  * @param cpkt Packet in which to look for block-wise transfers options
  * @param ctx Block context to be updated
  *
@@ -1020,6 +1025,20 @@ int coap_get_block2_option(const struct coap_packet *cpkt, bool *has_more,
  */
 int coap_update_from_block(const struct coap_packet *cpkt,
 			   struct coap_block_context *ctx);
+
+/**
+ * @brief Retrieves a specific block option and its matching size option from
+ * @a cpkt and updates @a ctx accordingly.
+ *
+ * @param cpkt Packet in which to look for block-wise transfer options
+ * @param ctx Block context to be updated
+ * @param option Either COAP_OPTION_BLOCK1 or COAP_OPTION_BLOCK2
+ *
+ * @return 0 in case of success or negative in case of error.
+ */
+int coap_update_from_block_for_option(const struct coap_packet *cpkt,
+				      struct coap_block_context *ctx,
+				      enum coap_option_num option);
 
 /**
  * @brief Updates @a ctx according to @a option set in @a cpkt
@@ -1491,6 +1510,11 @@ int coap_tcp_append_block2_option(struct coap_packet *cpkt,
  * @brief Retrieves BLOCK{1,2} and SIZE{1,2} from @a cpkt and updates
  * @a ctx accordingly.
  *
+ * A single @ref coap_block_context cannot track Block1 and Block2 transfers at
+ * the same time. If @a cpkt carries both options, this function returns
+ * -EINVAL without modifying @a ctx; use coap_tcp_update_from_block_for_option()
+ * with independent contexts instead.
+ *
  * @param cpkt TCP Packet in which to look for block-wise transfers options
  * @param ctx Block context to be updated
  *
@@ -1498,6 +1522,20 @@ int coap_tcp_append_block2_option(struct coap_packet *cpkt,
  */
 int coap_tcp_update_from_block(const struct coap_packet *cpkt,
 			       struct coap_block_context *ctx);
+
+/**
+ * @brief Retrieves a specific block option and its matching size option from
+ * TCP packet @a cpkt and updates @a ctx accordingly.
+ *
+ * @param cpkt TCP Packet in which to look for block-wise transfer options
+ * @param ctx Block context to be updated
+ * @param option Either COAP_OPTION_BLOCK1 or COAP_OPTION_BLOCK2
+ *
+ * @return 0 in case of success or negative in case of error.
+ */
+int coap_tcp_update_from_block_for_option(const struct coap_packet *cpkt,
+					  struct coap_block_context *ctx,
+					  enum coap_option_num option);
 
 /**
  * @brief Updates @a ctx so after this is called the current entry

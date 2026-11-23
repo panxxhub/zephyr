@@ -2342,6 +2342,223 @@ ZTEST(coap_oscore, test_oscore_context_pool_exhaustion)
 	zassert_ok(coap_oscore_context_remove(ctx_c), "Should remove third context");
 }
 
+static int oscore_build_well_known_request(struct coap_packet *req, uint8_t *buf, size_t buf_len,
+					   uint8_t type, const uint8_t *token, uint8_t tkl,
+					   uint16_t id, int observe, int block2)
+{
+	int ret;
+
+	ret = coap_packet_init(req, buf, buf_len, COAP_VERSION_1, type, tkl, token, COAP_METHOD_GET,
+			       id);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (observe >= 0) {
+		ret = coap_append_option_int(req, COAP_OPTION_OBSERVE, observe);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	ret = coap_packet_append_option(req, COAP_OPTION_URI_PATH, (const uint8_t *)".well-known",
+					sizeof(".well-known") - 1U);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = coap_packet_append_option(req, COAP_OPTION_URI_PATH, (const uint8_t *)"core",
+					sizeof("core") - 1U);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (block2 >= 0) {
+		ret = coap_append_option_int(req, COAP_OPTION_BLOCK2, (unsigned int)block2);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * Direct /.well-known/core replies (both 2.05 success and 4.02 error) must stay
+ * OSCORE-protected even when the request carries Observe=0 (which skips the
+ * exchange cache), on both OSCORE-required and mixed services. Non-Observe
+ * discovery requests must also release their exchange cache slots cleanly.
+ */
+ZTEST(coap_oscore, test_oscore_well_known_core_observe)
+{
+	static const char expected_secure[] = "</e2e>,</observe>,</separate>";
+	static const char expected_mixed[] = "</mobserve>,</mixed>,</separatem>";
+	uint8_t reqbuf[COAP_BUF_SIZE];
+	uint8_t innerbuf[COAP_BUF_SIZE];
+	uint32_t inner_len;
+	uint8_t token[4] = {0xD0, 0x01, 0x02, 0x03};
+	struct net_sockaddr_in6 dst_secure = oscore_loopback_dst(oscore_secure_service_port);
+	struct net_sockaddr_in6 dst_mixed = oscore_loopback_dst(oscore_mixed_service_port);
+	struct context *client = &oscore_client_uctx;
+	struct coap_oscore_context *ctx = NULL;
+	struct coap_packet req;
+	struct coap_packet inner;
+	const uint8_t *payload;
+	uint16_t payload_len = 0U;
+	uint16_t non_req_id;
+	size_t expected_mixed_len;
+	int sock;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_COAP_SERVER_WELL_KNOWN_CORE)) {
+		ztest_test_skip();
+	}
+
+	ret = oscore_make_client_ctx(oscore_client_id, sizeof(oscore_client_id), oscore_server_id,
+				     sizeof(oscore_server_id), true, client);
+	zassert_ok(ret, "Client context init failed (%d)", ret);
+	ret = oscore_make_server_ctx(oscore_server_id, sizeof(oscore_server_id), oscore_client_id,
+				     sizeof(oscore_client_id), &ctx);
+	zassert_ok(ret, "Server context init failed (%d)", ret);
+
+	zassert_ok(coap_service_start(&oscore_secure_service));
+	zassert_ok(coap_service_start(&oscore_mixed_service));
+
+	sock = oscore_client_socket();
+	zassert_true(sock >= 0, "Failed to create socket (%d)", -errno);
+
+	/* OSCORE-required service: CON GET /.well-known/core with Observe=0 -> protected 2.05. */
+	ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, token,
+					      sizeof(token), 0xE101, 0, -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Protected CON Observe discovery reply failed (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+	payload = coap_packet_get_payload(&inner, &payload_len);
+	zassert_not_null(payload);
+	zassert_equal(payload_len, strlen(expected_secure));
+	zassert_mem_equal(payload, expected_secure, payload_len);
+
+	/* OSCORE-required service: NON discovery with Observe=0 -> protected NON 2.05. */
+	token[3]++;
+	non_req_id = (uint16_t)(coap_next_id() + 0x1234U);
+	ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_NON_CON,
+					      token, sizeof(token), non_req_id, 0, -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Protected NON Observe discovery reply failed (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_NON_CON);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+	zassert_not_equal(coap_header_get_id(&inner), non_req_id);
+	payload = coap_packet_get_payload(&inner, &payload_len);
+	zassert_not_null(payload);
+	zassert_equal(payload_len, strlen(expected_secure));
+	zassert_mem_equal(payload, expected_secure, payload_len);
+
+	/* Mixed service: Observe=0 discovery must stay protected, never plaintext. */
+	token[3]++;
+	ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, token,
+					      sizeof(token), 0xE102, 0, -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst_mixed, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Mixed service Observe discovery reply must be OSCORE-protected (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+	payload = coap_packet_get_payload(&inner, &payload_len);
+	zassert_not_null(payload);
+#if defined(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)
+	expected_mixed_len = MIN(strlen(expected_mixed),
+				 (size_t)CONFIG_COAP_WELL_KNOWN_BLOCK_WISE_SIZE);
+#else
+	expected_mixed_len = strlen(expected_mixed);
+#endif
+	zassert_equal(payload_len, expected_mixed_len);
+	zassert_mem_equal(payload, expected_mixed, payload_len);
+
+	if (IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)) {
+		/* NUM=10, SZX=1 (offset 320) -> out of range -> 4.02 Bad Option. */
+		const int blk2_oor = (10 << 4) | COAP_BLOCK_32;
+
+		/* OSCORE-required service: Observe=0 + OOB Block2 -> protected 4.02 (CON). */
+		token[3]++;
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON,
+						      token, sizeof(token), 0xE103, 0, blk2_oor);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Protected CON Observe OOB Block2 4.02 reply failed (%d)", ret);
+		zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_BAD_OPTION);
+
+		/* OSCORE-required service: Observe=0 + OOB Block2 -> protected 4.02 (NON). */
+		token[3]++;
+		non_req_id = (uint16_t)(coap_next_id() + 0x1234U);
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf),
+						      COAP_TYPE_NON_CON, token, sizeof(token),
+						      non_req_id, 0, blk2_oor);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Protected NON Observe OOB Block2 4.02 reply failed (%d)", ret);
+		zassert_equal(coap_header_get_type(&inner), COAP_TYPE_NON_CON);
+		zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_BAD_OPTION);
+		zassert_not_equal(coap_header_get_id(&inner), non_req_id);
+
+		/* Mixed service: Observe=0 + OOB Block2 -> protected 4.02, never cleartext. */
+		token[3]++;
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON,
+						      token, sizeof(token), 0xE104, 0, blk2_oor);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_mixed, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Mixed Observe OOB Block2 4.02 must be OSCORE-protected (%d)", ret);
+		zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_BAD_OPTION);
+	}
+
+	/* Non-Observe discovery replies must release exchange slots (more requests than cache). */
+	for (int i = 0; i < CONFIG_COAP_OSCORE_EXCHANGE_CACHE_SIZE + 2; i++) {
+		bool send_error = IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE) && ((i % 2) == 1);
+		int blk2 = send_error ? ((10 << 4) | COAP_BLOCK_32) : -1;
+
+		token[3]++;
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON,
+						      token, sizeof(token),
+						      (uint16_t)(0xE200 + i), -1, blk2);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Non-Observe discovery #%d failed (%d)", i, ret);
+		zassert_equal(coap_header_get_code(&inner),
+			      send_error ? COAP_RESPONSE_CODE_BAD_OPTION
+					 : COAP_RESPONSE_CODE_CONTENT);
+	}
+
+	zassert_ok(zsock_close(sock), "Failed to close socket");
+	zassert_ok(coap_service_stop(&oscore_mixed_service), "Failed to stop mixed service");
+	zassert_ok(coap_service_stop(&oscore_secure_service), "Failed to stop secure service");
+	/* Succeeds with 0 (not -EAGAIN) only if zero exchange cache references leaked. */
+	zassert_ok(coap_oscore_context_remove(ctx), "Discovery leaked an OSCORE context reference");
+}
+
 #else
 static uint16_t coap_service_port = 56839;
 static const uint8_t plain_payload[] = "encrypted-response";

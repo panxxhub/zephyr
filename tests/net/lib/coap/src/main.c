@@ -477,57 +477,136 @@ ZTEST(coap, test_parse_req_build_empty_ack)
 
 ZTEST(coap, test_match_path_uri)
 {
-	const char * const resource_path[] = {
-		"s",
-		"1",
-		"foobar",
-		"foobar3a",
-		"foobar3",
-		"devnull",
-		NULL
-	};
+	static const char * const system_health[] = { "system", "health", NULL };
+	static const char * const single_s[] = { "s", NULL };
+	static const char * const single_foobar[] = { "foobar", NULL };
+	static const char * const single_foobar3a[] = { "foobar3a", NULL };
+	static const char * const single_foobar3[] = { "foobar3", NULL };
+	static const char * const single_devnull[] = { "devnull", NULL };
+	static const char * const root_path[] = { "", NULL };
 	/* Deliberately not NUL terminated, see below. */
 	const char unterminated[] = { '/', 'f', 'o', 'o', 'b' };
 	const char *uri;
 	int r;
 
+	/* Multi-segment path matching */
+	uri = "/system/health";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "/health";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
+	uri = "/system";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
+	uri = "/system/";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
+	uri = "/system/*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "/system*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "/sys*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "/system/hea*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "/system/health*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "/system/health/*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
+	uri = "/system/health/sub";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
+	uri = "/system/health2";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
+	uri = "system/health";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s without leading slash should have failed", uri);
+
+	uri = "/*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "*";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+
+	uri = "/";
+	r = _coap_match_path_uri(system_health, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
+	/* Single-segment path matching */
 	uri = "/k";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri));
+	r = _coap_match_path_uri(single_s, uri, strlen(uri));
 	zassert_false(r, "Matching %s failed", uri);
 
 	uri = "/s";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri));
+	r = _coap_match_path_uri(single_s, uri, strlen(uri));
 	zassert_true(r, "Matching %s failed", uri);
 
 	uri = "/foobar";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri));
+	r = _coap_match_path_uri(single_foobar, uri, strlen(uri));
 	zassert_true(r, "Matching %s failed", uri);
 
 	uri = "/foobar2";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri));
+	r = _coap_match_path_uri(single_foobar, uri, strlen(uri));
 	zassert_false(r, "Matching %s failed", uri);
 
 	uri = "/foobar*";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri));
+	r = _coap_match_path_uri(single_foobar, uri, strlen(uri));
 	zassert_true(r, "Matching %s failed", uri);
 
+	uri = "/foobar/*";
+	r = _coap_match_path_uri(single_foobar, uri, strlen(uri));
+	zassert_false(r, "Matching %s should have failed", uri);
+
 	uri = "/foobar3*";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri));
+	r = _coap_match_path_uri(single_foobar3a, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
+	r = _coap_match_path_uri(single_foobar3, uri, strlen(uri));
 	zassert_true(r, "Matching %s failed", uri);
 
 	uri = "/devnull*";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri));
-	zassert_false(r, "Matching %s failed", uri);
+	r = _coap_match_path_uri(single_devnull, uri, strlen(uri));
+	zassert_true(r, "Matching %s failed", uri);
 
-	r = _coap_match_path_uri(resource_path, unterminated,
+	/* Root path */
+	uri = "/";
+	r = _coap_match_path_uri(root_path, uri, strlen(uri));
+	zassert_true(r, "Matching %s on root path failed", uri);
+
+	uri = "/a";
+	r = _coap_match_path_uri(root_path, uri, strlen(uri));
+	zassert_false(r, "Matching %s on root path should have failed", uri);
+
+	/* Bounds safety on non-NUL-terminated and length-truncated URIs */
+	r = _coap_match_path_uri(single_foobar, unterminated,
 				 sizeof(unterminated));
 	zassert_false(r, "Matching a non-terminated URI failed");
 
-	/* The same length guard is crossed by a URI that does match: with
-	 * len 8, "foobar3a" runs past the end while "foobar3" still matches.
-	 */
 	uri = "/foobar3a";
-	r = _coap_match_path_uri(resource_path, uri, strlen(uri) - 1);
+	r = _coap_match_path_uri(single_foobar3a, uri, strlen(uri) - 1);
+	zassert_false(r, "Matching %s truncated to 8 bytes should not match foobar3a", uri);
+	r = _coap_match_path_uri(single_foobar3, uri, strlen(uri) - 1);
 	zassert_true(r, "Matching %s truncated to 8 bytes failed", uri);
 }
 
@@ -1194,6 +1273,123 @@ ZTEST(coap, test_block_bert_rejected_over_udp)
 	zassert_equal(coap_update_from_block(&pkt, &ctx), -EINVAL,
 		      "BERT block size in a response must be rejected over UDP");
 }
+
+ZTEST(coap, test_block1_block2_independent_contexts)
+{
+	struct coap_block_context combined_ctx;
+	struct coap_block_context blk1_ctx;
+	struct coap_block_context blk2_ctx;
+	struct coap_packet pkt;
+	uint8_t data[128];
+	int r;
+
+	/* Request carrying both Block2 (offset 64, 32B) and Block1 (offset 0, 16B) + Size1. */
+	r = coap_packet_init(&pkt, data, sizeof(data), COAP_VERSION_1, COAP_TYPE_CON,
+			     COAP_TOKEN_MAX_LEN, coap_next_token(), COAP_METHOD_POST,
+			     coap_next_id());
+	zassert_equal(r, 0, "Failed to init combined request");
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_BLOCK2, (2U << 4) | COAP_BLOCK_32));
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_BLOCK1, BIT(3) | COAP_BLOCK_16));
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_SIZE1, 128U));
+
+	/* Single-context coap_update_from_block() must refuse to clobber ctx. */
+	coap_block_transfer_init(&combined_ctx, COAP_BLOCK_64, 256U);
+	combined_ctx.current = 32U;
+	zassert_equal(coap_update_from_block(&pkt, &combined_ctx), -EINVAL,
+		      "Combined Block1/Block2 request must not mutate single context");
+	zassert_equal(combined_ctx.current, 32U, "Combined context offset was clobbered");
+	zassert_equal(combined_ctx.block_size, COAP_BLOCK_64, "Combined block size was clobbered");
+	zassert_equal(combined_ctx.total_size, 256U, "Combined total size was clobbered");
+
+	/* Per-option updates keep Block1 and Block2 contexts strictly independent. */
+	coap_block_transfer_init(&blk1_ctx, COAP_BLOCK_64, 0U);
+	coap_block_transfer_init(&blk2_ctx, COAP_BLOCK_32, 256U);
+
+	zassert_ok(coap_update_from_block_for_option(&pkt, &blk2_ctx, COAP_OPTION_BLOCK2));
+	zassert_equal(blk2_ctx.current, 64U, "Block2 offset mismatch");
+	zassert_equal(blk2_ctx.block_size, COAP_BLOCK_32, "Block2 size mismatch");
+	zassert_equal(blk2_ctx.total_size, 256U, "Block2 total size clobbered");
+
+	zassert_ok(coap_update_from_block_for_option(&pkt, &blk1_ctx, COAP_OPTION_BLOCK1));
+	zassert_equal(blk1_ctx.current, 0U, "Block1 offset mismatch");
+	zassert_equal(blk1_ctx.block_size, COAP_BLOCK_16, "Block1 size mismatch");
+	zassert_equal(blk1_ctx.total_size, 128U, "Block1 total size mismatch");
+
+	/* Updating Block1 must not disturb the separate Block2 context. */
+	zassert_equal(blk2_ctx.current, 64U, "Block2 offset disturbed by Block1 update");
+	zassert_equal(blk2_ctx.block_size, COAP_BLOCK_32, "Block2 size disturbed");
+	zassert_equal(blk2_ctx.total_size, 256U, "Block2 total size disturbed");
+
+	/* Invalid option code must be rejected. */
+	zassert_equal(coap_update_from_block_for_option(&pkt, &blk2_ctx, COAP_OPTION_ETAG),
+		      -EINVAL);
+
+	/* Response carrying both Block1 (offset 96, 32B) and Block2 (offset 16, 16B) + Size2. */
+	r = coap_packet_init(&pkt, data, sizeof(data), COAP_VERSION_1, COAP_TYPE_ACK,
+			     COAP_TOKEN_MAX_LEN, coap_next_token(), COAP_RESPONSE_CODE_CHANGED,
+			     coap_next_id());
+	zassert_equal(r, 0, "Failed to init combined response");
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_BLOCK2,
+					  (1U << 4) | BIT(3) | COAP_BLOCK_16));
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_BLOCK1, (3U << 4) | COAP_BLOCK_32));
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_SIZE2, 80U));
+
+	coap_block_transfer_init(&combined_ctx, COAP_BLOCK_64, 0U);
+	zassert_equal(coap_update_from_block(&pkt, &combined_ctx), -EINVAL,
+		      "Combined Block1/Block2 response must not mutate single context");
+	zassert_equal(combined_ctx.current, 0U);
+	zassert_equal(combined_ctx.block_size, COAP_BLOCK_64);
+	zassert_equal(combined_ctx.total_size, 0U);
+
+	coap_block_transfer_init(&blk1_ctx, COAP_BLOCK_32, 128U);
+	blk1_ctx.current = 96U;
+	coap_block_transfer_init(&blk2_ctx, COAP_BLOCK_64, 0U);
+
+	zassert_ok(coap_update_from_block_for_option(&pkt, &blk1_ctx, COAP_OPTION_BLOCK1));
+	zassert_equal(blk1_ctx.current, 96U);
+	zassert_equal(blk1_ctx.block_size, COAP_BLOCK_32);
+
+	zassert_ok(coap_update_from_block_for_option(&pkt, &blk2_ctx, COAP_OPTION_BLOCK2));
+	zassert_equal(blk2_ctx.current, 16U);
+	zassert_equal(blk2_ctx.block_size, COAP_BLOCK_16);
+	zassert_equal(blk2_ctx.total_size, 80U);
+}
+
+#if defined(CONFIG_COAP_OVER_RELIABLE_TRANSPORT)
+ZTEST(coap, test_tcp_block1_block2_independent_contexts)
+{
+	struct coap_block_context combined_ctx;
+	struct coap_block_context blk1_ctx;
+	struct coap_block_context blk2_ctx;
+	struct coap_packet pkt;
+	uint8_t data[128];
+
+	zassert_ok(coap_tcp_packet_init(&pkt, data, sizeof(data), COAP_TOKEN_MAX_LEN,
+					coap_next_token(), COAP_METHOD_POST));
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_BLOCK2, (2U << 4) | COAP_BLOCK_32));
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_BLOCK1, BIT(3) | COAP_BLOCK_16));
+	zassert_ok(coap_append_option_int(&pkt, COAP_OPTION_SIZE1, 128U));
+	zassert_ok(coap_tcp_packet_update_len(&pkt));
+
+	coap_block_transfer_init(&combined_ctx, COAP_BLOCK_64, 256U);
+	combined_ctx.current = 32U;
+	zassert_equal(coap_tcp_update_from_block(&pkt, &combined_ctx), -EINVAL);
+	zassert_equal(combined_ctx.current, 32U);
+
+	coap_block_transfer_init(&blk1_ctx, COAP_BLOCK_64, 0U);
+	coap_block_transfer_init(&blk2_ctx, COAP_BLOCK_32, 256U);
+
+	zassert_ok(coap_tcp_update_from_block_for_option(&pkt, &blk2_ctx, COAP_OPTION_BLOCK2));
+	zassert_equal(blk2_ctx.current, 64U);
+	zassert_equal(blk2_ctx.block_size, COAP_BLOCK_32);
+
+	zassert_ok(coap_tcp_update_from_block_for_option(&pkt, &blk1_ctx, COAP_OPTION_BLOCK1));
+	zassert_equal(blk1_ctx.current, 0U);
+	zassert_equal(blk1_ctx.block_size, COAP_BLOCK_16);
+	zassert_equal(blk1_ctx.total_size, 128U);
+	zassert_equal(blk2_ctx.current, 64U);
+}
+#endif
 
 ZTEST(coap, test_retransmit_second_round)
 {
