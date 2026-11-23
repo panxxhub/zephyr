@@ -17,6 +17,7 @@ LOG_MODULE_DECLARE(net_coap, CONFIG_COAP_LOG_LEVEL);
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/hash_function.h>
 #include <zephyr/sys/math_extras.h>
+#include <zephyr/sys/util.h>
 
 #include <zephyr/sys/printk.h>
 
@@ -458,6 +459,7 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 {
 	struct coap_block_context ctx;
 	struct coap_option query;
+	struct coap_option block2_opts[2];
 	unsigned int num_queries;
 	size_t total_size;
 	size_t offset;
@@ -466,7 +468,6 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 	uint16_t id;
 	uint8_t tkl;
 	int r;
-	int block2;
 	bool first = true;
 
 	if (!resources || !request || !response || !data || !len) {
@@ -498,12 +499,23 @@ int coap_well_known_core_get_len(struct coap_resource *resources,
 	 */
 	coap_block_transfer_init(&ctx, default_block_size(), total_size);
 
-	/* Honor a smaller block size negotiated by the client on an earlier
-	 * block, which coap_update_from_block() would otherwise reject as a
-	 * size mismatch.
+	/* Validate the Block2 option (RFC 7959 Table 1: non-repeatable, 0-3
+	 * bytes) and honor a smaller block size negotiated by the client on an
+	 * earlier block, which coap_update_from_block() would otherwise reject
+	 * as a size mismatch.
 	 */
-	block2 = coap_get_option_int(request, COAP_OPTION_BLOCK2);
-	if (block2 >= 0) {
+	r = coap_find_options(request, COAP_OPTION_BLOCK2, block2_opts, ARRAY_SIZE(block2_opts));
+	if (r < 0) {
+		return r;
+	}
+
+	if (r > 1 || (r == 1 && block2_opts[0].len > 3U)) {
+		return -EINVAL;
+	}
+
+	if (r == 1) {
+		unsigned int block2 = coap_option_value_to_int(&block2_opts[0]);
+
 		ctx.block_size = MIN((enum coap_block_size)GET_BLOCK_SIZE(block2),
 				     ctx.block_size);
 	}

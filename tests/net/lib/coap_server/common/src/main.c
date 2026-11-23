@@ -514,4 +514,153 @@ ZTEST(coap_service, test_ipv4_request_gets_reply)
 	zsock_close(sock);
 }
 
+static void send_well_known_req(int sock, const struct net_sockaddr_in *dst, uint8_t req_type,
+				uint16_t req_id, const uint8_t *token, uint8_t tkl,
+				const uint8_t *block2_val, uint16_t block2_len,
+				struct coap_packet *parsed_rsp, uint8_t *rsp_buf,
+				size_t rsp_buf_len)
+{
+	struct zsock_pollfd pfd = {
+		.fd = sock,
+		.events = ZSOCK_POLLIN,
+	};
+	struct coap_packet request;
+	uint8_t req_buf[64];
+	ssize_t len;
+
+	zassert_ok(coap_packet_init(&request, req_buf, sizeof(req_buf), COAP_VERSION_1, req_type,
+				    tkl, token, COAP_METHOD_GET, req_id));
+	zassert_ok(coap_packet_append_option(&request, COAP_OPTION_URI_PATH, ".well-known", 11));
+	zassert_ok(coap_packet_append_option(&request, COAP_OPTION_URI_PATH, "core", 4));
+	if (block2_val != NULL) {
+		zassert_ok(coap_packet_append_option(&request, COAP_OPTION_BLOCK2, block2_val,
+						     block2_len));
+	}
+
+	len = zsock_sendto(sock, request.data, request.offset, 0,
+			   (const struct net_sockaddr *)dst, sizeof(*dst));
+	zassert_equal(len, request.offset);
+
+	zassert_equal(zsock_poll(&pfd, 1, 1000), 1, "no reply to /.well-known/core request");
+
+	len = zsock_recv(sock, rsp_buf, rsp_buf_len, 0);
+	zassert_true(len >= 4, "short reply (%zd)", len);
+	zassert_ok(coap_packet_parse(parsed_rsp, rsp_buf, (uint16_t)len, NULL, 0));
+}
+
+ZTEST(coap_service, test_well_known_core_responses)
+{
+	static const uint8_t tok_valid1[] = { 0x11, 0x22, 0x33, 0x44 };
+	static const uint8_t tok_valid2[] = { 0x55, 0x66, 0x77, 0x88 };
+	struct net_sockaddr_in dst = {
+		.sin_family = NET_AF_INET,
+		.sin_port = net_htons(service_D_port),
+	};
+	struct coap_packet rsp;
+	uint8_t rsp_buf[128];
+	uint8_t rsp_token[COAP_TOKEN_MAX_LEN];
+	const uint8_t *payload;
+	uint16_t payload_len = 0U;
+	uint16_t req_id;
+	int sock;
+
+	if (!IS_ENABLED(CONFIG_COAP_SERVER_WELL_KNOWN_CORE)) {
+		ztest_test_skip();
+	}
+
+	zassert_equal(zsock_inet_pton(NET_AF_INET, "127.0.0.1", &dst.sin_addr), 1);
+
+	for (int i = 0; i < 100 && coap_service_is_running(&service_D) != 1; i++) {
+		k_sleep(K_MSEC(10));
+	}
+	zassert_equal(coap_service_is_running(&service_D), 1);
+
+	sock = zsock_socket(NET_AF_INET, NET_SOCK_DGRAM, NET_IPPROTO_UDP);
+	zassert_true(sock >= 0);
+
+	/* Valid GET /.well-known/core returns 2.05 Content with </ping>. */
+	req_id = coap_next_id();
+	send_well_known_req(sock, &dst, COAP_TYPE_CON, req_id, tok_valid1, sizeof(tok_valid1),
+			    NULL, 0U, &rsp, rsp_buf, sizeof(rsp_buf));
+	zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_ACK);
+	zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_CONTENT);
+	zassert_equal(coap_header_get_id(&rsp), req_id);
+	zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_valid1));
+	zassert_mem_equal(rsp_token, tok_valid1, sizeof(tok_valid1));
+	payload = coap_packet_get_payload(&rsp, &payload_len);
+	zassert_not_null(payload);
+	zassert_equal(payload_len, strlen("</ping>"));
+	zassert_mem_equal(payload, "</ping>", payload_len);
+
+	if (IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)) {
+		static const uint8_t tok_con_oor[] = { 0xA1, 0xB2 };
+		static const uint8_t tok_non_oor[] = { 0xC3, 0xD4, 0xE5 };
+		static const uint8_t tok_bert[] = { 0xF6, 0x07 };
+		static const uint8_t tok_len4[] = { 0x18, 0x29 };
+		/* NUM=1, SZX=1 (32 B) -> byte offset 32 >= strlen("</ping>") */
+		static const uint8_t blk2_oor[] = { (1U << 4) | COAP_BLOCK_32 };
+		/* NUM=0, SZX=7 (BERT, reserved outside reliable transports) */
+		static const uint8_t blk2_bert[] = { COAP_BLOCK_BERT };
+		/* 4-byte Block2 option (> 3-byte RFC 7959 maximum) */
+		static const uint8_t blk2_len4[] = { 0x00, 0x00, 0x00, COAP_BLOCK_32 };
+
+		/* Out-of-range Block2 via CON -> ACK 4.02 Bad Option with matching MID & Token. */
+		req_id = coap_next_id();
+		send_well_known_req(sock, &dst, COAP_TYPE_CON, req_id, tok_con_oor,
+				    sizeof(tok_con_oor), blk2_oor, sizeof(blk2_oor), &rsp, rsp_buf,
+				    sizeof(rsp_buf));
+		zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_BAD_OPTION);
+		zassert_equal(coap_header_get_id(&rsp), req_id);
+		zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_con_oor));
+		zassert_mem_equal(rsp_token, tok_con_oor, sizeof(tok_con_oor));
+
+		/* Out-of-range Block2 via NON -> NON 4.02 Bad Option with matching Token. */
+		req_id = coap_next_id();
+		send_well_known_req(sock, &dst, COAP_TYPE_NON_CON, req_id, tok_non_oor,
+				    sizeof(tok_non_oor), blk2_oor, sizeof(blk2_oor), &rsp, rsp_buf,
+				    sizeof(rsp_buf));
+		zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_NON_CON);
+		zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_BAD_OPTION);
+		zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_non_oor));
+		zassert_mem_equal(rsp_token, tok_non_oor, sizeof(tok_non_oor));
+
+		/* Malformed Block2 (SZX=7) -> ACK 4.02 Bad Option with matching MID & Token. */
+		req_id = coap_next_id();
+		send_well_known_req(sock, &dst, COAP_TYPE_CON, req_id, tok_bert, sizeof(tok_bert),
+				    blk2_bert, sizeof(blk2_bert), &rsp, rsp_buf, sizeof(rsp_buf));
+		zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_BAD_OPTION);
+		zassert_equal(coap_header_get_id(&rsp), req_id);
+		zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_bert));
+		zassert_mem_equal(rsp_token, tok_bert, sizeof(tok_bert));
+
+		/* Malformed Block2 (> 3 bytes) -> ACK 4.02 Bad Option with matching MID & Token. */
+		req_id = coap_next_id();
+		send_well_known_req(sock, &dst, COAP_TYPE_CON, req_id, tok_len4, sizeof(tok_len4),
+				    blk2_len4, sizeof(blk2_len4), &rsp, rsp_buf, sizeof(rsp_buf));
+		zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_BAD_OPTION);
+		zassert_equal(coap_header_get_id(&rsp), req_id);
+		zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_len4));
+		zassert_mem_equal(rsp_token, tok_len4, sizeof(tok_len4));
+
+		/* Follow-up valid GET /.well-known/core still succeeds with 2.05 Content. */
+		req_id = coap_next_id();
+		send_well_known_req(sock, &dst, COAP_TYPE_CON, req_id, tok_valid2,
+				    sizeof(tok_valid2), NULL, 0U, &rsp, rsp_buf, sizeof(rsp_buf));
+		zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_CONTENT);
+		zassert_equal(coap_header_get_id(&rsp), req_id);
+		zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_valid2));
+		zassert_mem_equal(rsp_token, tok_valid2, sizeof(tok_valid2));
+		payload = coap_packet_get_payload(&rsp, &payload_len);
+		zassert_not_null(payload);
+		zassert_equal(payload_len, strlen("</ping>"));
+		zassert_mem_equal(payload, "</ping>", payload_len);
+	}
+
+	zsock_close(sock);
+}
+
 ZTEST_SUITE(coap_service, NULL, NULL, NULL, NULL, NULL);

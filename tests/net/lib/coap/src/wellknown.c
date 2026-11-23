@@ -813,6 +813,47 @@ ZTEST(coap_wellknown, test_blockwise_out_of_range_and_invalid_block2)
 			      i, bad_reqs[i].num, bad_reqs[i].szx, r);
 	}
 
+	/* Block2 options longer than 3 bytes (RFC 7959 Table 1) or repeated
+	 * Block2 options must be rejected with -EINVAL.
+	 */
+	{
+		static const uint8_t block2_4b[] = { 0x00, 0x00, 0x00, 0x01 };
+		static const uint8_t block2_5b[] = { 0x01, 0x02, 0x03, 0x04, 0x05 };
+		struct coap_packet req;
+		uint8_t req_buf[96];
+		int r;
+
+		r = coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1,
+				     COAP_TYPE_CON, COAP_TOKEN_MAX_LEN, coap_next_token(),
+				     COAP_METHOD_GET, coap_next_id());
+		zassert_ok(r);
+		zassert_ok(coap_packet_append_option(&req, COAP_OPTION_BLOCK2, block2_4b,
+						     sizeof(block2_4b)));
+		r = coap_well_known_core_get_len(wk_dyn_resources, count, &req, &response,
+						 wk_pkt_buf, sizeof(wk_pkt_buf));
+		zassert_equal(r, -EINVAL, "4-byte Block2 option was accepted (%d)", r);
+
+		r = coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1,
+				     COAP_TYPE_CON, COAP_TOKEN_MAX_LEN, coap_next_token(),
+				     COAP_METHOD_GET, coap_next_id());
+		zassert_ok(r);
+		zassert_ok(coap_packet_append_option(&req, COAP_OPTION_BLOCK2, block2_5b,
+						     sizeof(block2_5b)));
+		r = coap_well_known_core_get_len(wk_dyn_resources, count, &req, &response,
+						 wk_pkt_buf, sizeof(wk_pkt_buf));
+		zassert_equal(r, -EINVAL, "5-byte Block2 option was accepted (%d)", r);
+
+		r = coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1,
+				     COAP_TYPE_CON, COAP_TOKEN_MAX_LEN, coap_next_token(),
+				     COAP_METHOD_GET, coap_next_id());
+		zassert_ok(r);
+		zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2, COAP_BLOCK_32));
+		zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2, COAP_BLOCK_32));
+		r = coap_well_known_core_get_len(wk_dyn_resources, count, &req, &response,
+						 wk_pkt_buf, sizeof(wk_pkt_buf));
+		zassert_equal(r, -EINVAL, "Duplicate Block2 option was accepted (%d)", r);
+	}
+
 	/* Subsequent normal transfer must still succeed cleanly. */
 	verify_full_transfer(wk_dyn_resources, count, false, NULL, COAP_BLOCK_32, false,
 			     wk_expected_doc, expected_len, NULL);
