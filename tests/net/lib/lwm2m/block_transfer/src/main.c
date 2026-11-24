@@ -434,6 +434,11 @@ ZTEST_F(net_block_transfer, test_block1_write_with_block2_option)
 {
 	/* Static storage so the registry buffer pointer never dangles after test exit. */
 	static char tz_buf[32];
+	static const enum coap_block_size block2_sizes[] = {
+		COAP_BLOCK_16, COAP_BLOCK_32, COAP_BLOCK_64, COAP_BLOCK_128,
+		COAP_BLOCK_256, COAP_BLOCK_512, COAP_BLOCK_1024,
+	};
+	const size_t iterations = MAX(ARRAY_SIZE(block2_sizes), (size_t)(NUM_BLOCK1_CONTEXT + 2));
 	struct net_sockaddr_in from_addr = {
 		.sin_family = NET_AF_INET,
 		.sin_port = net_htons(5683),
@@ -444,10 +449,13 @@ ZTEST_F(net_block_transfer, test_block1_write_with_block2_option)
 	ret = lwm2m_set_res_buf(&LWM2M_OBJ(3, 0, 15), tz_buf, sizeof(tz_buf), 0, 0);
 	zassert_ok(ret, "Failed to bind writable timezone buffer (%d)", ret);
 
-	/* Repeat beyond NUM_BLOCK1_CONTEXT to prove each final Block1 write releases its
-	 * block context even when the request also carries a Block2 option (RFC 7959 Sec 2.7).
+	/* Cover every valid Block2 size (16..1024 bytes) and repeat beyond
+	 * NUM_BLOCK1_CONTEXT to prove each combined Block1+Block2 write applies
+	 * the payload, replies 2.04 Changed, and releases its block context
+	 * (RFC 7959 Section 2.7).
 	 */
-	for (int i = 0; i < NUM_BLOCK1_CONTEXT + 2; i++) {
+	for (size_t i = 0; i < iterations; i++) {
+		enum coap_block_size b2_szx = block2_sizes[i % ARRAY_SIZE(block2_sizes)];
 		uint8_t req_buf[CONFIG_LWM2M_COAP_MAX_MSG_SIZE];
 		uint8_t token[2] = { 0xB1, (uint8_t)i };
 		char payload[16];
@@ -456,7 +464,7 @@ ZTEST_F(net_block_transfer, test_block1_write_with_block2_option)
 		struct lwm2m_message *rsp;
 		int block1_opt;
 
-		snprintk(payload, sizeof(payload), "UTC+%02d", i);
+		snprintk(payload, sizeof(payload), "UTC+%02zu", i);
 		memset(tz_buf, 0, sizeof(tz_buf));
 
 		ret = coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1,
@@ -471,8 +479,8 @@ ZTEST_F(net_block_transfer, test_block1_write_with_block2_option)
 						     (const uint8_t *)"15", 2));
 		zassert_ok(coap_append_option_int(&req, COAP_OPTION_CONTENT_FORMAT,
 						  LWM2M_FORMAT_PLAIN_TEXT));
-		/* Option 23 (Block2: NUM=0, M=0, SZX=0 -> 16 bytes) before option 27 (Block1). */
-		zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2, COAP_BLOCK_16));
+		/* Option 23 (Block2: NUM=0, M=0, SZX=0..6) before option 27 (Block1). */
+		zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2, b2_szx));
 		/* Final Block1: NUM=0, M=0, SZX=1 -> 32 bytes (encoded value > 0). */
 		zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK1, COAP_BLOCK_32));
 		zassert_ok(coap_packet_append_payload_marker(&req));
@@ -483,14 +491,15 @@ ZTEST_F(net_block_transfer, test_block1_write_with_block2_option)
 				  (struct net_sockaddr *)&from_addr);
 
 		node = sys_slist_get(&fixture->ctx.pending_sends);
-		zassert_not_null(node, "No response queued for Block1+Block2 write #%d", i);
+		zassert_not_null(node, "No response queued for Block1+Block2 (szx=%u) write #%zu",
+				 (unsigned int)b2_szx, i);
 
 		rsp = CONTAINER_OF(node, struct lwm2m_message, node);
 		zassert_equal(coap_header_get_code(&rsp->cpkt), COAP_RESPONSE_CODE_CHANGED,
-			      "Block1+Block2 write #%d failed with code 0x%02x", i,
-			      coap_header_get_code(&rsp->cpkt));
+			      "Block1+Block2 (szx=%u) write #%zu failed with code 0x%02x",
+			      (unsigned int)b2_szx, i, coap_header_get_code(&rsp->cpkt));
 		block1_opt = coap_get_option_int(&rsp->cpkt, COAP_OPTION_BLOCK1);
-		zassert_true(block1_opt >= 0, "Response missing Block1 option on write #%d", i);
+		zassert_true(block1_opt >= 0, "Response missing Block1 option on write #%zu", i);
 		zassert_equal(GET_BLOCK_NUM(block1_opt), 0);
 		zassert_equal(GET_MORE(block1_opt), 0);
 		zassert_equal(strcmp(tz_buf, payload), 0,

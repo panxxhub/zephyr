@@ -2913,8 +2913,12 @@ void lwm2m_udp_receive(struct lwm2m_ctx *client_ctx, uint8_t *buf, uint16_t buf_
 			msg = find_ongoing_block2_tx();
 			if (msg) {
 				handle_ongoing_block2_tx(msg, &response);
+				return;
 			}
-			return;
+
+			if (coap_get_option_int(&response, COAP_OPTION_BLOCK1) < 0) {
+				return;
+			}
 		}
 
 		/* Clear out existing Block2 transfers when new requests come */

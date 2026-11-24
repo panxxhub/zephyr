@@ -484,6 +484,7 @@ ZTEST(coap, test_match_path_uri)
 	static const char * const single_foobar3[] = { "foobar3", NULL };
 	static const char * const single_devnull[] = { "devnull", NULL };
 	static const char * const root_path[] = { "", NULL };
+	static const char * const empty_root_path[] = { NULL };
 	static const char * const trailing_empty[] = { "a", "", NULL };
 	static const char * const double_empty[] = { "", "", NULL };
 	static const char * const middle_empty[] = { "a", "", "b", NULL };
@@ -612,6 +613,31 @@ ZTEST(coap, test_match_path_uri)
 	uri = "//";
 	r = _coap_match_path_uri(root_path, uri, strlen(uri));
 	zassert_false(r, "Matching %s on root path should have failed", uri);
+
+	/* Zero-segment root path ({NULL}, also advertised as "</>") */
+	uri = "/";
+	r = _coap_match_path_uri(empty_root_path, uri, strlen(uri));
+	zassert_true(r, "Matching %s on zero-segment root failed", uri);
+
+	uri = "/*";
+	r = _coap_match_path_uri(empty_root_path, uri, strlen(uri));
+	zassert_true(r, "Matching %s on zero-segment root failed", uri);
+
+	uri = "*";
+	r = _coap_match_path_uri(empty_root_path, uri, strlen(uri));
+	zassert_true(r, "Matching %s on zero-segment root failed", uri);
+
+	uri = "/a";
+	r = _coap_match_path_uri(empty_root_path, uri, strlen(uri));
+	zassert_false(r, "Matching %s on zero-segment root should have failed", uri);
+
+	uri = "/a*";
+	r = _coap_match_path_uri(empty_root_path, uri, strlen(uri));
+	zassert_false(r, "Matching %s on zero-segment root should have failed", uri);
+
+	uri = "a";
+	r = _coap_match_path_uri(empty_root_path, uri, strlen(uri));
+	zassert_false(r, "Matching %s on zero-segment root should have failed", uri);
 
 	/* Trailing empty segment ("</a/>") */
 	uri = "/a/";

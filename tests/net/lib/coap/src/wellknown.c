@@ -202,6 +202,48 @@ static void verify_well_known_href_queries(void)
 		zassert_mem_equal(assembled, cases[i].expected, pos,
 				  "Query %s payload mismatch", cases[i].query);
 	}
+
+	/* Zero-segment root resource ({NULL}) advertises "</>" and must match
+	 * exact root and wildcard href queries while rejecting href=/a.
+	 */
+	{
+		static const char * const path_empty_root[] = { NULL };
+		struct coap_resource empty_root_res[] = {
+			{ .path = path_empty_root },
+		};
+		static const char * const match_queries[] = {
+			"href=/", "href=/*", "href=*",
+		};
+		struct coap_packet response;
+		struct coap_packet parsed;
+		uint8_t rsp_buf[128];
+		const uint8_t *payload;
+		uint16_t payload_len = 0U;
+
+		for (size_t i = 0U; i < ARRAY_SIZE(match_queries); i++) {
+			int r = send_wk_req(empty_root_res, ARRAY_SIZE(empty_root_res), false,
+					    match_queries[i],
+					    IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE) ? 0 : -1,
+					    COAP_BLOCK_32, &response, rsp_buf, sizeof(rsp_buf));
+
+			zassert_equal(r, 0, "Zero-segment root query %s failed (%d)",
+				      match_queries[i], r);
+			zassert_ok(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL, 0U));
+			payload = coap_packet_get_payload(&parsed, &payload_len);
+			zassert_not_null(payload);
+			zassert_equal(payload_len, sizeof("</>") - 1U);
+			zassert_mem_equal(payload, "</>", payload_len);
+		}
+
+		zassert_ok(send_wk_req(empty_root_res, ARRAY_SIZE(empty_root_res), false,
+				       "href=/a",
+				       IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE) ? 0 : -1,
+				       COAP_BLOCK_32, &response, rsp_buf, sizeof(rsp_buf)));
+		zassert_ok(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL, 0U));
+		payload = coap_packet_get_payload(&parsed, &payload_len);
+		zassert_is_null(payload, "href=/a must not match zero-segment root");
+		zassert_equal(payload_len, 0U);
+	}
 }
 
 static void verify_well_known_short_workspace(void)

@@ -50,7 +50,7 @@ static bool match_path_uri(const char * const *path,
 	uint16_t prefix_len;
 	uint16_t pos;
 
-	if (path == NULL || *path == NULL || uri == NULL || len == 0U) {
+	if (path == NULL || uri == NULL || len == 0U) {
 		return false;
 	}
 
