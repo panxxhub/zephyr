@@ -305,7 +305,6 @@ static int coap_server_process(int sock_fd)
 	int flags = ZSOCK_MSG_DONTWAIT;
 #if defined(CONFIG_COAP_OSCORE)
 	struct coap_oscore_context *oscore_ctx = NULL;
-	bool oscore_exchange_added = false;
 #endif
 	bool secure = false;
 	bool have_pktinfo = false;
@@ -595,40 +594,6 @@ static int coap_server_process(int sock_fd)
 		}
 
 		LOG_DBG("OSCORE request verified and decrypted");
-
-		/* RFC 8613 Section 8.3: Track OSCORE exchanges to protect responses */
-		uint8_t token[COAP_TOKEN_MAX_LEN];
-		uint8_t tkl = coap_header_get_token(&request, token);
-		bool is_observe = coap_request_is_observe(&request);
-
-		if (!is_observe) {
-			ret = coap_oscore_exchange_add(service->data->oscore_exchange_cache,
-						       net_sad(&client_addr), client_addr_len,
-						       token, tkl, oscore_ctx);
-			if (ret < 0) {
-				if (ret == -ENOMEM) {
-					LOG_WRN("OSCORE exchange full. Sending 5.03 Service "
-						"Unavailable to "
-						"client");
-					(void)send_error_response(
-						service, &request,
-						COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE,
-						net_sad(&client_addr), client_addr_len, buf,
-						sizeof(buf));
-					ret = -ENOMEM;
-					goto unlock;
-				}
-
-				LOG_ERR("Failed to add OSCORE exchange entry (%d)", ret);
-				ret = -EINVAL;
-				goto unlock;
-			}
-			oscore_exchange_added = true;
-		} else {
-			request.oscore_ctx =
-				oscore_ctx; /* persists into observer via coap_observer_init */
-		}
-
 	} else if (service->oscore_required) {
 		LOG_WRN("Service requires OSCORE but request is not protected");
 		(void)send_error_response(service, &request, COAP_RESPONSE_CODE_UNAUTHORIZED,
@@ -690,22 +655,14 @@ static int coap_server_process(int sock_fd)
 							well_known_buf, sizeof(well_known_buf));
 			if (ret < 0) {
 				LOG_ERR("Failed to init well known core error response (%d)", ret);
-#if defined(CONFIG_COAP_OSCORE)
-				if (oscore_exchange_added) {
-					coap_oscore_finish_exchange(
-						service->data->oscore_exchange_cache, &request,
-						net_sad(&client_addr), client_addr_len);
-				}
-#endif
 				goto unlock;
 			}
 		}
 
 #if defined(CONFIG_COAP_OSCORE)
-		/* Bind the verified request OSCORE context directly so Observe
-		 * requests (which bypass the exchange cache) still receive
-		 * protected discovery replies, and release any exchange slot
-		 * allocated for a non-Observe request.
+		/* Bind the verified request OSCORE context directly so synchronous
+		 * discovery replies (including Observe requests) stay protected without
+		 * allocating an exchange cache slot.
 		 */
 		struct coap_oscore_protect_params oscore_params = {
 			.mode = (oscore_ctx != NULL) ? OSCORE_PROTECT_FORCE : OSCORE_PROTECT_SKIP,
@@ -714,10 +671,6 @@ static int coap_server_process(int sock_fd)
 
 		ret = coap_service_send_internal(service, &response, net_sad(&client_addr),
 						 client_addr_len, NULL, &oscore_params);
-		if (oscore_exchange_added) {
-			coap_oscore_finish_exchange(service->data->oscore_exchange_cache, &request,
-						    net_sad(&client_addr), client_addr_len);
-		}
 #else
 		ret = coap_service_send(service, &response, net_sad(&client_addr), client_addr_len,
 					NULL);
@@ -727,6 +680,43 @@ static int coap_server_process(int sock_fd)
 				service->name, ret);
 		}
 	} else {
+#if defined(CONFIG_COAP_OSCORE)
+		if (oscore_ctx != NULL) {
+			/* RFC 8613 Section 8.3: Track OSCORE exchanges to protect responses,
+			 * only after pre-routing exits (pending / ACK / RST) have passed.
+			 */
+			uint8_t token[COAP_TOKEN_MAX_LEN];
+			uint8_t tkl = coap_header_get_token(&request, token);
+			bool is_observe = coap_request_is_observe(&request);
+
+			if (!is_observe) {
+				ret = coap_oscore_exchange_add(
+					service->data->oscore_exchange_cache,
+					net_sad(&client_addr), client_addr_len,
+					token, tkl, oscore_ctx);
+				if (ret < 0) {
+					if (ret == -ENOMEM) {
+						LOG_WRN("OSCORE exchange full. Sending 5.03 "
+							"Service Unavailable to client");
+						(void)send_error_response(
+							service, &request,
+							COAP_RESPONSE_CODE_SERVICE_UNAVAILABLE,
+							net_sad(&client_addr), client_addr_len,
+							buf, sizeof(buf));
+						ret = -ENOMEM;
+						goto unlock;
+					}
+
+					LOG_ERR("Failed to add OSCORE exchange entry (%d)", ret);
+					ret = -EINVAL;
+					goto unlock;
+				}
+			} else {
+				/* persists into observer via coap_observer_init */
+				request.oscore_ctx = oscore_ctx;
+			}
+		}
+#endif
 		ret = coap_handle_request_len(&request, service->res_begin,
 					      COAP_SERVICE_RESOURCE_COUNT(service), options,
 					      opt_num, net_sad(&client_addr), client_addr_len);

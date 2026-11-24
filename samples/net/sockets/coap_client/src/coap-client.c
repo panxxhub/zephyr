@@ -438,7 +438,8 @@ static int process_large_coap_reply(void)
 		goto end;
 	}
 
-	ret = coap_update_from_block(&reply, &blk_ctx);
+	ret = coap_update_from_block_for_option(&reply, &blk_ctx,
+						COAP_OPTION_BLOCK2);
 	if (ret < 0) {
 		goto end;
 	}

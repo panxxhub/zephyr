@@ -136,11 +136,15 @@ static void verify_well_known_href_queries(void)
 	static const char * const attrs_h[] = { "rt=\"r\"", NULL };
 	static struct coap_core_metadata meta_h = { .attributes = attrs_h };
 	static const char * const path_dev[] = { "dev", NULL };
+	static const char * const path_a_slash[] = { "a", "", NULL };
+	static const char * const path_root[] = { "", NULL };
 	struct coap_resource href_resources[] = {
 		{ .path = path_s_h, .metadata = &meta_s_h },
 		{ .path = path_s_i },
 		{ .path = path_h, .metadata = &meta_h },
 		{ .path = path_dev },
+		{ .path = path_a_slash },
+		{ .path = path_root },
 	};
 	static const struct {
 		const char *query;
@@ -151,6 +155,9 @@ static void verify_well_known_href_queries(void)
 		{ "href=/s/*", "</s/h>;rt=\"h\",</s/i>" },
 		{ "href=/s/i", "</s/i>" },
 		{ "href=/dev", "</dev>" },
+		{ "href=/a/", "</a/>" },
+		{ "href=/a/*", "</a/>" },
+		{ "href=/", "</>" },
 	};
 
 	for (size_t i = 0U; i < ARRAY_SIZE(cases); i++) {

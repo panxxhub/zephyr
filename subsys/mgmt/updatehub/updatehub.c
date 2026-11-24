@@ -478,7 +478,8 @@ static void install_update_cb(void)
 		goto cleanup;
 	}
 
-	if (coap_update_from_block(&response_packet, &ctx.block) < 0) {
+	if (coap_update_from_block_for_option(&response_packet, &ctx.block,
+					      COAP_OPTION_BLOCK2) < 0) {
 		ctx.code_status = UPDATEHUB_DOWNLOAD_ERROR;
 		goto cleanup;
 	}

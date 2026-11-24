@@ -124,7 +124,7 @@ static int large_get(struct coap_resource *resource,
 		coap_block_transfer_init(ctx, COAP_BLOCK_64, BLOCK_WISE_TRANSFER_SIZE_GET);
 	}
 
-	r = coap_update_from_block(request, ctx);
+	r = coap_update_from_block_for_option(request, ctx, COAP_OPTION_BLOCK2);
 	if (r < 0) {
 		return -EINVAL;
 	}
@@ -219,7 +219,7 @@ static int large_update_put(struct coap_resource *resource,
 		coap_block_transfer_init(ctx, COAP_BLOCK_64, 0);
 	}
 
-	r = coap_update_from_block(request, ctx);
+	r = coap_update_from_block_for_option(request, ctx, COAP_OPTION_BLOCK1);
 	if (r < 0) {
 		LOG_ERR("Invalid block size option from request");
 		return -EINVAL;
@@ -308,7 +308,7 @@ static int large_create_post(struct coap_resource *resource,
 		coap_block_transfer_init(ctx, COAP_BLOCK_32, 0);
 	}
 
-	r = coap_update_from_block(request, ctx);
+	r = coap_update_from_block_for_option(request, ctx, COAP_OPTION_BLOCK1);
 	if (r < 0) {
 		LOG_ERR("Invalid block size option from request");
 		return -EINVAL;

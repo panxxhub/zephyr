@@ -70,9 +70,6 @@ static bool match_path_uri(const char * const *path,
 	}
 
 	pos = 1U;
-	if (pos == prefix_len) {
-		return wildcard || ((*path)[0] == '\0' && *(path + 1) == NULL);
-	}
 
 	for (p = path; *p != NULL; p++) {
 		size_t seg_len = strlen(*p);
@@ -89,16 +86,13 @@ static bool match_path_uri(const char * const *path,
 
 			pos++;
 			rem--;
-			if (rem == 0U) {
-				return wildcard;
-			}
 		}
 
 		if (rem < seg_len) {
-			return wildcard && (memcmp(&uri[pos], *p, rem) == 0);
+			return wildcard && (rem == 0U || memcmp(&uri[pos], *p, rem) == 0);
 		}
 
-		if (memcmp(&uri[pos], *p, seg_len) != 0) {
+		if (seg_len > 0U && memcmp(&uri[pos], *p, seg_len) != 0) {
 			return false;
 		}
 

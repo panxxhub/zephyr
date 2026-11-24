@@ -2151,7 +2151,8 @@ static int parse_write_op(struct lwm2m_message *msg, uint16_t format)
 			r = -EFAULT;
 			return r;
 		}
-		r = coap_update_from_block(msg->in.in_cpkt, &block_ctx->ctx);
+		r = coap_update_from_block_for_option(msg->in.in_cpkt, &block_ctx->ctx,
+						      COAP_OPTION_BLOCK1);
 		if (r < 0) {
 			LOG_ERR("Error from block update: %d", r);
 			return r;

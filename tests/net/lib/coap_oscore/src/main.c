@@ -2559,6 +2559,134 @@ ZTEST(coap_oscore, test_oscore_well_known_core_observe)
 	zassert_ok(coap_oscore_context_remove(ctx), "Discovery leaked an OSCORE context reference");
 }
 
+/*
+ * Incoming OSCORE packets that exit before request routing (pending MID
+ * collisions, pending ACK clears, or unexpected ACK/RST without a pending
+ * entry) must not allocate or retain OSCORE exchange cache slots.
+ */
+ZTEST(coap_oscore, test_oscore_prerouting_exits_no_exchange_leak)
+{
+	const uint16_t pending_mid = 0xE510U;
+	uint8_t reqbuf[COAP_BUF_SIZE];
+	uint8_t rspbuf[COAP_BUF_SIZE];
+	uint8_t recvbuf[COAP_BUF_SIZE];
+	uint8_t innerbuf[COAP_BUF_SIZE];
+	uint32_t inner_len;
+	uint8_t sep_tok[4] = {0xE5, 0x01, 0x00, 0x01};
+	uint8_t collide_tok[4] = {0xE5, 0x02, 0x00, 0x01};
+	uint8_t ack_tok[4] = {0xE5, 0x03, 0x00, 0x01};
+	uint8_t unexp_tok[4] = {0xE5, 0x04, 0x00, 0x00};
+	uint8_t final_tok[4] = {0xE5, 0x05, 0x00, 0x01};
+	struct net_sockaddr_in6 dst = oscore_loopback_dst(oscore_secure_service_port);
+	struct context *client = &oscore_client_uctx;
+	struct coap_oscore_context *ctx = NULL;
+	struct coap_oscore_exchange *entry;
+	struct coap_packet req;
+	struct coap_packet rsp;
+	struct coap_packet inner;
+	int sock;
+	int ret;
+
+	oscore_deferred.valid = false;
+
+	ret = oscore_make_client_ctx(oscore_client_id, sizeof(oscore_client_id), oscore_server_id,
+				     sizeof(oscore_server_id), true, client);
+	zassert_ok(ret, "Client context init failed (%d)", ret);
+	ret = oscore_make_server_ctx(oscore_server_id, sizeof(oscore_server_id), oscore_client_id,
+				     sizeof(oscore_client_id), &ctx);
+	zassert_ok(ret, "Server context init failed (%d)", ret);
+
+	zassert_ok(coap_service_start(&oscore_secure_service));
+
+	sock = oscore_client_socket();
+	zassert_true(sock >= 0, "Failed to create socket (%d)", -errno);
+
+	/* Seed an active server pending CON message via a separate response. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, COAP_METHOD_GET,
+				   sep_tok, sizeof(sep_tok), 0xE501U, "separate", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	ret = oscore_recv(sock, LONG_TIMEOUT, recvbuf, sizeof(recvbuf));
+	zassert_true(ret > 0, "Timed out waiting for empty ACK (%d)", ret);
+	zassert_true(oscore_deferred.valid, "Separate handler must have run");
+
+	ret = coap_packet_init(&rsp, rspbuf, sizeof(rspbuf), COAP_VERSION_1, COAP_TYPE_CON,
+			       oscore_deferred.tkl, oscore_deferred.token,
+			       COAP_RESPONSE_CODE_CONTENT, pending_mid);
+	zassert_ok(ret);
+	zassert_ok(coap_packet_append_payload_marker(&rsp));
+	zassert_ok(coap_packet_append_payload(&rsp, oscore_deferred_payload,
+					      sizeof(oscore_deferred_payload) - 1U));
+	ret = coap_resource_send(&oscore_separate_resource, &rsp, net_sad(&oscore_deferred.addr),
+				 oscore_deferred.addr_len, NULL);
+	zassert_ok(ret, "Failed to send CON deferred response (%d)", ret);
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "CON deferred response verify failed (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_CON);
+	zassert_equal(coap_header_get_id(&inner), pending_mid);
+
+	/* 1. OSCORE CON request colliding with pending_mid hits pre-routing error exit. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, COAP_METHOD_GET,
+				   collide_tok, sizeof(collide_tok), pending_mid, "e2e", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	/* 2. OSCORE ACK matching pending_mid clears pending and exits pre-routing. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_ACK, COAP_METHOD_GET,
+				   ack_tok, sizeof(ack_tok), pending_mid, "e2e", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	/* 3. Unexpected OSCORE ACKs without a pending entry must not exhaust the cache. */
+	for (int i = 0; i < CONFIG_COAP_OSCORE_EXCHANGE_CACHE_SIZE + 2; i++) {
+		unexp_tok[3] = (uint8_t)i;
+		ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_ACK,
+					   COAP_METHOD_GET, unexp_tok, sizeof(unexp_tok),
+					   (uint16_t)(0xE600U + i), "e2e", -1);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+	}
+
+	/* Follow-up request serves as a FIFO barrier and verifies the cache is not full. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, COAP_METHOD_GET,
+				   final_tok, sizeof(final_tok), 0xE700U, "e2e", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Follow-up request failed after pre-routing exits (%d)", ret);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+
+	/* None of the pre-routing packets may have left an exchange cache entry behind. */
+	entry = coap_oscore_exchange_find(oscore_secure_service.data->oscore_exchange_cache,
+					  net_sad(&oscore_deferred.addr), oscore_deferred.addr_len,
+					  collide_tok, sizeof(collide_tok));
+	zassert_is_null(entry, "Pending MID collision leaked an OSCORE exchange slot");
+
+	entry = coap_oscore_exchange_find(oscore_secure_service.data->oscore_exchange_cache,
+					  net_sad(&oscore_deferred.addr), oscore_deferred.addr_len,
+					  ack_tok, sizeof(ack_tok));
+	zassert_is_null(entry, "Pending ACK clear leaked an OSCORE exchange slot");
+
+	for (int i = 0; i < CONFIG_COAP_OSCORE_EXCHANGE_CACHE_SIZE + 2; i++) {
+		unexp_tok[3] = (uint8_t)i;
+		entry = coap_oscore_exchange_find(
+			oscore_secure_service.data->oscore_exchange_cache,
+			net_sad(&oscore_deferred.addr), oscore_deferred.addr_len, unexp_tok,
+			sizeof(unexp_tok));
+		zassert_is_null(entry, "Unexpected ACK #%d leaked an OSCORE exchange slot", i);
+	}
+
+	zassert_ok(zsock_close(sock), "Failed to close socket");
+	zassert_ok(coap_service_stop(&oscore_secure_service), "Failed to stop service");
+	zassert_ok(coap_oscore_context_remove(ctx),
+		   "Pre-routing exit leaked an OSCORE context reference");
+}
+
 #else
 static uint16_t coap_service_port = 56839;
 static const uint8_t plain_payload[] = "encrypted-response";

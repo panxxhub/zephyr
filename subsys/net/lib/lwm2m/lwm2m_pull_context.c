@@ -259,7 +259,8 @@ static int do_firmware_transfer_reply_cb(const struct coap_packet *response,
 	/* save main firmware block context */
 	memcpy(&received_block_ctx, &context.block_ctx, sizeof(context.block_ctx));
 
-	ret = coap_update_from_block(check_response, &context.block_ctx);
+	ret = coap_update_from_block_for_option(check_response, &context.block_ctx,
+						COAP_OPTION_BLOCK2);
 	if (ret < 0) {
 		LOG_ERR("Error from block update: %d", ret);
 		ret = -EFAULT;

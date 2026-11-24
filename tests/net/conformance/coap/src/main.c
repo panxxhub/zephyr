@@ -161,7 +161,7 @@ static int large_get(struct coap_resource *resource, struct coap_packet *request
 		}
 	}
 
-	ret = coap_update_from_block(request, &ctx);
+	ret = coap_update_from_block_for_option(request, &ctx, COAP_OPTION_BLOCK2);
 	if (ret < 0) {
 		return ret;
 	}

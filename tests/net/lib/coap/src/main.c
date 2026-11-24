@@ -484,6 +484,9 @@ ZTEST(coap, test_match_path_uri)
 	static const char * const single_foobar3[] = { "foobar3", NULL };
 	static const char * const single_devnull[] = { "devnull", NULL };
 	static const char * const root_path[] = { "", NULL };
+	static const char * const trailing_empty[] = { "a", "", NULL };
+	static const char * const double_empty[] = { "", "", NULL };
+	static const char * const middle_empty[] = { "a", "", "b", NULL };
 	/* Deliberately not NUL terminated, see below. */
 	const char unterminated[] = { '/', 'f', 'o', 'o', 'b' };
 	const char *uri;
@@ -589,14 +592,84 @@ ZTEST(coap, test_match_path_uri)
 	r = _coap_match_path_uri(single_devnull, uri, strlen(uri));
 	zassert_true(r, "Matching %s failed", uri);
 
-	/* Root path */
+	/* Root path ("</>") */
 	uri = "/";
+	r = _coap_match_path_uri(root_path, uri, strlen(uri));
+	zassert_true(r, "Matching %s on root path failed", uri);
+
+	uri = "/*";
+	r = _coap_match_path_uri(root_path, uri, strlen(uri));
+	zassert_true(r, "Matching %s on root path failed", uri);
+
+	uri = "*";
 	r = _coap_match_path_uri(root_path, uri, strlen(uri));
 	zassert_true(r, "Matching %s on root path failed", uri);
 
 	uri = "/a";
 	r = _coap_match_path_uri(root_path, uri, strlen(uri));
 	zassert_false(r, "Matching %s on root path should have failed", uri);
+
+	uri = "//";
+	r = _coap_match_path_uri(root_path, uri, strlen(uri));
+	zassert_false(r, "Matching %s on root path should have failed", uri);
+
+	/* Trailing empty segment ("</a/>") */
+	uri = "/a/";
+	r = _coap_match_path_uri(trailing_empty, uri, strlen(uri));
+	zassert_true(r, "Matching %s on trailing empty segment failed", uri);
+
+	uri = "/a/*";
+	r = _coap_match_path_uri(trailing_empty, uri, strlen(uri));
+	zassert_true(r, "Matching %s on trailing empty segment failed", uri);
+
+	uri = "/a*";
+	r = _coap_match_path_uri(trailing_empty, uri, strlen(uri));
+	zassert_true(r, "Matching %s on trailing empty segment failed", uri);
+
+	uri = "/a";
+	r = _coap_match_path_uri(trailing_empty, uri, strlen(uri));
+	zassert_false(r, "Matching %s on trailing empty segment should have failed", uri);
+
+	uri = "/a/b";
+	r = _coap_match_path_uri(trailing_empty, uri, strlen(uri));
+	zassert_false(r, "Matching %s on trailing empty segment should have failed", uri);
+
+	uri = "/a/b*";
+	r = _coap_match_path_uri(trailing_empty, uri, strlen(uri));
+	zassert_false(r, "Matching %s on trailing empty segment should have failed", uri);
+
+	uri = "/a//";
+	r = _coap_match_path_uri(trailing_empty, uri, strlen(uri));
+	zassert_false(r, "Matching %s on trailing empty segment should have failed", uri);
+
+	/* Double empty segments ("<//>") and middle empty segment ("</a//b>") */
+	uri = "//";
+	r = _coap_match_path_uri(double_empty, uri, strlen(uri));
+	zassert_true(r, "Matching %s on double empty path failed", uri);
+
+	uri = "/*";
+	r = _coap_match_path_uri(double_empty, uri, strlen(uri));
+	zassert_true(r, "Matching %s on double empty path failed", uri);
+
+	uri = "/";
+	r = _coap_match_path_uri(double_empty, uri, strlen(uri));
+	zassert_false(r, "Matching %s on double empty path should have failed", uri);
+
+	uri = "/a//b";
+	r = _coap_match_path_uri(middle_empty, uri, strlen(uri));
+	zassert_true(r, "Matching %s on middle empty segment failed", uri);
+
+	uri = "/a/*";
+	r = _coap_match_path_uri(middle_empty, uri, strlen(uri));
+	zassert_true(r, "Matching %s on middle empty segment failed", uri);
+
+	uri = "/a/b";
+	r = _coap_match_path_uri(middle_empty, uri, strlen(uri));
+	zassert_false(r, "Matching %s on middle empty segment should have failed", uri);
+
+	uri = "/a/";
+	r = _coap_match_path_uri(middle_empty, uri, strlen(uri));
+	zassert_false(r, "Matching %s on middle empty segment should have failed", uri);
 
 	/* Bounds safety on non-NUL-terminated and length-truncated URIs */
 	r = _coap_match_path_uri(single_foobar, unterminated,
