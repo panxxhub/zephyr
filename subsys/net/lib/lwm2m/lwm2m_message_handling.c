@@ -2765,6 +2765,7 @@ void lwm2m_udp_receive(struct lwm2m_ctx *client_ctx, uint8_t *buf, uint16_t buf_
 	uint32_t block_num;
 	uint32_t last_block_num;
 #endif
+	int block2_opt;
 	bool has_block2;
 
 	r = coap_packet_parse(&response, buf, buf_len, NULL, 0);
@@ -2773,7 +2774,8 @@ void lwm2m_udp_receive(struct lwm2m_ctx *client_ctx, uint8_t *buf, uint16_t buf_
 		return;
 	}
 
-	has_block2 = coap_get_option_int(&response, COAP_OPTION_BLOCK2) > 0 ? true : false;
+	block2_opt = coap_get_option_int(&response, COAP_OPTION_BLOCK2);
+	has_block2 = block2_opt > 0;
 
 	lwm2m_client_lock(client_ctx);
 
@@ -2916,7 +2918,8 @@ void lwm2m_udp_receive(struct lwm2m_ctx *client_ctx, uint8_t *buf, uint16_t buf_
 				return;
 			}
 
-			if (coap_get_option_int(&response, COAP_OPTION_BLOCK1) < 0) {
+			if (coap_get_option_int(&response, COAP_OPTION_BLOCK1) < 0 ||
+			    block2_opt > COAP_BLOCK_1024) {
 				return;
 			}
 		}

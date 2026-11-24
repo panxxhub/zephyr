@@ -508,6 +508,54 @@ ZTEST_F(net_block_transfer, test_block1_write_with_block2_option)
 		lwm2m_reset_message(rsp, true);
 	}
 
+	/* Reserved Block2 SZX=7, M=1, and non-initial NUM>=1 must not fall through to write. */
+	{
+		static const unsigned int invalid_block2[] = {
+			7U,
+			(1U << 3) | COAP_BLOCK_16,
+			(1U << 4) | COAP_BLOCK_16,
+		};
+
+		for (size_t i = 0; i < ARRAY_SIZE(invalid_block2); i++) {
+			uint8_t req_buf[CONFIG_LWM2M_COAP_MAX_MSG_SIZE];
+			uint8_t token[2] = { 0xB2, (uint8_t)i };
+			static const char bad_payload[] = "BAD";
+			struct coap_packet req;
+
+			strncpy(tz_buf, "UNTOUCHED", sizeof(tz_buf) - 1);
+			tz_buf[sizeof(tz_buf) - 1] = '\0';
+
+			ret = coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1,
+					       COAP_TYPE_CON, sizeof(token), token,
+					       COAP_METHOD_PUT, (uint16_t)(0x4200 + i));
+			zassert_ok(ret);
+			zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+							     (const uint8_t *)"3", 1));
+			zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+							     (const uint8_t *)"0", 1));
+			zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+							     (const uint8_t *)"15", 2));
+			zassert_ok(coap_append_option_int(&req, COAP_OPTION_CONTENT_FORMAT,
+							  LWM2M_FORMAT_PLAIN_TEXT));
+			zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2,
+							  invalid_block2[i]));
+			zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK1, COAP_BLOCK_32));
+			zassert_ok(coap_packet_append_payload_marker(&req));
+			zassert_ok(coap_packet_append_payload(&req, (const uint8_t *)bad_payload,
+							      sizeof(bad_payload) - 1));
+
+			lwm2m_udp_receive(&fixture->ctx, req.data, req.offset,
+					  (struct net_sockaddr *)&from_addr);
+
+			zassert_is_null(sys_slist_get(&fixture->ctx.pending_sends),
+					"Invalid Block2 (0x%x) unexpectedly queued a response",
+					invalid_block2[i]);
+			zassert_equal(strcmp(tz_buf, "UNTOUCHED"), 0,
+				      "Invalid Block2 (0x%x) unexpectedly mutated resource",
+				      invalid_block2[i]);
+		}
+	}
+
 	lwm2m_clear_block_contexts();
 }
 
