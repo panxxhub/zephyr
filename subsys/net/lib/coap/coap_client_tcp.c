@@ -1022,7 +1022,8 @@ static int handle_response_tcp(struct coap_client_tcp *client, const struct coap
 			goto fail;
 		}
 
-		ret = coap_tcp_update_from_block(response, &internal_req->recv_blk_ctx);
+		ret = coap_tcp_update_from_block_for_option(response, &internal_req->recv_blk_ctx,
+							    COAP_OPTION_BLOCK2);
 		if (ret < 0) {
 			LOG_ERR("Error updating block context");
 		}

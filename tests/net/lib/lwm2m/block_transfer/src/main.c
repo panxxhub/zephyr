@@ -5,8 +5,10 @@
  */
 
 #include "lwm2m_engine.h"
+#include "lwm2m_message_handling.h"
 #include "lwm2m_object.h"
 
+#include <zephyr/net/lwm2m.h>
 #include <zephyr/ztest.h>
 
 /* Declaration of 'private' function */
@@ -426,6 +428,135 @@ ZTEST_F(net_block_transfer, test_block_context)
 	zassert_is_null(ctx3);
 	release_output_block_ctx(&ctx4);
 	zassert_is_null(ctx4);
+}
+
+ZTEST_F(net_block_transfer, test_block1_write_with_block2_option)
+{
+	/* Static storage so the registry buffer pointer never dangles after test exit. */
+	static char tz_buf[32];
+	static const enum coap_block_size block2_sizes[] = {
+		COAP_BLOCK_16, COAP_BLOCK_32, COAP_BLOCK_64, COAP_BLOCK_128,
+		COAP_BLOCK_256, COAP_BLOCK_512, COAP_BLOCK_1024,
+	};
+	const size_t iterations = MAX(ARRAY_SIZE(block2_sizes), (size_t)(NUM_BLOCK1_CONTEXT + 2));
+	struct net_sockaddr_in from_addr = {
+		.sin_family = NET_AF_INET,
+		.sin_port = net_htons(5683),
+	};
+	int ret;
+
+	lwm2m_clear_block_contexts();
+	ret = lwm2m_set_res_buf(&LWM2M_OBJ(3, 0, 15), tz_buf, sizeof(tz_buf), 0, 0);
+	zassert_ok(ret, "Failed to bind writable timezone buffer (%d)", ret);
+
+	/* Cover every valid Block2 size (16..1024 bytes) and repeat beyond
+	 * NUM_BLOCK1_CONTEXT to prove each combined Block1+Block2 write applies
+	 * the payload, replies 2.04 Changed, and releases its block context
+	 * (RFC 7959 Section 2.7).
+	 */
+	for (size_t i = 0; i < iterations; i++) {
+		enum coap_block_size b2_szx = block2_sizes[i % ARRAY_SIZE(block2_sizes)];
+		uint8_t req_buf[CONFIG_LWM2M_COAP_MAX_MSG_SIZE];
+		uint8_t token[2] = { 0xB1, (uint8_t)i };
+		char payload[16];
+		struct coap_packet req;
+		sys_snode_t *node;
+		struct lwm2m_message *rsp;
+		int block1_opt;
+
+		snprintk(payload, sizeof(payload), "UTC+%02zu", i);
+		memset(tz_buf, 0, sizeof(tz_buf));
+
+		ret = coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1,
+				       COAP_TYPE_CON, sizeof(token), token, COAP_METHOD_PUT,
+				       (uint16_t)(0x4100 + i));
+		zassert_ok(ret);
+		zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+						     (const uint8_t *)"3", 1));
+		zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+						     (const uint8_t *)"0", 1));
+		zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+						     (const uint8_t *)"15", 2));
+		zassert_ok(coap_append_option_int(&req, COAP_OPTION_CONTENT_FORMAT,
+						  LWM2M_FORMAT_PLAIN_TEXT));
+		/* Option 23 (Block2: NUM=0, M=0, SZX=0..6) before option 27 (Block1). */
+		zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2, b2_szx));
+		/* Final Block1: NUM=0, M=0, SZX=1 -> 32 bytes (encoded value > 0). */
+		zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK1, COAP_BLOCK_32));
+		zassert_ok(coap_packet_append_payload_marker(&req));
+		zassert_ok(coap_packet_append_payload(&req, (const uint8_t *)payload,
+						      strlen(payload)));
+
+		lwm2m_udp_receive(&fixture->ctx, req.data, req.offset,
+				  (struct net_sockaddr *)&from_addr);
+
+		node = sys_slist_get(&fixture->ctx.pending_sends);
+		zassert_not_null(node, "No response queued for Block1+Block2 (szx=%u) write #%zu",
+				 (unsigned int)b2_szx, i);
+
+		rsp = CONTAINER_OF(node, struct lwm2m_message, node);
+		zassert_equal(coap_header_get_code(&rsp->cpkt), COAP_RESPONSE_CODE_CHANGED,
+			      "Block1+Block2 (szx=%u) write #%zu failed with code 0x%02x",
+			      (unsigned int)b2_szx, i, coap_header_get_code(&rsp->cpkt));
+		block1_opt = coap_get_option_int(&rsp->cpkt, COAP_OPTION_BLOCK1);
+		zassert_true(block1_opt >= 0, "Response missing Block1 option on write #%zu", i);
+		zassert_equal(GET_BLOCK_NUM(block1_opt), 0);
+		zassert_equal(GET_MORE(block1_opt), 0);
+		zassert_equal(strcmp(tz_buf, payload), 0,
+			      "Resource value mismatch: got '%s', expected '%s'", tz_buf, payload);
+
+		lwm2m_reset_message(rsp, true);
+	}
+
+	/* Reserved Block2 SZX=7, M=1, and non-initial NUM>=1 must not fall through to write. */
+	{
+		static const unsigned int invalid_block2[] = {
+			7U,
+			(1U << 3) | COAP_BLOCK_16,
+			(1U << 4) | COAP_BLOCK_16,
+		};
+
+		for (size_t i = 0; i < ARRAY_SIZE(invalid_block2); i++) {
+			uint8_t req_buf[CONFIG_LWM2M_COAP_MAX_MSG_SIZE];
+			uint8_t token[2] = { 0xB2, (uint8_t)i };
+			static const char bad_payload[] = "BAD";
+			struct coap_packet req;
+
+			strncpy(tz_buf, "UNTOUCHED", sizeof(tz_buf) - 1);
+			tz_buf[sizeof(tz_buf) - 1] = '\0';
+
+			ret = coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1,
+					       COAP_TYPE_CON, sizeof(token), token,
+					       COAP_METHOD_PUT, (uint16_t)(0x4200 + i));
+			zassert_ok(ret);
+			zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+							     (const uint8_t *)"3", 1));
+			zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+							     (const uint8_t *)"0", 1));
+			zassert_ok(coap_packet_append_option(&req, COAP_OPTION_URI_PATH,
+							     (const uint8_t *)"15", 2));
+			zassert_ok(coap_append_option_int(&req, COAP_OPTION_CONTENT_FORMAT,
+							  LWM2M_FORMAT_PLAIN_TEXT));
+			zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2,
+							  invalid_block2[i]));
+			zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK1, COAP_BLOCK_32));
+			zassert_ok(coap_packet_append_payload_marker(&req));
+			zassert_ok(coap_packet_append_payload(&req, (const uint8_t *)bad_payload,
+							      sizeof(bad_payload) - 1));
+
+			lwm2m_udp_receive(&fixture->ctx, req.data, req.offset,
+					  (struct net_sockaddr *)&from_addr);
+
+			zassert_is_null(sys_slist_get(&fixture->ctx.pending_sends),
+					"Invalid Block2 (0x%x) unexpectedly queued a response",
+					invalid_block2[i]);
+			zassert_equal(strcmp(tz_buf, "UNTOUCHED"), 0,
+				      "Invalid Block2 (0x%x) unexpectedly mutated resource",
+				      invalid_block2[i]);
+		}
+	}
+
+	lwm2m_clear_block_contexts();
 }
 
 ZTEST_SUITE(net_block_transfer, NULL, net_block_transfer_setup, net_block_transfer_before,

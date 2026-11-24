@@ -1481,7 +1481,8 @@ static int handle_response(struct coap_client *client, const struct net_sockaddr
 			goto fail;
 		}
 
-		if (coap_update_from_block(response, &internal_req->recv_blk_ctx) < 0) {
+		if (coap_update_from_block_for_option(response, &internal_req->recv_blk_ctx,
+						      COAP_OPTION_BLOCK2) < 0) {
 			LOG_ERR("Error updating block context");
 		}
 		coap_next_block(response, &internal_req->recv_blk_ctx);

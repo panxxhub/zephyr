@@ -1630,28 +1630,66 @@ static int update_control_block2(struct coap_block_context *ctx,
 	return 0;
 }
 
+int coap_update_from_block_for_option(const struct coap_packet *cpkt,
+				      struct coap_block_context *ctx,
+				      enum coap_option_num option)
+{
+	if (cpkt == NULL || ctx == NULL) {
+		return -EINVAL;
+	}
+
+	if (coap_packet_is_request(cpkt)) {
+		if (option == COAP_OPTION_BLOCK2) {
+			return update_control_block2(ctx, cpkt);
+		}
+
+		if (option == COAP_OPTION_BLOCK1) {
+			return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK1,
+							COAP_OPTION_SIZE1, false);
+		}
+
+		return -EINVAL;
+	}
+
+	if (option == COAP_OPTION_BLOCK1) {
+		return update_control_block1(ctx, cpkt);
+	}
+
+	if (option == COAP_OPTION_BLOCK2) {
+		return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK2,
+						COAP_OPTION_SIZE2, false);
+	}
+
+	return -EINVAL;
+}
+
 int coap_update_from_block(const struct coap_packet *cpkt,
 			   struct coap_block_context *ctx)
 {
-	int r;
+	uint32_t block;
+	bool has_block1;
+	bool has_block2;
 
-	if (coap_packet_is_request(cpkt)) {
-		r = update_control_block2(ctx, cpkt);
-		if (r != 0) {
-			return r;
-		}
-
-		return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK1, COAP_OPTION_SIZE1,
-						false);
+	if (cpkt == NULL || ctx == NULL) {
+		return -EINVAL;
 	}
 
-	r = update_control_block1(ctx, cpkt);
-	if (r != 0) {
-		return r;
+	has_block1 = get_option_uint(cpkt, COAP_OPTION_BLOCK1, &block) == 0;
+	has_block2 = get_option_uint(cpkt, COAP_OPTION_BLOCK2, &block) == 0;
+
+	if (has_block1 && has_block2) {
+		return -EINVAL;
 	}
 
-	return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK2, COAP_OPTION_SIZE2,
-					false);
+	if (has_block1) {
+		return coap_update_from_block_for_option(cpkt, ctx, COAP_OPTION_BLOCK1);
+	}
+
+	if (has_block2) {
+		return coap_update_from_block_for_option(cpkt, ctx, COAP_OPTION_BLOCK2);
+	}
+
+	return 0;
 }
 
 int coap_next_block_for_option(const struct coap_packet *cpkt,
@@ -2650,28 +2688,66 @@ static int update_control_block2_tcp(struct coap_block_context *ctx,
 	return 0;
 }
 
+int coap_tcp_update_from_block_for_option(const struct coap_packet *cpkt,
+					  struct coap_block_context *ctx,
+					  enum coap_option_num option)
+{
+	if (cpkt == NULL || ctx == NULL) {
+		return -EINVAL;
+	}
+
+	if (coap_tcp_packet_is_request(cpkt)) {
+		if (option == COAP_OPTION_BLOCK2) {
+			return update_control_block2_tcp(ctx, cpkt);
+		}
+
+		if (option == COAP_OPTION_BLOCK1) {
+			return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK1,
+							COAP_OPTION_SIZE1, true);
+		}
+
+		return -EINVAL;
+	}
+
+	if (option == COAP_OPTION_BLOCK1) {
+		return update_control_block1_tcp(ctx, cpkt);
+	}
+
+	if (option == COAP_OPTION_BLOCK2) {
+		return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK2,
+						COAP_OPTION_SIZE2, true);
+	}
+
+	return -EINVAL;
+}
+
 int coap_tcp_update_from_block(const struct coap_packet *cpkt,
 			       struct coap_block_context *ctx)
 {
-	int r;
+	uint32_t block;
+	bool has_block1;
+	bool has_block2;
 
-	if (coap_tcp_packet_is_request(cpkt)) {
-		r = update_control_block2_tcp(ctx, cpkt);
-		if (r != 0) {
-			return r;
-		}
-
-		return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK1, COAP_OPTION_SIZE1,
-						true);
+	if (cpkt == NULL || ctx == NULL) {
+		return -EINVAL;
 	}
 
-	r = update_control_block1_tcp(ctx, cpkt);
-	if (r != 0) {
-		return r;
+	has_block1 = get_option_uint(cpkt, COAP_OPTION_BLOCK1, &block) == 0;
+	has_block2 = get_option_uint(cpkt, COAP_OPTION_BLOCK2, &block) == 0;
+
+	if (has_block1 && has_block2) {
+		return -EINVAL;
 	}
 
-	return update_descriptive_block(ctx, cpkt, COAP_OPTION_BLOCK2, COAP_OPTION_SIZE2,
-					true);
+	if (has_block1) {
+		return coap_tcp_update_from_block_for_option(cpkt, ctx, COAP_OPTION_BLOCK1);
+	}
+
+	if (has_block2) {
+		return coap_tcp_update_from_block_for_option(cpkt, ctx, COAP_OPTION_BLOCK2);
+	}
+
+	return 0;
 }
 
 static int coap_tcp_next_block_for_option(const struct coap_packet *cpkt,

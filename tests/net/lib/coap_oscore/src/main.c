@@ -2342,6 +2342,351 @@ ZTEST(coap_oscore, test_oscore_context_pool_exhaustion)
 	zassert_ok(coap_oscore_context_remove(ctx_c), "Should remove third context");
 }
 
+static int oscore_build_well_known_request(struct coap_packet *req, uint8_t *buf, size_t buf_len,
+					   uint8_t type, const uint8_t *token, uint8_t tkl,
+					   uint16_t id, int observe, int block2)
+{
+	int ret;
+
+	ret = coap_packet_init(req, buf, buf_len, COAP_VERSION_1, type, tkl, token, COAP_METHOD_GET,
+			       id);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (observe >= 0) {
+		ret = coap_append_option_int(req, COAP_OPTION_OBSERVE, observe);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	ret = coap_packet_append_option(req, COAP_OPTION_URI_PATH, (const uint8_t *)".well-known",
+					sizeof(".well-known") - 1U);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = coap_packet_append_option(req, COAP_OPTION_URI_PATH, (const uint8_t *)"core",
+					sizeof("core") - 1U);
+	if (ret < 0) {
+		return ret;
+	}
+
+	if (block2 >= 0) {
+		ret = coap_append_option_int(req, COAP_OPTION_BLOCK2, (unsigned int)block2);
+		if (ret < 0) {
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * Direct /.well-known/core replies (both 2.05 success and 4.02 error) must stay
+ * OSCORE-protected even when the request carries Observe=0 (which skips the
+ * exchange cache), on both OSCORE-required and mixed services. Non-Observe
+ * discovery requests must also release their exchange cache slots cleanly.
+ */
+ZTEST(coap_oscore, test_oscore_well_known_core_observe)
+{
+	static const char expected_secure[] = "</e2e>,</observe>,</separate>";
+	static const char expected_mixed[] = "</mobserve>,</mixed>,</separatem>";
+	uint8_t reqbuf[COAP_BUF_SIZE];
+	uint8_t innerbuf[COAP_BUF_SIZE];
+	uint32_t inner_len;
+	uint8_t token[4] = {0xD0, 0x01, 0x02, 0x03};
+	struct net_sockaddr_in6 dst_secure = oscore_loopback_dst(oscore_secure_service_port);
+	struct net_sockaddr_in6 dst_mixed = oscore_loopback_dst(oscore_mixed_service_port);
+	struct context *client = &oscore_client_uctx;
+	struct coap_oscore_context *ctx = NULL;
+	struct coap_packet req;
+	struct coap_packet inner;
+	const uint8_t *payload;
+	uint16_t payload_len = 0U;
+	uint16_t non_req_id;
+	size_t expected_mixed_len;
+	int sock;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_COAP_SERVER_WELL_KNOWN_CORE)) {
+		ztest_test_skip();
+	}
+
+	ret = oscore_make_client_ctx(oscore_client_id, sizeof(oscore_client_id), oscore_server_id,
+				     sizeof(oscore_server_id), true, client);
+	zassert_ok(ret, "Client context init failed (%d)", ret);
+	ret = oscore_make_server_ctx(oscore_server_id, sizeof(oscore_server_id), oscore_client_id,
+				     sizeof(oscore_client_id), &ctx);
+	zassert_ok(ret, "Server context init failed (%d)", ret);
+
+	zassert_ok(coap_service_start(&oscore_secure_service));
+	zassert_ok(coap_service_start(&oscore_mixed_service));
+
+	sock = oscore_client_socket();
+	zassert_true(sock >= 0, "Failed to create socket (%d)", -errno);
+
+	/* OSCORE-required service: CON GET /.well-known/core with Observe=0 -> protected 2.05. */
+	ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, token,
+					      sizeof(token), 0xE101, 0, -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Protected CON Observe discovery reply failed (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+	payload = coap_packet_get_payload(&inner, &payload_len);
+	zassert_not_null(payload);
+	zassert_equal(payload_len, strlen(expected_secure));
+	zassert_mem_equal(payload, expected_secure, payload_len);
+
+	/* OSCORE-required service: NON discovery with Observe=0 -> protected NON 2.05. */
+	token[3]++;
+	non_req_id = (uint16_t)(coap_next_id() + 0x1234U);
+	ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_NON_CON,
+					      token, sizeof(token), non_req_id, 0, -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Protected NON Observe discovery reply failed (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_NON_CON);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+	zassert_not_equal(coap_header_get_id(&inner), non_req_id);
+	payload = coap_packet_get_payload(&inner, &payload_len);
+	zassert_not_null(payload);
+	zassert_equal(payload_len, strlen(expected_secure));
+	zassert_mem_equal(payload, expected_secure, payload_len);
+
+	/* Mixed service: Observe=0 discovery must stay protected, never plaintext. */
+	token[3]++;
+	ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, token,
+					      sizeof(token), 0xE102, 0, -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst_mixed, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Mixed service Observe discovery reply must be OSCORE-protected (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+	payload = coap_packet_get_payload(&inner, &payload_len);
+	zassert_not_null(payload);
+#if defined(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)
+	expected_mixed_len = MIN(strlen(expected_mixed),
+				 (size_t)CONFIG_COAP_WELL_KNOWN_BLOCK_WISE_SIZE);
+#else
+	expected_mixed_len = strlen(expected_mixed);
+#endif
+	zassert_equal(payload_len, expected_mixed_len);
+	zassert_mem_equal(payload, expected_mixed, payload_len);
+
+	if (IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)) {
+		/* NUM=10, SZX=1 (offset 320) -> out of range -> 4.02 Bad Option. */
+		const int blk2_oor = (10 << 4) | COAP_BLOCK_32;
+
+		/* OSCORE-required service: Observe=0 + OOB Block2 -> protected 4.02 (CON). */
+		token[3]++;
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON,
+						      token, sizeof(token), 0xE103, 0, blk2_oor);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Protected CON Observe OOB Block2 4.02 reply failed (%d)", ret);
+		zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_BAD_OPTION);
+
+		/* OSCORE-required service: Observe=0 + OOB Block2 -> protected 4.02 (NON). */
+		token[3]++;
+		non_req_id = (uint16_t)(coap_next_id() + 0x1234U);
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf),
+						      COAP_TYPE_NON_CON, token, sizeof(token),
+						      non_req_id, 0, blk2_oor);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Protected NON Observe OOB Block2 4.02 reply failed (%d)", ret);
+		zassert_equal(coap_header_get_type(&inner), COAP_TYPE_NON_CON);
+		zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_BAD_OPTION);
+		zassert_not_equal(coap_header_get_id(&inner), non_req_id);
+
+		/* Mixed service: Observe=0 + OOB Block2 -> protected 4.02, never cleartext. */
+		token[3]++;
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON,
+						      token, sizeof(token), 0xE104, 0, blk2_oor);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_mixed, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Mixed Observe OOB Block2 4.02 must be OSCORE-protected (%d)", ret);
+		zassert_equal(coap_header_get_type(&inner), COAP_TYPE_ACK);
+		zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_BAD_OPTION);
+	}
+
+	/* Non-Observe discovery replies must release exchange slots (more requests than cache). */
+	for (int i = 0; i < CONFIG_COAP_OSCORE_EXCHANGE_CACHE_SIZE + 2; i++) {
+		bool send_error = IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE) && ((i % 2) == 1);
+		int blk2 = send_error ? ((10 << 4) | COAP_BLOCK_32) : -1;
+
+		token[3]++;
+		ret = oscore_build_well_known_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON,
+						      token, sizeof(token),
+						      (uint16_t)(0xE200 + i), -1, blk2);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst_secure, &req));
+
+		inner_len = sizeof(innerbuf);
+		ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+		zassert_ok(ret, "Non-Observe discovery #%d failed (%d)", i, ret);
+		zassert_equal(coap_header_get_code(&inner),
+			      send_error ? COAP_RESPONSE_CODE_BAD_OPTION
+					 : COAP_RESPONSE_CODE_CONTENT);
+	}
+
+	zassert_ok(zsock_close(sock), "Failed to close socket");
+	zassert_ok(coap_service_stop(&oscore_mixed_service), "Failed to stop mixed service");
+	zassert_ok(coap_service_stop(&oscore_secure_service), "Failed to stop secure service");
+	/* Succeeds with 0 (not -EAGAIN) only if zero exchange cache references leaked. */
+	zassert_ok(coap_oscore_context_remove(ctx), "Discovery leaked an OSCORE context reference");
+}
+
+/*
+ * Incoming OSCORE packets that exit before request routing (pending MID
+ * collisions, pending ACK clears, or unexpected ACK/RST without a pending
+ * entry) must not allocate or retain OSCORE exchange cache slots.
+ */
+ZTEST(coap_oscore, test_oscore_prerouting_exits_no_exchange_leak)
+{
+	const uint16_t pending_mid = 0xE510U;
+	uint8_t reqbuf[COAP_BUF_SIZE];
+	uint8_t rspbuf[COAP_BUF_SIZE];
+	uint8_t recvbuf[COAP_BUF_SIZE];
+	uint8_t innerbuf[COAP_BUF_SIZE];
+	uint32_t inner_len;
+	uint8_t sep_tok[4] = {0xE5, 0x01, 0x00, 0x01};
+	uint8_t collide_tok[4] = {0xE5, 0x02, 0x00, 0x01};
+	uint8_t ack_tok[4] = {0xE5, 0x03, 0x00, 0x01};
+	uint8_t unexp_tok[4] = {0xE5, 0x04, 0x00, 0x00};
+	uint8_t final_tok[4] = {0xE5, 0x05, 0x00, 0x01};
+	struct net_sockaddr_in6 dst = oscore_loopback_dst(oscore_secure_service_port);
+	struct context *client = &oscore_client_uctx;
+	struct coap_oscore_context *ctx = NULL;
+	struct coap_oscore_exchange *entry;
+	struct coap_packet req;
+	struct coap_packet rsp;
+	struct coap_packet inner;
+	int sock;
+	int ret;
+
+	oscore_deferred.valid = false;
+
+	ret = oscore_make_client_ctx(oscore_client_id, sizeof(oscore_client_id), oscore_server_id,
+				     sizeof(oscore_server_id), true, client);
+	zassert_ok(ret, "Client context init failed (%d)", ret);
+	ret = oscore_make_server_ctx(oscore_server_id, sizeof(oscore_server_id), oscore_client_id,
+				     sizeof(oscore_client_id), &ctx);
+	zassert_ok(ret, "Server context init failed (%d)", ret);
+
+	zassert_ok(coap_service_start(&oscore_secure_service));
+
+	sock = oscore_client_socket();
+	zassert_true(sock >= 0, "Failed to create socket (%d)", -errno);
+
+	/* Seed an active server pending CON message via a separate response. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, COAP_METHOD_GET,
+				   sep_tok, sizeof(sep_tok), 0xE501U, "separate", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	ret = oscore_recv(sock, LONG_TIMEOUT, recvbuf, sizeof(recvbuf));
+	zassert_true(ret > 0, "Timed out waiting for empty ACK (%d)", ret);
+	zassert_true(oscore_deferred.valid, "Separate handler must have run");
+
+	ret = coap_packet_init(&rsp, rspbuf, sizeof(rspbuf), COAP_VERSION_1, COAP_TYPE_CON,
+			       oscore_deferred.tkl, oscore_deferred.token,
+			       COAP_RESPONSE_CODE_CONTENT, pending_mid);
+	zassert_ok(ret);
+	zassert_ok(coap_packet_append_payload_marker(&rsp));
+	zassert_ok(coap_packet_append_payload(&rsp, oscore_deferred_payload,
+					      sizeof(oscore_deferred_payload) - 1U));
+	ret = coap_resource_send(&oscore_separate_resource, &rsp, net_sad(&oscore_deferred.addr),
+				 oscore_deferred.addr_len, NULL);
+	zassert_ok(ret, "Failed to send CON deferred response (%d)", ret);
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "CON deferred response verify failed (%d)", ret);
+	zassert_equal(coap_header_get_type(&inner), COAP_TYPE_CON);
+	zassert_equal(coap_header_get_id(&inner), pending_mid);
+
+	/* 1. OSCORE CON request colliding with pending_mid hits pre-routing error exit. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, COAP_METHOD_GET,
+				   collide_tok, sizeof(collide_tok), pending_mid, "e2e", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	/* 2. OSCORE ACK matching pending_mid clears pending and exits pre-routing. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_ACK, COAP_METHOD_GET,
+				   ack_tok, sizeof(ack_tok), pending_mid, "e2e", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	/* 3. Unexpected OSCORE ACKs without a pending entry must not exhaust the cache. */
+	for (int i = 0; i < CONFIG_COAP_OSCORE_EXCHANGE_CACHE_SIZE + 2; i++) {
+		unexp_tok[3] = (uint8_t)i;
+		ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_ACK,
+					   COAP_METHOD_GET, unexp_tok, sizeof(unexp_tok),
+					   (uint16_t)(0xE600U + i), "e2e", -1);
+		zassert_ok(ret);
+		zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+	}
+
+	/* Follow-up request serves as a FIFO barrier and verifies the cache is not full. */
+	ret = oscore_build_request(&req, reqbuf, sizeof(reqbuf), COAP_TYPE_CON, COAP_METHOD_GET,
+				   final_tok, sizeof(final_tok), 0xE700U, "e2e", -1);
+	zassert_ok(ret);
+	zassert_ok(oscore_send_protected(sock, client, &dst, &req));
+
+	inner_len = sizeof(innerbuf);
+	ret = oscore_recv_verify(sock, LONG_TIMEOUT, client, innerbuf, &inner_len, &inner);
+	zassert_ok(ret, "Follow-up request failed after pre-routing exits (%d)", ret);
+	zassert_equal(coap_header_get_code(&inner), COAP_RESPONSE_CODE_CONTENT);
+
+	/* None of the pre-routing packets may have left an exchange cache entry behind. */
+	entry = coap_oscore_exchange_find(oscore_secure_service.data->oscore_exchange_cache,
+					  net_sad(&oscore_deferred.addr), oscore_deferred.addr_len,
+					  collide_tok, sizeof(collide_tok));
+	zassert_is_null(entry, "Pending MID collision leaked an OSCORE exchange slot");
+
+	entry = coap_oscore_exchange_find(oscore_secure_service.data->oscore_exchange_cache,
+					  net_sad(&oscore_deferred.addr), oscore_deferred.addr_len,
+					  ack_tok, sizeof(ack_tok));
+	zassert_is_null(entry, "Pending ACK clear leaked an OSCORE exchange slot");
+
+	for (int i = 0; i < CONFIG_COAP_OSCORE_EXCHANGE_CACHE_SIZE + 2; i++) {
+		unexp_tok[3] = (uint8_t)i;
+		entry = coap_oscore_exchange_find(
+			oscore_secure_service.data->oscore_exchange_cache,
+			net_sad(&oscore_deferred.addr), oscore_deferred.addr_len, unexp_tok,
+			sizeof(unexp_tok));
+		zassert_is_null(entry, "Unexpected ACK #%d leaked an OSCORE exchange slot", i);
+	}
+
+	zassert_ok(zsock_close(sock), "Failed to close socket");
+	zassert_ok(coap_service_stop(&oscore_secure_service), "Failed to stop service");
+	zassert_ok(coap_oscore_context_remove(ctx),
+		   "Pre-routing exit leaked an OSCORE context reference");
+}
+
 #else
 static uint16_t coap_service_port = 56839;
 static const uint8_t plain_payload[] = "encrypted-response";

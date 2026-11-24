@@ -63,6 +63,224 @@ static int send_wk_req(struct coap_resource *resources, size_t num_resources, bo
 					    buf_len);
 }
 
+static void verify_well_known_non_framing(void)
+{
+	static const uint8_t token[] = { 0x4A, 0x5B, 0x6C, 0x7D };
+	struct coap_packet request;
+	struct coap_packet response;
+	struct coap_packet parsed;
+	uint8_t req_buf[96];
+	uint8_t rsp_buf[256];
+	uint8_t rsp_token[COAP_TOKEN_MAX_LEN];
+	const uint8_t *payload;
+	uint16_t payload_len = 0U;
+	uint16_t req_id = (uint16_t)(coap_next_id() + 0x1234U);
+	uint16_t mid1;
+	uint16_t mid2;
+	int r;
+
+	/* NON request -> NON 2.05 Content with matching token and server-generated MID. */
+	r = coap_packet_init(&request, req_buf, sizeof(req_buf), COAP_VERSION_1, COAP_TYPE_NON_CON,
+			     sizeof(token), token, COAP_METHOD_GET, req_id);
+	zassert_equal(r, 0);
+
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &request,
+					 &response, rsp_buf, sizeof(rsp_buf));
+	zassert_equal(r, 0, "NON /.well-known/core failed (%d)", r);
+	zassert_equal(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL, 0U), 0);
+	zassert_equal(coap_header_get_type(&parsed), COAP_TYPE_NON_CON,
+		      "NON request must receive a NON response");
+	zassert_equal(coap_header_get_code(&parsed), COAP_RESPONSE_CODE_CONTENT);
+	zassert_equal(coap_header_get_token(&parsed, rsp_token), sizeof(token));
+	zassert_mem_equal(rsp_token, token, sizeof(token));
+	mid1 = coap_header_get_id(&parsed);
+	zassert_not_equal(mid1, req_id, "NON response must not echo request MID");
+	payload = coap_packet_get_payload(&parsed, &payload_len);
+	zassert_not_null(payload);
+	zassert_true(payload_len > 0U);
+
+	/* Second NON request with the same req_id gets a fresh server MID. */
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &request,
+					 &response, rsp_buf, sizeof(rsp_buf));
+	zassert_equal(r, 0);
+	zassert_equal(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL, 0U), 0);
+	zassert_equal(coap_header_get_type(&parsed), COAP_TYPE_NON_CON);
+	mid2 = coap_header_get_id(&parsed);
+	zassert_not_equal(mid2, req_id, "Second NON response must not echo request MID");
+	zassert_not_equal(mid2, mid1, "NON responses must advance server MID");
+
+	/* CON request still receives a piggybacked ACK echoing request MID. */
+	r = coap_packet_init(&request, req_buf, sizeof(req_buf), COAP_VERSION_1, COAP_TYPE_CON,
+			     sizeof(token), token, COAP_METHOD_GET, req_id);
+	zassert_equal(r, 0);
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &request,
+					 &response, rsp_buf, sizeof(rsp_buf));
+	zassert_equal(r, 0);
+	zassert_equal(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL, 0U), 0);
+	zassert_equal(coap_header_get_type(&parsed), COAP_TYPE_ACK);
+	zassert_equal(coap_header_get_id(&parsed), req_id);
+	zassert_equal(coap_header_get_token(&parsed, rsp_token), sizeof(token));
+	zassert_mem_equal(rsp_token, token, sizeof(token));
+}
+
+static void verify_well_known_href_queries(void)
+{
+	/* Keep Uri-Query strings <= 12 bytes so the default coap_option->value
+	 * buffer fits without CONFIG_COAP_EXTENDED_OPTIONS_LEN.
+	 */
+	static const char * const path_s_h[] = { "s", "h", NULL };
+	static const char * const attrs_s_h[] = { "rt=\"h\"", NULL };
+	static struct coap_core_metadata meta_s_h = { .attributes = attrs_s_h };
+	static const char * const path_s_i[] = { "s", "i", NULL };
+	static const char * const path_h[] = { "h", NULL };
+	static const char * const attrs_h[] = { "rt=\"r\"", NULL };
+	static struct coap_core_metadata meta_h = { .attributes = attrs_h };
+	static const char * const path_dev[] = { "dev", NULL };
+	static const char * const path_a_slash[] = { "a", "", NULL };
+	static const char * const path_root[] = { "", NULL };
+	struct coap_resource href_resources[] = {
+		{ .path = path_s_h, .metadata = &meta_s_h },
+		{ .path = path_s_i },
+		{ .path = path_h, .metadata = &meta_h },
+		{ .path = path_dev },
+		{ .path = path_a_slash },
+		{ .path = path_root },
+	};
+	static const struct {
+		const char *query;
+		const char *expected;
+	} cases[] = {
+		{ "href=/s/h", "</s/h>;rt=\"h\"" },
+		{ "href=/h", "</h>;rt=\"r\"" },
+		{ "href=/s/*", "</s/h>;rt=\"h\",</s/i>" },
+		{ "href=/s/i", "</s/i>" },
+		{ "href=/dev", "</dev>" },
+		{ "href=/a/", "</a/>" },
+		{ "href=/a/*", "</a/>" },
+		{ "href=/", "</>" },
+	};
+
+	for (size_t i = 0U; i < ARRAY_SIZE(cases); i++) {
+		char assembled[128] = { 0 };
+		size_t pos = 0U;
+		struct coap_packet response;
+		struct coap_packet parsed;
+		uint8_t rsp_buf[256];
+		const uint8_t *payload;
+		uint16_t payload_len = 0U;
+		bool more = true;
+
+		for (int blk = 0; more; blk++) {
+			int r = send_wk_req(href_resources, ARRAY_SIZE(href_resources), false,
+					    cases[i].query,
+					    IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE) ? blk
+											  : -1,
+					    COAP_BLOCK_32, &response, rsp_buf, sizeof(rsp_buf));
+
+			zassert_equal(r, 0, "Query %s failed (%d)", cases[i].query, r);
+			zassert_equal(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL,
+							0U),
+				      0);
+			payload = coap_packet_get_payload(&parsed, &payload_len);
+			zassert_not_null(payload, "Query %s missing payload", cases[i].query);
+			zassert_true(pos + payload_len < sizeof(assembled));
+			memcpy(&assembled[pos], payload, payload_len);
+			pos += payload_len;
+
+			if (IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)) {
+				int b2 = coap_get_option_int(&parsed, COAP_OPTION_BLOCK2);
+
+				zassert_true(b2 >= 0);
+				more = GET_MORE(b2);
+			} else {
+				more = false;
+			}
+		}
+
+		zassert_equal(pos, strlen(cases[i].expected), "Query %s len mismatch (got %.*s)",
+			      cases[i].query, (int)pos, assembled);
+		zassert_mem_equal(assembled, cases[i].expected, pos,
+				  "Query %s payload mismatch", cases[i].query);
+	}
+
+	/* Zero-segment root resource ({NULL}) advertises "</>" and must match
+	 * exact root and wildcard href queries while rejecting href=/a.
+	 */
+	{
+		static const char * const path_empty_root[] = { NULL };
+		struct coap_resource empty_root_res[] = {
+			{ .path = path_empty_root },
+		};
+		static const char * const match_queries[] = {
+			"href=/", "href=/*", "href=*",
+		};
+		struct coap_packet response;
+		struct coap_packet parsed;
+		uint8_t rsp_buf[128];
+		const uint8_t *payload;
+		uint16_t payload_len = 0U;
+
+		for (size_t i = 0U; i < ARRAY_SIZE(match_queries); i++) {
+			int r = send_wk_req(empty_root_res, ARRAY_SIZE(empty_root_res), false,
+					    match_queries[i],
+					    IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE) ? 0 : -1,
+					    COAP_BLOCK_32, &response, rsp_buf, sizeof(rsp_buf));
+
+			zassert_equal(r, 0, "Zero-segment root query %s failed (%d)",
+				      match_queries[i], r);
+			zassert_ok(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL, 0U));
+			payload = coap_packet_get_payload(&parsed, &payload_len);
+			zassert_not_null(payload);
+			zassert_equal(payload_len, sizeof("</>") - 1U);
+			zassert_mem_equal(payload, "</>", payload_len);
+		}
+
+		zassert_ok(send_wk_req(empty_root_res, ARRAY_SIZE(empty_root_res), false,
+				       "href=/a",
+				       IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE) ? 0 : -1,
+				       COAP_BLOCK_32, &response, rsp_buf, sizeof(rsp_buf)));
+		zassert_ok(coap_packet_parse(&parsed, rsp_buf, response.offset, NULL, 0U));
+		payload = coap_packet_get_payload(&parsed, &payload_len);
+		zassert_is_null(payload, "href=/a must not match zero-segment root");
+		zassert_equal(payload_len, 0U);
+	}
+}
+
+static void verify_well_known_short_workspace(void)
+{
+	static const uint8_t token[] = { 0x10, 0x20, 0x30, 0x40 };
+	struct coap_packet request;
+	struct coap_packet response;
+	uint8_t req_buf[64];
+	uint8_t rsp_buf[256];
+	uint16_t full_len;
+	int r;
+
+	r = coap_packet_init(&request, req_buf, sizeof(req_buf), COAP_VERSION_1, COAP_TYPE_CON,
+			     sizeof(token), token, COAP_METHOD_GET, coap_next_id());
+	zassert_equal(r, 0);
+
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &request,
+					 &response, rsp_buf, sizeof(rsp_buf));
+	zassert_equal(r, 0);
+	full_len = response.offset;
+	zassert_true(full_len > 8U);
+
+	/* Every truncated non-zero workspace buffer must fail with -ENOMEM, not -EINVAL. */
+	for (uint16_t short_len = 1U; short_len < full_len; short_len++) {
+		r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources),
+						 &request, &response, rsp_buf, short_len);
+		zassert_equal(r, -ENOMEM,
+			      "Short workspace len %u (full %u) returned %d instead of -ENOMEM",
+			      short_len, full_len, r);
+	}
+
+	/* Zero-length buffer remains an invalid caller argument (-EINVAL). */
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &request,
+					 &response, rsp_buf, 0U);
+	zassert_equal(r, -EINVAL);
+}
+
 #if defined(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)
 
 #define WK_BUF_SIZE           256U
@@ -1004,6 +1222,79 @@ ZTEST(coap_wellknown, test_blockwise_concurrent_over_2048)
 	}
 }
 
+ZTEST(coap_wellknown, test_blockwise_non_request_framing)
+{
+	verify_well_known_non_framing();
+}
+
+ZTEST(coap_wellknown, test_blockwise_href_queries)
+{
+	verify_well_known_href_queries();
+}
+
+ZTEST(coap_wellknown, test_blockwise_short_workspace_returns_enomem)
+{
+	verify_well_known_short_workspace();
+}
+
+ZTEST(coap_wellknown, test_blockwise_ignores_request_block1)
+{
+	struct coap_packet req;
+	struct coap_packet response;
+	struct coap_packet parsed;
+	uint8_t req_buf[96];
+	const uint8_t *payload;
+	uint16_t payload_len = 0U;
+	int block2;
+	int r;
+
+	/* Block1 on a GET /.well-known/core with Block2 must not overwrite Block2's offset/SZX. */
+	zassert_ok(coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1, COAP_TYPE_CON,
+				    COAP_TOKEN_MAX_LEN, coap_next_token(), COAP_METHOD_GET,
+				    coap_next_id()));
+	zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2, (1U << 4) | COAP_BLOCK_32));
+	zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK1, COAP_BLOCK_16));
+
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &req,
+					 &response, wk_pkt_buf, sizeof(wk_pkt_buf));
+	zassert_equal(r, 0, "Block2+Block1 discovery request failed (%d)", r);
+	zassert_ok(coap_packet_parse(&parsed, wk_pkt_buf, response.offset, NULL, 0U));
+	block2 = coap_get_option_int(&parsed, COAP_OPTION_BLOCK2);
+	zassert_true(block2 >= 0);
+	zassert_equal(GET_BLOCK_NUM(block2), 1U, "Block1 clobbered Block2 number");
+	zassert_equal(GET_BLOCK_SIZE(block2), COAP_BLOCK_32, "Block1 clobbered Block2 size");
+	payload = coap_packet_get_payload(&parsed, &payload_len);
+	zassert_not_null(payload);
+	zassert_equal(payload_len, 32U);
+	zassert_mem_equal(payload, &expected_doc[32], 32U, "Block1 clobbered Block2 offset");
+
+	/* Out-of-range Block2 paired with Block1 NUM=0 must still be rejected with -EINVAL. */
+	zassert_ok(coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1, COAP_TYPE_CON,
+				    COAP_TOKEN_MAX_LEN, coap_next_token(), COAP_METHOD_GET,
+				    coap_next_id()));
+	zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK2, (10U << 4) | COAP_BLOCK_32));
+	zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK1, COAP_BLOCK_32));
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &req,
+					 &response, wk_pkt_buf, sizeof(wk_pkt_buf));
+	zassert_equal(r, -EINVAL, "Block1 bypassed out-of-range Block2 rejection (%d)", r);
+
+	/* Block1 alone (without Block2) must not advance the Block2 response offset. */
+	zassert_ok(coap_packet_init(&req, req_buf, sizeof(req_buf), COAP_VERSION_1, COAP_TYPE_CON,
+				    COAP_TOKEN_MAX_LEN, coap_next_token(), COAP_METHOD_GET,
+				    coap_next_id()));
+	zassert_ok(coap_append_option_int(&req, COAP_OPTION_BLOCK1, (1U << 4) | COAP_BLOCK_32));
+	r = coap_well_known_core_get_len(test_resources, ARRAY_SIZE(test_resources), &req,
+					 &response, wk_pkt_buf, sizeof(wk_pkt_buf));
+	zassert_equal(r, 0);
+	zassert_ok(coap_packet_parse(&parsed, wk_pkt_buf, response.offset, NULL, 0U));
+	block2 = coap_get_option_int(&parsed, COAP_OPTION_BLOCK2);
+	zassert_true(block2 >= 0);
+	zassert_equal(GET_BLOCK_NUM(block2), 0U, "Block1 alone advanced Block2 number");
+	payload = coap_packet_get_payload(&parsed, &payload_len);
+	zassert_not_null(payload);
+	zassert_mem_equal(payload, expected_doc, payload_len);
+}
+
 ZTEST_SUITE(coap_wellknown, NULL, NULL, NULL, NULL, NULL);
 
 #else /* !CONFIG_COAP_WELL_KNOWN_BLOCK_WISE */
@@ -1037,6 +1328,21 @@ ZTEST(coap_wellknown_simple, test_non_blockwise_empty_and_filtered)
 	payload = coap_packet_get_payload(&parsed, &payload_len);
 	zassert_is_null(payload);
 	zassert_equal(payload_len, 0U);
+}
+
+ZTEST(coap_wellknown_simple, test_non_blockwise_non_request_framing)
+{
+	verify_well_known_non_framing();
+}
+
+ZTEST(coap_wellknown_simple, test_non_blockwise_href_queries)
+{
+	verify_well_known_href_queries();
+}
+
+ZTEST(coap_wellknown_simple, test_non_blockwise_short_workspace_returns_enomem)
+{
+	verify_well_known_short_workspace();
 }
 
 ZTEST_SUITE(coap_wellknown_simple, NULL, NULL, NULL, NULL, NULL);

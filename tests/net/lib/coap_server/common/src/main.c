@@ -8,6 +8,7 @@
 
 #include <zephyr/ztest.h>
 #include <zephyr/net/coap_service.h>
+#include <zephyr/net/coap_link_format.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/socket.h>
 
@@ -112,6 +113,29 @@ COAP_RESOURCE_DEFINE(resource_ping, service_D, {
 	.get = coap_ping_get,
 });
 
+/* Service whose /.well-known/core entry exceeds CONFIG_COAP_SERVER_MESSAGE_SIZE
+ * so non-blockwise discovery triggers a workspace buffer overflow (5.00).
+ */
+static const uint16_t service_E_port = 5701;
+COAP_SERVICE_DEFINE(service_E, "127.0.0.1", &service_E_port, 0);
+
+static const char * const resource_overflow_path[] = { "overflow", NULL };
+static const char * const resource_overflow_attrs[] = {
+	"title=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+	"rt=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+	"if=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+	"sz=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"",
+	NULL,
+};
+static struct coap_core_metadata resource_overflow_meta = {
+	.attributes = resource_overflow_attrs,
+};
+COAP_RESOURCE_DEFINE(resource_overflow, service_E, {
+	.path = resource_overflow_path,
+	.metadata = &resource_overflow_meta,
+	.get = coap_ping_get,
+});
+
 ZTEST(coap_service, test_COAP_SERVICE_DEFINE)
 {
 	zassert_ok(strcmp(service_A.host, "a.service.com"));
@@ -145,7 +169,7 @@ ZTEST(coap_service, test_COAP_SERVICE_COUNT)
 
 	n_svc = 4273;
 	COAP_SERVICE_COUNT(&n_svc);
-	zassert_equal(n_svc, 4);
+	zassert_equal(n_svc, 5);
 }
 
 ZTEST(coap_service, test_COAP_SERVICE_RESOURCE_COUNT)
@@ -154,6 +178,7 @@ ZTEST(coap_service, test_COAP_SERVICE_RESOURCE_COUNT)
 	zassert_equal(COAP_SERVICE_RESOURCE_COUNT(&service_B), 2);
 	zassert_equal(COAP_SERVICE_RESOURCE_COUNT(&service_C), 1);
 	zassert_equal(COAP_SERVICE_RESOURCE_COUNT(&service_D), 1);
+	zassert_equal(COAP_SERVICE_RESOURCE_COUNT(&service_E), 1);
 }
 
 ZTEST(coap_service, test_COAP_SERVICE_HAS_RESOURCE)
@@ -179,6 +204,7 @@ ZTEST(coap_service, test_COAP_SERVICE_FOREACH)
 	size_t have_service_B = 0;
 	size_t have_service_C = 0;
 	size_t have_service_D = 0;
+	size_t have_service_E = 0;
 
 	COAP_SERVICE_FOREACH(svc) {
 		if (svc == &service_A) {
@@ -193,17 +219,20 @@ ZTEST(coap_service, test_COAP_SERVICE_FOREACH)
 		} else if (svc == &service_D) {
 			have_service_D = 1;
 			zassert_equal(svc->flags & COAP_SERVICE_AUTOSTART, COAP_SERVICE_AUTOSTART);
+		} else if (svc == &service_E) {
+			have_service_E = 1;
+			zassert_equal(svc->flags & COAP_SERVICE_AUTOSTART, 0);
 		} else {
-			zassert_unreachable("svc (%p) not equal to &service_A (%p), &service_B "
-					    "(%p), &service_C (%p), or &service_D (%p)",
-					    svc, &service_A, &service_B, &service_C, &service_D);
+			zassert_unreachable("unexpected svc (%p)", svc);
 		}
 
 		n_svc++;
 	}
 
-	zassert_equal(n_svc, 4);
-	zassert_equal(have_service_A + have_service_B + have_service_C + have_service_D, n_svc);
+	zassert_equal(n_svc, 5);
+	zassert_equal(have_service_A + have_service_B + have_service_C + have_service_D +
+			      have_service_E,
+		      n_svc);
 }
 
 ZTEST(coap_service, test_COAP_RESOURCE_FOREACH)
@@ -578,7 +607,7 @@ ZTEST(coap_service, test_well_known_core_responses)
 	sock = zsock_socket(NET_AF_INET, NET_SOCK_DGRAM, NET_IPPROTO_UDP);
 	zassert_true(sock >= 0);
 
-	/* Valid GET /.well-known/core returns 2.05 Content with </ping>. */
+	/* Valid CON GET /.well-known/core returns ACK 2.05 Content with </ping>. */
 	req_id = coap_next_id();
 	send_well_known_req(sock, &dst, COAP_TYPE_CON, req_id, tok_valid1, sizeof(tok_valid1),
 			    NULL, 0U, &rsp, rsp_buf, sizeof(rsp_buf));
@@ -591,6 +620,35 @@ ZTEST(coap_service, test_well_known_core_responses)
 	zassert_not_null(payload);
 	zassert_equal(payload_len, strlen("</ping>"));
 	zassert_mem_equal(payload, "</ping>", payload_len);
+
+	/* Valid NON GET /.well-known/core returns NON 2.05 Content with server-generated MID. */
+	{
+		static const uint8_t tok_non_ok[] = { 0x9A, 0xBC, 0xDE, 0xF0 };
+		uint16_t non_req_id = (uint16_t)(coap_next_id() + 0x1234U);
+		uint16_t mid1;
+		uint16_t mid2;
+
+		send_well_known_req(sock, &dst, COAP_TYPE_NON_CON, non_req_id, tok_non_ok,
+				    sizeof(tok_non_ok), NULL, 0U, &rsp, rsp_buf, sizeof(rsp_buf));
+		zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_NON_CON);
+		zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_CONTENT);
+		mid1 = coap_header_get_id(&rsp);
+		zassert_not_equal(mid1, non_req_id);
+		zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_non_ok));
+		zassert_mem_equal(rsp_token, tok_non_ok, sizeof(tok_non_ok));
+		payload = coap_packet_get_payload(&rsp, &payload_len);
+		zassert_not_null(payload);
+		zassert_equal(payload_len, strlen("</ping>"));
+		zassert_mem_equal(payload, "</ping>", payload_len);
+
+		send_well_known_req(sock, &dst, COAP_TYPE_NON_CON, non_req_id, tok_non_ok,
+				    sizeof(tok_non_ok), NULL, 0U, &rsp, rsp_buf, sizeof(rsp_buf));
+		zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_NON_CON);
+		zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_CONTENT);
+		mid2 = coap_header_get_id(&rsp);
+		zassert_not_equal(mid2, non_req_id);
+		zassert_not_equal(mid2, mid1);
+	}
 
 	if (IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)) {
 		static const uint8_t tok_con_oor[] = { 0xA1, 0xB2 };
@@ -661,6 +719,54 @@ ZTEST(coap_service, test_well_known_core_responses)
 	}
 
 	zsock_close(sock);
+}
+
+ZTEST(coap_service, test_well_known_core_overflow_returns_500)
+{
+	static const uint8_t tok_con[] = { 0x31, 0x41, 0x59 };
+	static const uint8_t tok_non[] = { 0x26, 0x53, 0x58 };
+	struct net_sockaddr_in dst = {
+		.sin_family = NET_AF_INET,
+		.sin_port = net_htons(service_E_port),
+	};
+	struct coap_packet rsp;
+	uint8_t rsp_buf[128];
+	uint8_t rsp_token[COAP_TOKEN_MAX_LEN];
+	uint16_t req_id;
+	int sock;
+
+	if (!IS_ENABLED(CONFIG_COAP_SERVER_WELL_KNOWN_CORE) ||
+	    IS_ENABLED(CONFIG_COAP_WELL_KNOWN_BLOCK_WISE)) {
+		ztest_test_skip();
+	}
+
+	zassert_equal(zsock_inet_pton(NET_AF_INET, "127.0.0.1", &dst.sin_addr), 1);
+	zassert_ok(coap_service_start(&service_E));
+
+	sock = zsock_socket(NET_AF_INET, NET_SOCK_DGRAM, NET_IPPROTO_UDP);
+	zassert_true(sock >= 0);
+
+	/* Non-blockwise workspace overflow must return 5.00 Internal Server Error, not 4.02. */
+	req_id = coap_next_id();
+	send_well_known_req(sock, &dst, COAP_TYPE_CON, req_id, tok_con, sizeof(tok_con), NULL, 0U,
+			    &rsp, rsp_buf, sizeof(rsp_buf));
+	zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_ACK);
+	zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_INTERNAL_ERROR);
+	zassert_equal(coap_header_get_id(&rsp), req_id);
+	zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_con));
+	zassert_mem_equal(rsp_token, tok_con, sizeof(tok_con));
+
+	req_id = (uint16_t)(coap_next_id() + 0x1234U);
+	send_well_known_req(sock, &dst, COAP_TYPE_NON_CON, req_id, tok_non, sizeof(tok_non), NULL,
+			    0U, &rsp, rsp_buf, sizeof(rsp_buf));
+	zassert_equal(coap_header_get_type(&rsp), COAP_TYPE_NON_CON);
+	zassert_equal(coap_header_get_code(&rsp), COAP_RESPONSE_CODE_INTERNAL_ERROR);
+	zassert_not_equal(coap_header_get_id(&rsp), req_id);
+	zassert_equal(coap_header_get_token(&rsp, rsp_token), sizeof(tok_non));
+	zassert_mem_equal(rsp_token, tok_non, sizeof(tok_non));
+
+	zsock_close(sock);
+	zassert_ok(coap_service_stop(&service_E));
 }
 
 ZTEST_SUITE(coap_service, NULL, NULL, NULL, NULL, NULL);

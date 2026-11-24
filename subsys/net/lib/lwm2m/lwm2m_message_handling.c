@@ -2151,7 +2151,8 @@ static int parse_write_op(struct lwm2m_message *msg, uint16_t format)
 			r = -EFAULT;
 			return r;
 		}
-		r = coap_update_from_block(msg->in.in_cpkt, &block_ctx->ctx);
+		r = coap_update_from_block_for_option(msg->in.in_cpkt, &block_ctx->ctx,
+						      COAP_OPTION_BLOCK1);
 		if (r < 0) {
 			LOG_ERR("Error from block update: %d", r);
 			return r;
@@ -2764,6 +2765,7 @@ void lwm2m_udp_receive(struct lwm2m_ctx *client_ctx, uint8_t *buf, uint16_t buf_
 	uint32_t block_num;
 	uint32_t last_block_num;
 #endif
+	int block2_opt;
 	bool has_block2;
 
 	r = coap_packet_parse(&response, buf, buf_len, NULL, 0);
@@ -2772,7 +2774,8 @@ void lwm2m_udp_receive(struct lwm2m_ctx *client_ctx, uint8_t *buf, uint16_t buf_
 		return;
 	}
 
-	has_block2 = coap_get_option_int(&response, COAP_OPTION_BLOCK2) > 0 ? true : false;
+	block2_opt = coap_get_option_int(&response, COAP_OPTION_BLOCK2);
+	has_block2 = block2_opt > 0;
 
 	lwm2m_client_lock(client_ctx);
 
@@ -2912,8 +2915,13 @@ void lwm2m_udp_receive(struct lwm2m_ctx *client_ctx, uint8_t *buf, uint16_t buf_
 			msg = find_ongoing_block2_tx();
 			if (msg) {
 				handle_ongoing_block2_tx(msg, &response);
+				return;
 			}
-			return;
+
+			if (coap_get_option_int(&response, COAP_OPTION_BLOCK1) < 0 ||
+			    block2_opt > COAP_BLOCK_1024) {
+				return;
+			}
 		}
 
 		/* Clear out existing Block2 transfers when new requests come */
